@@ -1,11 +1,14 @@
-//! Compares the port's collision grid with the client's `grids.bin` of DLL area exports (WP7.12):
+//! Compares the port's collision grid with the client's `grids.bin` of DLL area exports (WP7.12;
+//! the batch runs the generator in the client process, so the port builds the client side's grid):
 //!
 //! `cargo run --release -p poe-world --example check_grids -- <export dir | run dir>...
 //! [--only forced.tsv] [--threads N] [--verbose] [--dump DIR]`
 //! (`--dump` writes the port's `PWG1` bytes as `DIR/<export name>.bin`)
 //!
 //! Same inputs as `check_doodads`. Per export: layers that differ with the number of differing
-//! cells (`L0:n L1:n ...`) and the bounding box of the first layer that differs.
+//! cells (`L0:n L1:n ...`) and the bounding box of the first layer that differs. An export whose
+//! tile or doodad hash (`meta.txt`) the port does not reproduce is reported as `LAYOUT` instead:
+//! its grid cannot match until the layout does.
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
@@ -45,8 +48,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
             .collect()
     });
-    // (dir, area, seed, topology, orientation)
-    let mut jobs: Vec<(PathBuf, String, u32, u32, u8)> = Vec::new();
+    // (dir, area, seed, topology, orientation, client tile hash, client doodad hash)
+    let mut jobs: Vec<(PathBuf, String, u32, u32, u8, Option<u32>, Option<u32>)> = Vec::new();
     for d in &dirs {
         let roots: Vec<PathBuf> = if d.join("meta.txt").exists() {
             vec![d.clone()]
@@ -62,7 +65,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let (Some(area), Some(seed), Some(t), Some(o)) = (get("area"), get("seed"), get("topology"), get("orientation")) else { continue };
             let (Ok(seed), Ok(t), Ok(o)) = (seed.parse::<u32>(), t.parse::<u32>(), o.parse::<u8>()) else { continue };
             if allowed.as_ref().is_none_or(|a| a.contains(&(area.clone(), seed, t, o))) {
-                jobs.push((r, area, seed, t, o));
+                let (th, dh) = (get("tile_hash").and_then(|v| v.parse().ok()), get("doodad_hash").and_then(|v| v.parse().ok()));
+                jobs.push((r, area, seed, t, o, th, dh));
             }
         }
     }
@@ -76,17 +80,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for _ in 0..threads {
             s.spawn(|| loop {
                 let i = next.fetch_add(1, Ordering::Relaxed);
-                let Some((dir, area, seed, t, o)) = jobs.get(i) else { break };
+                let Some((dir, area, seed, t, o, th, dh)) = jobs.get(i) else { break };
                 let name = dir.file_name().unwrap().to_string_lossy().to_string();
                 let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let mut rng = TerrainRng::new(*seed);
                     let forced = Forced { topology: Some(*t), orientation: Some(*o) };
                     let g = poe_world::area::generate_with_files(gd, files, area, &mut rng, Some(forced))?;
-                    let grid = poe_world::collision::build(&g.map, files, &g.doodads)?;
-                    Ok::<_, poe_world::generate::GenError>((grid, g.map, g.doodads))
+                    let grid = poe_world::collision::build(&g.map, files, g.doodads.iter().chain(&g.tile_objects), poe_world::doodads::Side::Client)?;
+                    let layout = (th.is_none_or(|h| h == g.map.tile_hash()), dh.is_none_or(|h| h == g.doodad_hash()));
+                    Ok::<_, poe_world::generate::GenError>((grid, g.map, [g.doodads, g.tile_objects].concat(), layout))
                 }));
                 let (line, ok) = match r {
-                    Ok(Ok((grid, map, doodads))) => {
+                    Ok(Ok((_, _, _, (tiles_ok, doodads_ok)))) if !tiles_ok || !doodads_ok => {
+                        (format!("LAYOUT {name} tiles {} doodads {}", if tiles_ok { "match" } else { "differ" }, if doodads_ok { "match" } else { "differ" }), false)
+                    }
+                    Ok(Ok((grid, map, doodads, _))) => {
                         let ours = grid.pwg1();
                         let theirs = std::fs::read(dir.join("grids.bin")).unwrap_or_default();
                         if footprints {
@@ -108,7 +116,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Ok(v) = std::env::var("POE_DBG_NEAR") {
                             let n: Vec<i32> = v.split(',').filter_map(|x| x.parse().ok()).collect();
                             for d in doodads.iter().filter(|d| (d.x - n[0]).abs() <= n[2] && (d.y - n[1]).abs() <= n[2]) {
-                                eprintln!("NEAR {name} ({}, {}) {:.3} counted {} solid {} kind {} path {} leaf {}", d.x, d.y, d.angle, d.counted, d.solid, d.kind, d.path, d.leaf);
+                                eprintln!("NEAR {name} ({}, {}) {:.3} counted {} solid {} side {} league {} kind {} path {} leaf {}", d.x, d.y, d.angle, d.counted, d.solid, d.side, d.league, d.kind, d.path, d.leaf);
                             }
                         }
                         if let Some(d) = &dump {

@@ -49,6 +49,13 @@ pub struct Tdt {
     /// Sub-tiles (row-major in the tile's own orientation, `size.0 × size.1`) with their cell
     /// maps; empty when the file has none.
     pub subtiles: Vec<SubTile>,
+    /// The body's flag word (`0x142915630`'s first u16; tile data `+0x16c`): bit 0 corner
+    /// heights, bit 1 corner grounds, bit 0x40 marks a tile `OuterGroundIsOutside` may treat as
+    /// outside (`0x141fe1150`).
+    pub body_flags: u16,
+    /// Object group (tile data `+0x170`, the byte after the `tmd` string): the no-overlap
+    /// objects of the tile-object pass are resolved per group (`0x141ff4a50`, `0x141ff4cd0`).
+    pub object_group: u8,
     /// Hull plane masks (data +0x173, `n` bytes; `[0]` for a single plane): plane `i` serves the
     /// orientations in its mask bits, 0 meaning all.
     pub hull_masks: Vec<u8>,
@@ -196,6 +203,9 @@ impl Tdt {
         if f & 0x20 != 0 && self.version > 9 {
             t.orientation_mask = self.orientation_mask;
         }
+        if f & 0x20 != 0 {
+            t.object_group = self.object_group;
+        }
         t
     }
 
@@ -217,6 +227,7 @@ impl Tdt {
             flags &= !0x200;
         }
         let hi = (flags >> 8) as u8;
+        self.body_flags = flags;
         let (inherit, iflags) = (self.inherits.is_some(), self.inherit_flags);
         let has = move |bit: u8| !inherit || iflags & bit != 0;
         if v > 9 && has(0x20) {
@@ -302,6 +313,11 @@ impl Tdt {
         }
         if has(2) {
             self.tmd = r.string().ok().flatten().filter(|s| !s.is_empty());
+        }
+        // `0x142915630` then reads a string (sink `+0x50`) and the object group byte (sink
+        // `+0x58`, `0x141d06610`: tile data `+0x170`; inheriting tiles only with flag 0x20).
+        if has(0x20) && r.string().is_ok() {
+            self.object_group = r.u8().unwrap_or(0);
         }
         Ok(())
     }

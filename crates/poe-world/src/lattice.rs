@@ -140,12 +140,19 @@ const IMPASSABLE: &str = "metadata/terrain/impassable_ground.gt";
 struct Unwalkable<'a> {
     map: &'a mut TileMap,
     tiles: &'a TileSet,
+    /// The region the pass runs on (`0x141f9e2b0`'s view): corner x0..=x0+w, y0..=y0+h.
+    win: (i32, i32, i32, i32),
     visited: Vec<bool>,
     queue: VecDeque<((i32, i32), usize)>,
     edge_points: Vec<(i32, i32)>,
 }
 
 impl Unwalkable<'_> {
+    fn in_win(&self, p: (i32, i32)) -> bool {
+        let (x0, y0, w, h) = self.win;
+        p.0 >= x0 && p.1 >= y0 && p.0 <= x0 + w && p.1 <= y0 + h && in_lattice(self.map, p)
+    }
+
     fn ground(&self, p: (i32, i32)) -> Option<&String> {
         self.map.point_index(p.0, p.1).and_then(|i| self.map.lattice[i].ground.as_ref())
     }
@@ -183,7 +190,7 @@ impl Unwalkable<'_> {
     /// anything else joins the flood unless an edge is in the way.
     fn step(&mut self, p: (i32, i32), dir: usize) {
         let n = (p.0 + DIR[dir].0, p.1 + DIR[dir].1);
-        if !in_lattice(self.map, n) || self.sealed_inside(n) {
+        if !self.in_win(n) || self.sealed_inside(n) {
             return;
         }
         if self.stops(n) {
@@ -191,7 +198,11 @@ impl Unwalkable<'_> {
             self.edge_points.push(n);
             return;
         }
-        if !edge_in_the_way(self.map, self.tiles, p, n, dir) {
+        let blocked = edge_in_the_way(self.map, self.tiles, p, n, dir);
+        if std::env::var("POE_DBG_FLOOD").is_ok_and(|v| v == "all" || v.parse::<i32>().is_ok_and(|x| x == p.0)) {
+            eprintln!("FLOOD {p:?} -> {n:?} dir {dir} blocked {blocked} ground {:?} inside {} {}", self.ground(n).map(|g| g.rsplit('/').next().unwrap_or("").to_string()), inside(self.map, p), inside(self.map, n));
+        }
+        if !blocked {
             self.queue.push_back((n, dir));
         }
     }
@@ -217,7 +228,7 @@ impl Unwalkable<'_> {
         }
         for (x, y) in std::mem::take(&mut self.edge_points) {
             for n in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)] {
-                if in_lattice(self.map, n) && self.ground(n).is_some_and(|g| self.map.gt_flags(g) & 4 == 0) {
+                if self.in_win(n) && self.ground(n).is_some_and(|g| self.map.gt_flags(g) & 4 == 0) {
                     self.mark(n);
                 }
             }
@@ -230,28 +241,47 @@ impl Unwalkable<'_> {
 /// marked ones (unless their ground has `.gt` flag 4). Area transition tiles (`0x141fe0cc0`)
 /// and the tile-set option at `+0x165` are not ported yet (nothing in the Riverbank).
 pub fn mark_unwalkable(map: &mut TileMap, tiles: &TileSet) {
-    let (w, h) = (map.width as i32, map.height as i32);
+    let win = (0, 0, map.width as i32, map.height as i32);
+    mark_unwalkable_in(map, tiles, win);
+}
+
+/// Reads the `.gt` flags of every ground on the lattice that [`TileMap::gt_flags`] does not know
+/// yet (it answers the default for those, which lets the impassable flood through).
+pub fn load_ground_flags(map: &mut TileMap, files: &dyn crate::generate::Files) {
+    let missing: std::collections::BTreeSet<String> = map.lattice.iter().filter_map(|p| p.ground.clone()).filter(|g| !map.ground_flags.contains_key(g)).collect();
+    for g in missing {
+        if let Ok(bytes) = files.read(&g.to_ascii_lowercase()) {
+            map.ground_flags.insert(g, crate::rooms::ground_flags(&crate::text::decode_utf16(&bytes)));
+        }
+    }
+}
+
+/// [`mark_unwalkable`] on a region of the map (`win`: tile x0, y0, width, height): the client
+/// runs `0x141fe1150` per generator region on a view of the region's rectangle
+/// (`0x141ff7b90`), so its border, not the map's, starts the flood.
+pub fn mark_unwalkable_in(map: &mut TileMap, tiles: &TileSet, win: (i32, i32, i32, i32)) {
+    let (x0, y0, w, h) = win;
     let n = map.lattice.len();
-    let mut s = Unwalkable { map, tiles, visited: vec![false; n], queue: VecDeque::new(), edge_points: Vec::new() };
-    for x in 0..=w {
-        s.start((x, 0), 2);
-        s.start((x, h), 0);
+    let mut s = Unwalkable { map, tiles, win, visited: vec![false; n], queue: VecDeque::new(), edge_points: Vec::new() };
+    for x in x0..=x0 + w {
+        s.start((x, y0), 2);
+        s.start((x, y0 + h), 0);
     }
-    for y in 0..=h {
-        s.start((0, y), 1);
-        s.start((w, y), 3);
+    for y in y0..=y0 + h {
+        s.start((x0, y), 1);
+        s.start((x0 + w, y), 3);
     }
-    for x in 0..=w {
-        s.mark((x, 0));
-        s.mark((x, h));
+    for x in x0..=x0 + w {
+        s.mark((x, y0));
+        s.mark((x, y0 + h));
     }
-    for y in 0..=h {
-        s.mark((0, y));
-        s.mark((w, y));
+    for y in y0..=y0 + h {
+        s.mark((x0, y));
+        s.mark((x0 + w, y));
     }
-    for y in 1..h {
-        for x in 1..w {
-            let k = s.map.point_index(x, y).unwrap();
+    for y in y0 + 1..y0 + h {
+        for x in x0 + 1..x0 + w {
+            let Some(k) = s.map.point_index(x, y) else { continue };
             if s.ground((x, y)).is_some_and(|g| g == IMPASSABLE) && s.map.lattice[k].flags & 8 == 0 {
                 s.mark((x, y));
                 s.visited[k] = true;
@@ -264,9 +294,9 @@ pub fn mark_unwalkable(map: &mut TileMap, tiles: &TileSet) {
     }
     let marked = |m: &TileMap, p: (i32, i32)| m.point_index(p.0, p.1).is_some_and(|i| m.lattice[i].flags & 8 != 0);
     let mut ring = Vec::new();
-    for y in 1..h {
-        for x in 1..w {
-            let k = s.map.point_index(x, y).unwrap();
+    for y in y0 + 1..y0 + h {
+        for x in x0 + 1..x0 + w {
+            let Some(k) = s.map.point_index(x, y) else { continue };
             let Some(g) = s.ground((x, y)) else { continue };
             if s.map.gt_flags(g) & 4 != 0 || s.map.lattice[k].flags & 8 != 0 {
                 continue;
@@ -281,17 +311,81 @@ pub fn mark_unwalkable(map: &mut TileMap, tiles: &TileSet) {
     }
 }
 
+/// End of `0x141fe1150`, after [`mark_enclosed_fills`]: with the master's
+/// `OuterGroundIsOutside` (master `+0x165`) and an `OuterGroundType` (`+0x230`), every placed
+/// tile (corner record) whose `.tdt` body flags have bit 0x40 (tile data `+0x16c`), whose first
+/// sub-tile has flag 8, whose four corner grounds are all the outer ground and whose edges are
+/// all empty or wildcards (`0x141ef2570`: `.et` flag 0x80) is outside: every corner of its
+/// footprint gets flag 8.
+pub fn mark_outside_tiles(map: &mut TileMap, files: &dyn crate::generate::Files, outer_ground: &str, win: (i32, i32, i32, i32)) -> Result<(), crate::generate::GenError> {
+    let (x0, y0, w, h) = win;
+    let mut tdts: std::collections::HashMap<String, crate::tdt::Tdt> = std::collections::HashMap::new();
+    let mut wildcards: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+    let mut footprints = Vec::new();
+    for ty in y0..y0 + h {
+        for tx in x0..x0 + w {
+            let Some(c) = map.get(tx as u32, ty as u32) else { continue };
+            if c.offset != (0, 0) {
+                continue;
+            }
+            let key = c.path.to_ascii_lowercase();
+            if !tdts.contains_key(&key) {
+                tdts.insert(key.clone(), crate::generate::load_tdt(files, &key)?);
+            }
+            let tdt = &tdts[&key];
+            if tdt.body_flags & 0x40 == 0 || tdt.subtiles.first().is_none_or(|s| s.flags & 8 == 0) {
+                continue;
+            }
+            if !tdt.grounds.iter().all(|g| g.as_deref().is_some_and(|g| g.eq_ignore_ascii_case(outer_ground))) {
+                continue;
+            }
+            let mut edgeless = true;
+            for e in tdt.edges.iter().flatten() {
+                let ek = e.to_ascii_lowercase();
+                if !wildcards.contains_key(&ek) {
+                    let et = crate::rooms::EdgeType::parse(&crate::text::decode_utf16(&files.read(&ek)?));
+                    wildcards.insert(ek.clone(), et.wildcard);
+                }
+                edgeless &= wildcards[&ek];
+            }
+            if !edgeless {
+                continue;
+            }
+            let (sw, sh) = TileMap::oriented_size(tdt.size, c.orientation);
+            footprints.push((tx, ty, sw, sh));
+        }
+    }
+    for (tx, ty, sw, sh) in footprints {
+        for y in ty..=ty + sh {
+            for x in tx..=tx + sw {
+                if let Some(i) = map.point_index(x, y) {
+                    map.lattice[i].flags |= 8;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// `0x141fe0cc0` (end of `0x141fe1150`): a tile whose edge types are empty or wildcards and with one ground on all
-/// four corners (a fill tile; not an inheriting `.tdt`) whose footprint corners on the outline
+/// four corners and no feature (a fill tile) whose footprint corners on the outline
 /// are all unwalkable (flag 8, or off the map) becomes unwalkable inside as well: every corner
 /// of its footprint gets flag 8. Tiles are visited row by row, so earlier marks count for later
 /// tiles. (`0x141fe0b30` is the outline test, `0x141fd5dd0` the tile test.)
 pub fn mark_enclosed_fills(map: &mut TileMap, files: &dyn crate::generate::Files) -> Result<(), crate::generate::GenError> {
-    let (w, h) = (map.width as i32, map.height as i32);
+    let win = (0, 0, map.width as i32, map.height as i32);
+    mark_enclosed_fills_in(map, files, win)
+}
+
+/// [`mark_enclosed_fills`] on a region (`0x141fe0cc0` gets the same view as
+/// [`mark_unwalkable_in`]): corners outside the region count as unwalkable.
+pub fn mark_enclosed_fills_in(map: &mut TileMap, files: &dyn crate::generate::Files, win: (i32, i32, i32, i32)) -> Result<(), crate::generate::GenError> {
+    let (x0, y0, w, h) = win;
+    let in_win = move |x: i32, y: i32| x >= x0 && y >= y0 && x <= x0 + w && y <= y0 + h;
     let mut tdts: std::collections::HashMap<String, crate::tdt::Tdt> = std::collections::HashMap::new();
     let mut wildcards: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
-    for ty in 0..h {
-        for tx in 0..w {
+    for ty in y0..y0 + h {
+        for tx in x0..x0 + w {
             let Some(c) = map.get(tx as u32, ty as u32) else { continue };
             if c.offset != (0, 0) {
                 continue;
@@ -301,9 +395,10 @@ pub fn mark_enclosed_fills(map: &mut TileMap, files: &dyn crate::generate::Files
                 tdts.insert(key.clone(), crate::generate::load_tdt(files, &c.path)?);
             }
             let t = &tdts[&key];
-            let open = |m: &TileMap, x: i32, y: i32| m.point_index(x, y).is_some_and(|i| m.lattice[i].flags & 8 == 0);
+            let open = |m: &TileMap, x: i32, y: i32| in_win(x, y) && m.point_index(x, y).is_some_and(|i| m.lattice[i].flags & 8 == 0);
             let uniform = t.grounds.iter().all(|g| g == &t.grounds[0]);
-            if t.inherits.is_some() || !uniform {
+            // Tile data `+0x10` is the feature string's length (`0x141d161c0`).
+            if t.feature.is_some() || !uniform {
                 continue;
             }
             // `0x141ef2570`: an edge reference passes when it is empty or names a wildcard `.et`.

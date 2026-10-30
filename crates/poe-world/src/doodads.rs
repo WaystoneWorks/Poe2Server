@@ -37,6 +37,24 @@ pub struct Doodad {
     /// The object type is static (`Positioned.static = true`): only those stamp their hull into
     /// the collision grid; set by [`resolve`].
     pub solid: bool,
+    /// The type's side flag (`+0x2d0`, from `BaseEvents`): 0 both sides, [`SIDE_SERVER`] or
+    /// [`SIDE_CLIENT`]; the generator's filter decides by it whether the object exists at all
+    /// ([`Doodad::exists`]); set by [`resolve`].
+    pub side: u8,
+    /// The type has a `league_category` (`+0x2d4` other than 0x39): it exists only in areas
+    /// whose league category equals it, which no area without a league mechanic rolled has.
+    pub league: bool,
+    /// Tile rectangles (x0, y0, x1, y1) of later covering placements (`0x141ff3490`'s list of
+    /// placements with flag `+0x1c & 2`): a `Doodad`-family object inside one is not created.
+    pub covers: Vec<(i32, i32, i32, i32)>,
+    /// The generator's checks after the hash drop the object ([`dropped_by_type`], `covers`).
+    pub dropped: bool,
+    /// Object group of a no-overlap object (`0x141ff4a50`): 0 for room doodads, the tile's
+    /// `.tdt` object group for tile objects.
+    pub group: u8,
+    /// Whether the object is placed (stamps its hull); [`no_overlap`] clears it for no-overlap
+    /// objects that lose to a neighbour.
+    pub placed: bool,
     /// The object file the doodad resolved to after the `AOSet` picks (its `Hull` is rasterised
     /// into the collision grid); empty before [`resolve`].
     pub leaf: String,
@@ -105,6 +123,12 @@ pub fn room_doodads(room: &Room, origin: (i32, i32), o: u8) -> Vec<Doodad> {
                 counted: false,
                 leaf: String::new(),
                 solid: false,
+                side: 0,
+                league: false,
+                covers: Vec::new(),
+                dropped: false,
+                group: 0,
+                placed: true,
                 mirrored: (4..8).contains(&o),
                 entry_flip: d.bool1,
                 entry_scale: d.scale,
@@ -362,12 +386,43 @@ fn pick(cache: &mut AoCache, path: &str, rng: &mut TerrainRng) -> Option<Pick> {
     }
 }
 
-/// `(counts for the hash, static)` of an object type, read once per process: both come from the
-/// type's `.ot`/`.ao` files, and reading them through `GameData` takes its bundle lock, which
-/// serialised the threads of the batch tools. One process uses one game version.
-fn type_flags(gd: &poe_data::GameData, kind: &str) -> (bool, bool) {
+/// Side flag of `server_only` types (`+0x2d0 == 1`; `0x141ff48e0` compares with 1).
+pub const SIDE_SERVER: u8 = 1;
+/// Side flag of `client_only` types.
+pub const SIDE_CLIENT: u8 = 2;
+
+/// Which process runs the generator. The generator's object filter (`0x141ff48e0`, the base
+/// generator's vtable `+0xa0`) keeps an object of a side-flagged type only on its own side: the
+/// server (the globals `0x1445c995c` / `0x14458c74c` set) keeps `server_only` types and drops
+/// `client_only` ones, a client process does the opposite. The official server's grid is the
+/// [`Side::Server`] one; the DLL's batch exports run the same generator in the client process
+/// ([`Side::Client`]), which is what they are compared with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Client,
+    Server,
+}
+
+impl Doodad {
+    /// Whether the generator's filter (`0x141ff48e0`) keeps the object on `side`: its type has no
+    /// league category (or the area's, never the case here) and is not of the other side.
+    pub fn exists(&self, side: Side) -> bool {
+        !self.league
+            && !self.dropped
+            && match self.side {
+                0 => true,
+                s => (s == SIDE_SERVER) == (side == Side::Server),
+            }
+    }
+}
+
+/// `(counts for the hash, static, side, league category)` of an object type, read once per
+/// process: all come from the type's `.ot`/`.ao` files, and reading them through `GameData`
+/// takes its bundle lock, which serialised the threads of the batch tools. One process uses one
+/// game version.
+fn type_flags(gd: &poe_data::GameData, kind: &str) -> (bool, bool, u8, bool) {
     use std::sync::{Mutex, OnceLock};
-    static FLAGS: OnceLock<Mutex<std::collections::HashMap<String, (bool, bool)>>> = OnceLock::new();
+    static FLAGS: OnceLock<Mutex<std::collections::HashMap<String, (bool, bool, u8, bool)>>> = OnceLock::new();
     let map = FLAGS.get_or_init(Default::default);
     if let Some(f) = map.lock().unwrap_or_else(|e| e.into_inner()).get(kind) {
         return *f;
@@ -375,8 +430,13 @@ fn type_flags(gd: &poe_data::GameData, kind: &str) -> (bool, bool) {
     let counts = type_counts(gd, kind);
     // An `.ao`-only path is no object type, so it neither counts nor stamps a hull; `type_solid`
     // reads the template only.
-    let own = poe_data::template::ObjectTemplate::load(gd, kind).is_ok_and(|t| t.files.last().is_some_and(|f| f.ends_with(".ot")));
-    let f = (counts, own && type_solid(gd, kind));
+    let template = poe_data::template::ObjectTemplate::load(gd, kind).ok();
+    let own = template.as_ref().is_some_and(|t| t.files.last().is_some_and(|f| f.ends_with(".ot")));
+    let events: Vec<(String, String)> = template.as_ref().map(|t| t.component("BaseEvents").iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()).unwrap_or_default();
+    let set = |key: &str| events.iter().any(|(k, v)| k == key && v == "true");
+    let side = if set("server_only") { SIDE_SERVER } else if set("client_only") { SIDE_CLIENT } else { 0 };
+    let league = events.iter().any(|(k, v)| k == "league_category" && !v.is_empty());
+    let f = (counts, own && type_solid(gd, kind), side, league);
     map.lock().unwrap_or_else(|e| e.into_inner()).insert(kind.to_string(), f);
     f
 }
@@ -404,10 +464,296 @@ pub fn resolve(gd: &poe_data::GameData, files: &dyn Files, rng: &mut TerrainRng,
         d.leaf = p.leaf;
         d.flip = d.mirrored ^ p.mirror ^ d.entry_flip;
         d.scale = d.entry_scale * p.scale;
-        (d.counted, d.solid) = type_flags(gd, &d.kind);
+        (d.counted, d.solid, d.side, d.league) = type_flags(gd, &d.kind);
+        let no_covers = std::env::var_os("POE_NO_COVERS").is_some();
+        d.dropped = (std::env::var_os("POE_NO_ANGLE_DROP").is_none() && dropped_by_type(&d.kind, d.angle))
+            || (!no_covers && is_doodad_family(&d.kind) && d.covers.iter().any(|c| (c.0..c.2).contains(&d.x.div_euclid(TILE)) && (c.1..c.3).contains(&d.y.div_euclid(TILE))));
         out.push(d);
     }
     out
+}
+
+/// One object entry of a tile's `.tmd` file (`version 8` lines: cell `x y`, a flag, the world
+/// position `x y z` when the flag is set (else only `z`), the angle, a quaternion, the flip flag, the scale, then the quoted `.ao` path, a
+/// name, an `.fmt`, the object type, a number and the tile orientations the entry exists in).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TmdEntry {
+    pub x: i32,
+    pub y: i32,
+    /// World position within the tile (250 units per tile side).
+    pub wx: f32,
+    pub wy: f32,
+    pub radians: f32,
+    pub flip: bool,
+    pub scale: f32,
+    pub ao: String,
+    pub kind: String,
+    /// Tile orientations the entry exists in (entry `+0x1e`, bit per orientation; 0 = all):
+    /// `I R90 R180 R270 FI FR90 FR180 FR270` are orientations 0..7.
+    pub orientations: u8,
+}
+
+/// The entries of a `.tmd` file (UTF-16 text); empty when it is missing or not a `.tmd`.
+pub fn tmd_entries(files: &dyn Files, path: &str) -> Vec<TmdEntry> {
+    let Ok(bytes) = files.read(&path.to_ascii_lowercase()) else { return Vec::new() };
+    let text = crate::text::decode_utf16(&bytes);
+    if !text.trim_start().starts_with("version") {
+        return Vec::new();
+    }
+    text.lines().skip(1).filter_map(parse_tmd_line).collect()
+}
+
+fn parse_tmd_line(line: &str) -> Option<TmdEntry> {
+    let head = &line[..line.find('"')?];
+    let nums: Vec<f32> = head.split_whitespace().map(|t| t.parse().ok()).collect::<Option<_>>()?;
+    let quoted: Vec<&str> = line.split('"').skip(1).step_by(2).collect();
+    let n = nums.len();
+    if n < 7 || quoted.len() < 4 {
+        return None;
+    }
+    const NAMES: [&str; 8] = ["I", "R90", "R180", "R270", "FI", "FR90", "FR180", "FR270"];
+    let custom = std::env::var("POE_DBG_TMD_NAMES").ok();
+    let names: Vec<&str> = custom.as_deref().map(|v| v.split(',').collect()).unwrap_or_else(|| NAMES.to_vec());
+    let tail = line.rsplit('"').next().unwrap_or("");
+    let orientations = tail.split_whitespace().filter_map(|t| names.iter().position(|n| *n == t)).fold(0u8, |m, i| m | 1 << i);
+    Some(TmdEntry {
+        orientations,
+        x: nums[0] as i32,
+        y: nums[1] as i32,
+        // The third number says whether a world `x y z` follows (else only a height): entries
+        // without one sit at their cell's centre.
+        wx: if nums[2] != 0.0 { nums[3] } else { (nums[0] + 0.5) * 250.0 / 23.0 },
+        wy: if nums[2] != 0.0 { nums[4] } else { (nums[1] + 0.5) * 250.0 / 23.0 },
+        radians: nums[n - 7],
+        flip: nums[n - 2] != 0.0,
+        scale: nums[n - 1],
+        ao: quoted[0].to_string(),
+        kind: quoted[3].to_string(),
+    })
+}
+
+/// `0x14159a260`: a tile-local world position (250 units per tile) turned by orientation `o`
+/// within `w × h` tiles (`w·250 − x` where cells use `w·23 − x − 1`), as the object's cell. The
+/// client places tile objects at this position, so an entry on the tile's edge lands one cell
+/// from where the cell formula ([`turn_cell`]) puts it.
+fn turn_world(wx: f32, wy: f32, w: i32, h: i32, o: u8) -> (i32, i32) {
+    const T: [[usize; 3]; 9] = [[0, 1, 1], [1, 0, 1], [0, 0, 0], [1, 1, 0], [0, 0, 1], [1, 0, 0], [0, 1, 0], [1, 1, 1], [0, 1, 1]];
+    let a = [w as f32 * 250.0 - wx, wx, h as f32 * 250.0 - wy, wy];
+    let t = T[(o as usize).min(8)];
+    let (x, y) = (a[t[1] + t[0] * 2], a[t[2] + if t[0] == 0 { 2 } else { 0 }]);
+    ((x * 0.092).floor() as i32, (y * 0.092).floor() as i32)
+}
+
+/// The tile-object pass (`0x141ff4030`, the generator's vtable `+0x28`, after the doodad pass):
+/// row by row over the tile records that are a tile's corner (record `+0x34/+0x35` zero), the
+/// objects of the tile's art list (tile data `+0x178`: the `.tmd` beside the tile's `.tgt`,
+/// `0x141d083f0`) and then of its own list (`+0x180`: the `.tdt`'s `tmd`) are placed like room
+/// doodads (`0x141ff43d0`): the `AOSet` pick draws from `rng`, continuing the doodad pass's
+/// stream, the entry cell turns within the tile's size by the record's orientation
+/// (`0x141fe7a50`). The objects do not enter the doodad hash. Not ported: the environment's
+/// `alttiles/<env>/<env>_<name>.tmd` variant of the art list (`0x141d11c50`) and the per-sub-tile
+/// objects of tiles with tile data `+0x16d & 2` (`0x141d07630`).
+pub fn tile_objects(gd: &poe_data::GameData, files: &dyn Files, rng: &mut TerrainRng, map: &crate::generate::TileMap) -> Vec<Doodad> {
+    let mut cache = AoCache::new(files);
+    let mut out = Vec::new();
+    let dbg_draws = std::env::var("POE_DBG_TMD_DRAWS").is_ok();
+    if dbg_draws && rng.log.is_none() {
+        rng.log = Some(Vec::new());
+    }
+    for ty in 0..map.height {
+        for tx in 0..map.width {
+            let Some(c) = map.get(tx, ty).filter(|c| c.offset == (0, 0)) else { continue };
+            let Ok(tdt) = crate::generate::load_tdt(files, &c.path.to_ascii_lowercase()) else { continue };
+            let art = tdt.tgt.as_deref().filter(|t| t.len() > 4).map(|t| format!("{}.tmd", &t[..t.len() - 4]));
+            let (w, h) = (tdt.size.0 as i32, tdt.size.1 as i32);
+            let o = c.orientation;
+            for list in [art, tdt.tmd.clone()].into_iter().flatten() {
+                for e in tmd_entries(files, &list) {
+                    if e.ao.is_empty() || e.kind.is_empty() {
+                        continue;
+                    }
+                    let before = rng.draws;
+                    let logged = rng.log.as_ref().map_or(0, Vec::len);
+                    let picked = pick(&mut cache, &e.ao, rng);
+                    if dbg_draws && rng.draws != before {
+                        let ns: Vec<u32> = rng.log.as_ref().map(|l| l[logged..].iter().map(|d| d.0).collect()).unwrap_or_default();
+                        eprintln!("TMDDRAW tile ({tx},{ty}) {} n {:?} {}", c.path.rsplit('/').next().unwrap_or(""), ns, e.ao.rsplit('/').next().unwrap_or(""));
+                    }
+                    let Some(p) = picked else { continue };
+                    // `0x141ff43d0` checks the orientation mask after the pick (the draws happen).
+                    if e.orientations != 0 && e.orientations & (1 << (o & 7)) == 0 {
+                        continue;
+                    }
+                    let (x, y) = match std::env::var("POE_DBG_TMD_PLACE").as_deref() {
+                        Ok("world") => turn_world(e.wx, e.wy, w, h, o),
+                        Ok("hybrid") => {
+                            let (cx, cy) = turn_cell(e.x, e.y, w, h, o);
+                            let (wx, wy) = turn_world(e.wx, e.wy, w, h, o);
+                            let edge = |v: f32, n: i32| v == 0.0 || v == n as f32 * 250.0;
+                            // Which output axis comes from the entry's x: odd orientations swap.
+                            let (from_x_edge, from_y_edge) = (edge(e.wx, w), edge(e.wy, h));
+                            let swap = o & 1 == 1 && o < 8;
+                            let (ex_edge, ey_edge) = if swap { (from_y_edge, from_x_edge) } else { (from_x_edge, from_y_edge) };
+                            (if ex_edge { wx } else { cx }, if ey_edge { wy } else { cy })
+                        }
+                        _ => turn_cell(e.x, e.y, w, h, o),
+                    };
+                    if std::env::var("POE_DBG_TMD_LIST").is_ok() {
+                        eprintln!("TMDOBJ tile ({tx},{ty}) {} list {} kind {}", c.path, list.rsplit('/').next().unwrap_or(""), e.kind);
+                    }
+                    if std::env::var("POE_DBG_TMD_POS").is_ok() && (x, y) != turn_world(e.wx, e.wy, w, h, o) {
+                        eprintln!("TMDPOS tile ({tx},{ty}) o{o} entry ({},{}) world ({},{}) cell {:?} world-cell {:?} solid-kind {} {}", e.x, e.y, e.wx, e.wy, (x, y), turn_world(e.wx, e.wy, w, h, o), e.kind.rsplit('/').next().unwrap_or(""), c.path.rsplit('/').next().unwrap_or(""));
+                    }
+                    let mut d = Doodad {
+                        x: x + tx as i32 * TILE + p.off.0,
+                        y: y + ty as i32 * TILE + p.off.1,
+                        angle: turn_angle(e.radians, o) + p.angle,
+                        path: e.ao,
+                        kind: e.kind,
+                        counted: false,
+                        solid: false,
+                        side: 0,
+                        league: false,
+                        covers: Vec::new(),
+                        dropped: false,
+                        group: tdt.object_group,
+                        placed: true,
+                        leaf: p.leaf,
+                        mirrored: (4..8).contains(&o),
+                        entry_flip: e.flip,
+                        entry_scale: e.scale,
+                        flip: false,
+                        scale: e.scale * p.scale,
+                    };
+                    d.flip = d.mirrored ^ p.mirror ^ d.entry_flip;
+                    let (_, solid, side, league) = type_flags(gd, &d.kind);
+                    (d.solid, d.side, d.league) = (solid, side, league);
+                    d.dropped = std::env::var_os("POE_NO_ANGLE_DROP").is_none() && dropped_by_type(&d.kind, d.angle);
+                    out.push(d);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `0x141fe8420`: the object types (MiscObjects `ObjectHASH32` keys) a later covering placement
+/// removes from an earlier room.
+const DOODAD_FAMILY: [&str; 15] = [
+    "Metadata/MiscellaneousObjects/Doodad",
+    "Metadata/MiscellaneousObjects/DoodadInvisible",
+    "Metadata/MiscellaneousObjects/DoodadNoBlocking",
+    "Metadata/MiscellaneousObjects/DoodadNoOverlap",
+    "Metadata/MiscellaneousObjects/DoodadNoOverlap3",
+    "Metadata/MiscellaneousObjects/TileUpperDoodad",
+    "Metadata/MiscellaneousObjects/TileUpperDoodadNoOverlap",
+    "Metadata/MiscellaneousObjects/TileUpperDoodad_ExtendDistance",
+    "Metadata/Terrain/Gallows/Act2/2_town/Objects/DoodadScrollNoJostle",
+    "Metadata/Terrain/Gallows/Act2/2_town/Objects/DoodadScrollNoJostle_extend_tallwall",
+    "Metadata/Terrain/Gallows/Act2/2_town/Objects/DoodadNoScrollNoJostle",
+    "Metadata/Terrain/Gallows/Act2/2_town/Objects/DoodadNoScrollNoJostle_extend_tallwall",
+    "Metadata/MiscellaneousObjects/DoodadNoWobble",
+    "Metadata/MiscellaneousObjects/DoodadLayerDoodad",
+    "Metadata/MiscellaneousObjects/AntiTallWallDoodad",
+];
+
+fn is_doodad_family(kind: &str) -> bool {
+    DOODAD_FAMILY.iter().any(|k| k.eq_ignore_ascii_case(kind))
+}
+
+/// The angle checks of `0x141ff3490` and `0x141ff43d0`: with `a = angle - 0.7603982` (+2pi when
+/// negative), `AntiTallWallDoodad` (`0x141fe8860`) is dropped for `a >= 3.1915927` and the
+/// upper-tile types (`0x141fe86f0`) for `a < 3.1915927`.
+fn dropped_by_type(kind: &str, angle: f32) -> bool {
+    const UPPER: [&str; 5] = [
+        "Metadata/MiscellaneousObjects/TileUpperDoodad",
+        "Metadata/MiscellaneousObjects/TileUpperDoodadNoOverlap",
+        "Metadata/MiscellaneousObjects/TileUpperDoodad_ExtendDistance",
+        "Metadata/Terrain/Gallows/Act2/2_town/Objects/DoodadScrollNoJostle_extend_tallwall",
+        "Metadata/Terrain/Gallows/Act2/2_town/Objects/DoodadNoScrollNoJostle_extend_tallwall",
+    ];
+    let mut a = angle - 0.7603982;
+    if a < 0.0 {
+        a += std::f32::consts::TAU;
+    }
+    (kind.eq_ignore_ascii_case("Metadata/MiscellaneousObjects/AntiTallWallDoodad") && a >= 3.1915927) || (UPPER.iter().any(|k| k.eq_ignore_ascii_case(kind)) && a < 3.1915927)
+}
+
+/// The no-overlap object types (`0x141fe8040`: three type hashes). The generator defers their
+/// objects (`0x141ff4a50`) and places them in `doodads_post` ([`no_overlap`]). The one with hash
+/// `0x91b983f1` (`DoodadNoOverlap3`) goes to a separate list, the others into groups.
+const NO_OVERLAP: [&str; 3] = [
+    "Metadata/MiscellaneousObjects/DoodadNoOverlap",
+    "Metadata/MiscellaneousObjects/DoodadNoOverlap3",
+    "Metadata/MiscellaneousObjects/TileUpperDoodadNoOverlap",
+];
+/// The no-overlap type of hash `0x91b983f1` (MiscObjects `ObjectHASH32`; its own list in
+/// `0x141ff4a50`).
+const NO_OVERLAP_LISTED: &str = "Metadata/MiscellaneousObjects/DoodadNoOverlap3";
+
+fn is_no_overlap(kind: &str) -> bool {
+    NO_OVERLAP.iter().any(|k| k.eq_ignore_ascii_case(kind))
+}
+
+/// `doodads_post` (`0x141ff4cd0`, called at the end of the tile-object pass): the deferred
+/// no-overlap objects (room doodads in placement order, then tile objects) are placed. Groups go
+/// in descending key order (the map's vector from its end): `below(n)`, a Fisher-Yates shuffle
+/// (`uniform(n - k)` for k = 0.., swapping element k with k + draw), then each object is placed
+/// unless a placed one lies within its 3 x 3 cells (`0x1420006e0`; the placed cells are a set,
+/// `0x141fffb30`). Objects of the listed type are placed afterwards, in order, unless a placed
+/// object or another listed object lies within their 3 x 3 cells. Only objects the generator's
+/// filter keeps take part (the no-overlap types have no side flag, so on either side).
+pub fn no_overlap(rng: &mut TerrainRng, doodads: &mut [Doodad], tile_objects: &mut [Doodad]) {
+    // (list, index): 0 room doodads, 1 tile objects.
+    let mut groups: std::collections::BTreeMap<u8, Vec<(u8, usize)>> = Default::default();
+    let mut listed: Vec<(u8, usize)> = Vec::new();
+    for (l, list) in [(0u8, &mut *doodads), (1u8, &mut *tile_objects)] {
+        for (i, d) in list.iter_mut().enumerate() {
+            if d.leaf.is_empty() || !is_no_overlap(&d.kind) || d.league || d.dropped || d.side != 0 {
+                continue;
+            }
+            d.placed = false;
+            if d.kind.eq_ignore_ascii_case(NO_OVERLAP_LISTED) {
+                listed.push((l, i));
+            } else {
+                groups.entry(if l == 0 { 0 } else { d.group }).or_default().push((l, i));
+            }
+        }
+    }
+    let cell = |doodads: &[Doodad], tile_objects: &[Doodad], (l, i): (u8, usize)| {
+        let d = if l == 0 { &doodads[i] } else { &tile_objects[i] };
+        (d.x, d.y)
+    };
+    let mut placed: std::collections::HashSet<(i32, i32)> = Default::default();
+    let near = |set: &std::collections::HashSet<(i32, i32)>, (x, y): (i32, i32)| (-1..=1).any(|dy| (-1..=1).any(|dx| set.contains(&(x + dx, y + dy))));
+    for (_, mut members) in groups.into_iter().rev() {
+        let n = members.len();
+        rng.below(n as u32);
+        for k in 0..n {
+            let j = rng.uniform((n - k) as u32) as usize;
+            members.swap(k, k + j);
+        }
+        for m in members {
+            let c = cell(doodads, tile_objects, m);
+            if near(&placed, c) {
+                continue;
+            }
+            placed.insert(c);
+            if m.0 == 0 { doodads[m.1].placed = true } else { tile_objects[m.1].placed = true }
+        }
+    }
+    let cells: Vec<(i32, i32)> = listed.iter().map(|&m| cell(doodads, tile_objects, m)).collect();
+    for (k, &m) in listed.iter().enumerate() {
+        let (x, y) = cells[k];
+        if near(&placed, (x, y)) {
+            continue;
+        }
+        let close = cells.iter().filter(|&&(cx, cy)| (cx - x).abs() <= 1 && (cy - y).abs() <= 1).count();
+        if close >= 2 {
+            continue;
+        }
+        if m.0 == 0 { doodads[m.1].placed = true } else { tile_objects[m.1].placed = true }
+    }
 }
 
 /// The doodad hash of the doodads that count (`+0x2d0 == 0` on their type), in any order.

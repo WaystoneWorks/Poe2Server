@@ -49,6 +49,9 @@ pub struct Generated {
     /// The doodads of every placed room, in cells of the final map (`map.doodads`, with
     /// `counted` set); the ones that count make the doodad hash ([`Generated::doodad_hash`]).
     pub doodads: Vec<crate::doodads::Doodad>,
+    /// The objects of the placed tiles' `.tmd` lists (the tile-object pass after the doodads,
+    /// [`crate::doodads::tile_objects`]); they stamp hulls like doodads but are not in the hash.
+    pub tile_objects: Vec<crate::doodads::Doodad>,
     /// RNG draws used by the layout (the client continues with doodads and entities).
     pub draws: u64,
     /// The bounded draws `(n, result)` of the doodad pass, when the RNG records them
@@ -369,12 +372,22 @@ pub fn generate_stated(gd: &GameData, files: &dyn crate::generate::Files, area_i
     let special: Vec<String> = gd.table("SpecialTiles").ok().map(|t| (0..).map_while(|r| t.row(r)).filter_map(|r| r.str("TDTFile").ok().map(String::from)).collect()).unwrap_or_default();
     let room_sets = area_room_sets(gd, files, area_id);
     let files = WithSpecialTiles { inner: files, special, league: std::cell::RefCell::new(crate::league::extra_rooms(gd, area_id, &rolled)), room_sets, paired: area_plugin(gd, area_id).as_deref() == Some(PAIRED_PLUGIN) };
+    // `0x141fe1150` returns at once for area kinds 0x20 and 0x21 (world-map panels).
+    NO_UNWALKABLE.with(|n| n.set(matches!(area_kind(gd, area_id), Some(0x20 | 0x21))));
     let map = generate_graph_probed(&files, &graph, rng, probe, &extras)?;
     let draws = rng.draws;
     let logged = rng.log.as_ref().map(Vec::len);
-    let doodads = crate::doodads::resolve(gd, &files, rng, map.doodads.clone());
+    let mut doodads = crate::doodads::resolve(gd, &files, rng, map.doodads.clone());
     let doodad_draws = logged.and_then(|n| rng.log.as_ref().map(|l| l[n..].to_vec())).unwrap_or_default();
-    Ok(Generated { graph: dgr, map, doodads, draws, doodad_draws })
+    // `POE_NO_TILE_OBJECTS`: skip the tile-object pass (debugging).
+    let mut tile_objects = if std::env::var_os("POE_NO_TILE_OBJECTS").is_none() { crate::doodads::tile_objects(gd, &files, rng, &map) } else { Vec::new() };
+    crate::doodads::no_overlap(rng, &mut doodads, &mut tile_objects);
+    Ok(Generated { graph: dgr, map, doodads, tile_objects, draws, doodad_draws })
+}
+
+thread_local! {
+    /// The current area is one whose generation skips the unwalkable marking.
+    static NO_UNWALKABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The area kind of a `WorldAreas` row (area record `+0x1b4`: 0x20/0x21/0x23 are world-map panels).
@@ -995,6 +1008,21 @@ fn finish_dungeon(files: &dyn crate::generate::Files, built: Built, owner: &[Opt
     // A container graph has no fill tiles to fill with (its subgraphs fill their own rectangles).
     let outer_ground = tsi.get("OuterGroundType").map(String::as_str).filter(|_| !master.fills.is_empty());
     let mut map = outer_buffer(&map, margins, outer_ground, repair, &mut master, files, &edge_types, rng)?;
+    // `0x141ff7b90` (after the layout and its outer buffer): the unwalkable marking per region
+    // on the region's rectangle; a dungeon's (main) region is the whole buffered map (the DLL's
+    // `regions.tsv`: (0, 0) and the map's size), unless the master sets `RoomOcclusion` (master
+    // +0x166). Subgraph regions are marked only with master +0x164 (not ported).
+    let occlusion = tsi.get("RoomOcclusion").is_some_and(|v| v.trim() != "0" && !v.trim().is_empty());
+    if !occlusion && !NO_UNWALKABLE.with(|n| n.get()) && std::env::var_os("POE_NO_DGR_UNWALKABLE").is_none() {
+        let win = (0, 0, map.width as i32, map.height as i32);
+        lattice::load_ground_flags(&mut map, files);
+        lattice::mark_unwalkable_in(&mut map, &master.tiles, win);
+        lattice::mark_enclosed_fills_in(&mut map, files, win)?;
+        let outside = tsi.get("OuterGroundIsOutside").is_some_and(|v| v.trim() != "0" && !v.trim().is_empty());
+        if let Some(g) = tsi.get("OuterGroundType").filter(|_| outside) {
+            lattice::mark_outside_tiles(&mut map, files, g, win)?;
+        }
+    }
     // Tile records keep heights in world units (`StoreyHeight` per storey).
     let storey: i16 = storey_of(&tsi);
     let (dx, dy) = (margins.left as i32, margins.top as i32);
@@ -1309,12 +1337,12 @@ fn build_dungeon(files: &dyn crate::generate::Files, graph: &Graph, removed: &[b
     let mut placements: Vec<RoomPlacement> = grid
         .rooms
         .iter()
-        .filter_map(|r| Some(RoomPlacement { room: rooms.get(&r.path)?, origin: (r.origin.0 * step as i32, r.origin.1 * step as i32), orientation: r.orientation }))
+        .filter_map(|r| Some(RoomPlacement { room: rooms.get(&r.path)?, origin: (r.origin.0 * step as i32, r.origin.1 * step as i32), orientation: r.orientation, covering: false }))
         .collect();
-    placements.extend(fill_rooms.iter().map(|r| RoomPlacement { room: &r.room, origin: r.origin, orientation: r.orientation }));
+    placements.extend(fill_rooms.iter().map(|r| RoomPlacement { room: &r.room, origin: r.origin, orientation: r.orientation, covering: false }));
     if let Some(o) = &overlays {
-        placements.extend(o.placed.iter().map(|&(i, origin, orientation)| RoomPlacement { room: o.room(i), origin, orientation }));
-        placements.extend(o.fill_rooms.iter().map(|r| RoomPlacement { room: &r.room, origin: r.origin, orientation: r.orientation }));
+        placements.extend(o.placed.iter().map(|&(i, origin, orientation)| RoomPlacement { room: o.room(i), origin, orientation, covering: o.suppresses(i) }));
+        placements.extend(o.fill_rooms.iter().map(|r| RoomPlacement { room: &r.room, origin: r.origin, orientation: r.orientation, covering: false }));
     }
     derepeat_pass(&mut map, &master, &placements, rng);
     dbg_cell(&map, "post-derepeat");
@@ -1842,9 +1870,15 @@ fn build_tgr(files: &dyn crate::generate::Files, graph: &Graph, removed: Vec<boo
     }
     // The unwalkable marking (`0x141fe1150`) works from the real map's border: a subgraph's
     // window marks nothing (G3_1's `End_*.tgr`: no corner gets flag 8).
-    if window.is_none() {
+    if window.is_none() && !NO_UNWALKABLE.with(|n| n.get()) {
+        lattice::load_ground_flags(&mut map, files);
         lattice::mark_unwalkable(&mut map, &master.tiles);
         lattice::mark_enclosed_fills(&mut map, files).map_err(data)?;
+        let outside = tsi.get("OuterGroundIsOutside").is_some_and(|v| v.trim() != "0" && !v.trim().is_empty());
+        if let Some(g) = tsi.get("OuterGroundType").filter(|_| outside && std::env::var_os("POE_NO_OUTSIDE_TILES").is_none()) {
+            let win = (0, 0, map.width as i32, map.height as i32);
+            lattice::mark_outside_tiles(&mut map, files, g, win).map_err(data)?;
+        }
     }
     probe(Stage::Lattice("heights", &map));
     let default_ground = graph.ground_types.iter().find(|g| !g.is_empty()).cloned();
@@ -1902,12 +1936,12 @@ fn build_tgr(files: &dyn crate::generate::Files, graph: &Graph, removed: Vec<boo
     let mut rooms: Vec<RoomPlacement> = placed
         .iter()
         .filter(|p| p.tile.is_none())
-        .map(|p| RoomPlacement { room: &set.rooms[p.room].room, origin: p.pos, orientation: p.orientation })
+        .map(|p| RoomPlacement { room: &set.rooms[p.room].room, origin: p.pos, orientation: p.orientation, covering: false })
         .collect();
-    rooms.extend(fill_rooms.iter().map(|r| RoomPlacement { room: &r.room, origin: r.origin, orientation: r.orientation }));
+    rooms.extend(fill_rooms.iter().map(|r| RoomPlacement { room: &r.room, origin: r.origin, orientation: r.orientation, covering: false }));
     if let Some(o) = &overlays {
-        rooms.extend(o.placed.iter().map(|&(i, origin, orientation)| RoomPlacement { room: o.room(i), origin, orientation }));
-        rooms.extend(o.fill_rooms.iter().map(|r| RoomPlacement { room: &r.room, origin: r.origin, orientation: r.orientation }));
+        rooms.extend(o.placed.iter().map(|&(i, origin, orientation)| RoomPlacement { room: o.room(i), origin, orientation, covering: o.suppresses(i) }));
+        rooms.extend(o.fill_rooms.iter().map(|r| RoomPlacement { room: &r.room, origin: r.origin, orientation: r.orientation, covering: false }));
     }
     derepeat_pass(&mut map, &master, &rooms, rng);
     crate::postunique::run(&mut map, &mut master, files, rng)?;

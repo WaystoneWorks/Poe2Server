@@ -142,8 +142,10 @@ fn turn(x: i32, y: i32, o: u8) -> (i32, i32) {
     (a[t[1] + t[0] * 2], a[t[2] + if t[0] == 0 { 2 } else { 0 }])
 }
 
-/// Builds the cell grid of a generated tile map (`files` read the tiles' `.tdt`).
-pub fn build(map: &TileMap, files: &dyn Files, doodads: &[crate::doodads::Doodad]) -> Result<CellGrid, GenError> {
+/// Builds the cell grid of a generated tile map (`files` read the tiles' `.tdt`) as the
+/// generator running on `side` does: only objects its filter keeps stamp a hull
+/// ([`crate::doodads::Doodad::exists`]).
+pub fn build<'a>(map: &TileMap, files: &dyn Files, doodads: impl IntoIterator<Item = &'a crate::doodads::Doodad>, side: crate::doodads::Side) -> Result<CellGrid, GenError> {
     let (w, h) = (map.width as i32, map.height as i32);
     let mut grid = CellGrid::new((w * TILE) as usize, (h * TILE) as usize);
     let mut tdts: HashMap<String, Tdt> = HashMap::new();
@@ -237,11 +239,15 @@ pub fn build(map: &TileMap, files: &dyn Files, doodads: &[crate::doodads::Doodad
             }
         }
     }
+    // `POE_DBG_TILEONLY`: the grid after the tile stage (compare with the DLL's phase snapshot).
+    if std::env::var_os("POE_DBG_TILEONLY").is_some() {
+        return Ok(grid);
+    }
     // Object hulls (any order: the layers only ever take minimums).
     let mut cache = crate::doodads::AoCache::new(files);
     let mut hulls: HashMap<String, std::sync::Arc<Vec<HullSection>>> = HashMap::new();
     for d in doodads {
-        if d.leaf.is_empty() || !d.solid {
+        if d.leaf.is_empty() || !d.solid || !d.placed || !d.exists(side) {
             continue;
         }
         let key = d.leaf.to_ascii_lowercase();
@@ -252,7 +258,17 @@ pub fn build(map: &TileMap, files: &dyn Files, doodads: &[crate::doodads::Doodad
         if std::env::var("POE_DBG_HULLS").is_ok() && hulls[&key].iter().any(|s| !s.walk_tri.is_empty() || !s.proj_tri.is_empty() || !s.walk_circle.is_empty() || !s.proj_circle.is_empty()) {
             eprintln!("HULL {} counted {} kind {} leaf {}", d.path.rsplit('/').next().unwrap_or(""), d.counted, d.kind, d.leaf.rsplit('/').next().unwrap_or(""));
         }
+        let watch = std::env::var("POE_DBG_CELL").ok().and_then(|v| {
+            let n: Vec<usize> = v.split(',').filter_map(|t| t.parse().ok()).collect();
+            (n.len() == 3).then(|| (n[0], n[1], n[2]))
+        });
+        let before = watch.map(|(x, y, l)| grid.get(l, x, y));
         stamp_hull(&mut grid, &hulls[&key], (d.x, d.y), d.angle, d.scale, d.flip);
+        if let (Some((x, y, l)), Some(b)) = (watch, before) {
+            if grid.get(l, x, y) != b {
+                eprintln!("CELL ({x},{y}) L{l} {b} -> {} by ({}, {}) {} kind {} leaf {}", grid.get(l, x, y), d.x, d.y, d.angle, d.kind, d.leaf);
+            }
+        }
     }
     Ok(grid)
 }

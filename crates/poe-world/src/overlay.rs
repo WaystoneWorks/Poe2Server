@@ -34,6 +34,9 @@ pub struct ToyEntry {
     pub weight: u32,
     pub path: String,
     pub flags: u8,
+    /// `+SuppressUnderlyingDoodads` (placement flag `+0x1c & 2`): doodads of earlier rooms under
+    /// this one are not created (`0x141ff3490`).
+    pub suppress_doodads: bool,
     pub limit: u8,
     pub required: u8,
     pub exclusions: Vec<String>,
@@ -51,6 +54,8 @@ pub struct ToyPass {
     /// 0 random (all groups' positions together), 1 file order, 2 size order.
     pub order: u8,
     pub flags: u8,
+    /// `+SuppressUnderlyingDoodads` on the pass line: the default of its entries.
+    pub suppress_doodads: bool,
     pub entries: Vec<ToyEntry>,
 }
 
@@ -88,10 +93,15 @@ pub fn parse_toy(text: &str) -> Result<Vec<ToyPass>, GenError> {
                 weight: tokens[0].parse().unwrap_or(0),
                 path: tokens.get(1).cloned().unwrap_or_default(),
                 flags: pass.flags,
+                suppress_doodads: pass.suppress_doodads,
                 ..Default::default()
             };
             for t in &tokens[2..] {
-                if t.ends_with("SuppressUnderlyingDoodads") || t.ends_with("SuppressUnderlyingSpawnPoints") || apply_flag(&mut e.flags, t) {
+                if t.ends_with("SuppressUnderlyingDoodads") {
+                    e.suppress_doodads = !t.starts_with('-');
+                    continue;
+                }
+                if t.ends_with("SuppressUnderlyingSpawnPoints") || apply_flag(&mut e.flags, t) {
                     continue;
                 }
                 if let Some(x) = t.strip_prefix('!') {
@@ -119,7 +129,9 @@ pub fn parse_toy(text: &str) -> Result<Vec<ToyPass>, GenError> {
                 if bit < 3 && (t == "0" || t == "1") {
                     if t == "1" { p.phases |= 1 << bit } else { p.phases &= !(1 << bit) }
                     bit += 1;
-                } else if t.ends_with("SuppressUnderlyingDoodads") || t.ends_with("SuppressUnderlyingSpawnPoints") || apply_flag(&mut p.flags, t) {
+                } else if t.ends_with("SuppressUnderlyingDoodads") {
+                    p.suppress_doodads = !t.starts_with('-');
+                } else if t.ends_with("SuppressUnderlyingSpawnPoints") || apply_flag(&mut p.flags, t) {
                 } else if t == "SizeOrder" {
                     p.order = 2;
                 } else if t == "FileOrder" {
@@ -176,6 +188,8 @@ pub struct Overlays {
     /// Rooms placed so far (room index, origin, orientation): rooms like any other for the
     /// de-repetition pass.
     pub placed: Vec<(usize, (i32, i32), u8)>,
+    /// Rooms whose entry has `+SuppressUnderlyingDoodads`.
+    suppressing: std::collections::HashSet<usize>,
     /// Fill rooms the second phase placed where an overlay took tiles away (for the
     /// de-repetition pass's ground overrides).
     pub fill_rooms: Vec<crate::fill::PlacedFillRoom>,
@@ -202,7 +216,13 @@ impl Overlays {
         &self.rooms[i].1
     }
 
+    /// Whether room `i` (as in [`Self::placed`]) suppresses the doodads under it.
+    pub fn suppresses(&self, i: usize) -> bool {
+        self.suppressing.contains(&i)
+    }
+
     pub fn new(files: &dyn Files, toy: &str, map: &TileMap, master: &mut Master, rooms_placed: &[RoomRect], overlay_blank: Option<String>) -> Result<Self, GenError> {
+        let mut suppressing = std::collections::HashSet::new();
         let passes = parse_toy(&crate::text::decode_utf16(&files.read(toy)?))?;
         let mut rooms: Vec<(String, Room)> = Vec::new();
         let mut built = Vec::new();
@@ -229,6 +249,9 @@ impl Overlays {
                         TileKey { size, exits: full, virtual_exits: full, ..TileKey::default() }
                     }
                 };
+                if e.suppress_doodads {
+                    suppressing.insert(idx);
+                }
                 for o in 0..8u8 {
                     if e.orientations & (1 << o) == 0 {
                         continue;
@@ -260,7 +283,7 @@ impl Overlays {
             built.push((pass, groups));
         }
         let (width, height) = (map.width as i32, map.height as i32);
-        let mut s = Self { passes: built, rooms, occupied: vec![0; (width * height) as usize], width, height, dungeon: false, wiggle: Vec::new(), counts: HashMap::new(), placed: Vec::new(), fill_rooms: Vec::new(), overlay_blank: overlay_blank.map(|p| p.to_ascii_lowercase()) };
+        let mut s = Self { passes: built, rooms, occupied: vec![0; (width * height) as usize], width, height, dungeon: false, wiggle: Vec::new(), counts: HashMap::new(), placed: Vec::new(), suppressing, fill_rooms: Vec::new(), overlay_blank: overlay_blank.map(|p| p.to_ascii_lowercase()) };
         if s.passes.iter().any(|p| p.0.phases & 3 != 0) {
             if std::env::var_os("POE_DBG_RECTS").is_some() {
                 for r in rooms_placed.iter().filter(|r| r.feature || r.described) {

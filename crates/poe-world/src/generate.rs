@@ -211,7 +211,8 @@ pub struct LatticePoint {
 
 /// A doodad moved by `offset` tiles.
 fn shifted(d: &crate::doodads::Doodad, offset: (i32, i32)) -> crate::doodads::Doodad {
-    crate::doodads::Doodad { x: d.x + offset.0 * crate::doodads::TILE, y: d.y + offset.1 * crate::doodads::TILE, ..d.clone() }
+    let covers = d.covers.iter().map(|c| (c.0 + offset.0, c.1 + offset.1, c.2 + offset.0, c.3 + offset.1)).collect();
+    crate::doodads::Doodad { x: d.x + offset.0 * crate::doodads::TILE, y: d.y + offset.1 * crate::doodads::TILE, covers, ..d.clone() }
 }
 
 impl TileMap {
@@ -1228,6 +1229,9 @@ pub struct RoomPlacement<'a> {
     /// The turned room's corner.
     pub origin: (i32, i32),
     pub orientation: u8,
+    /// Placement flag `+0x1c & 2`: doodads of earlier placements under this one are dropped
+    /// (`0x141ff3490`). Overlay rooms with `+SuppressUnderlyingDoodads`.
+    pub covering: bool,
 }
 
 /// The tile on a cell's origin: tile-set tile (by path), orientation, oriented size.
@@ -1420,8 +1424,19 @@ impl Derepeat<'_> {
 /// up, right, down, left) is re-picked (`0x141fdfbe0`).
 pub fn derepeat_pass(map: &mut TileMap, master: &Master, rooms: &[RoomPlacement], rng: &mut TerrainRng) {
     // The same placements are the ones the doodad pass walks (`crate::doodads`).
-    for r in rooms {
-        map.doodads.extend(crate::doodads::room_doodads(r.room, r.origin, r.orientation));
+    for (i, r) in rooms.iter().enumerate() {
+        let covers: Vec<(i32, i32, i32, i32)> = rooms[i + 1..]
+            .iter()
+            .filter(|l| l.covering)
+            .map(|l| {
+                let (ow, oh) = TileMap::oriented_size((l.room.width() as u8, l.room.height() as u8), l.orientation);
+                (l.origin.0, l.origin.1, l.origin.0 + ow, l.origin.1 + oh)
+            })
+            .collect();
+        map.doodads.extend(crate::doodads::room_doodads(r.room, r.origin, r.orientation).into_iter().map(|mut d| {
+            d.covers = covers.clone();
+            d
+        }));
     }
     let mut in_room = vec![false; map.cells.len()];
     let mut overridden = vec![false; map.lattice.len()];

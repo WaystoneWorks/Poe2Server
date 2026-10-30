@@ -647,9 +647,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     use poe_world::generate::RoomPlacement;
     let mut room_list: Vec<RoomPlacement> = placed
         .iter()
-        .map(|p| RoomPlacement { room: &set.rooms[p.room].room, origin: p.pos, orientation: p.orientation })
+        .map(|p| RoomPlacement { room: &set.rooms[p.room].room, origin: p.pos, orientation: p.orientation, covering: false })
         .collect();
-    room_list.extend(fill_rooms.iter().map(|r| RoomPlacement { room: &r.room, origin: r.origin, orientation: r.orientation }));
+    room_list.extend(fill_rooms.iter().map(|r| RoomPlacement { room: &r.room, origin: r.origin, orientation: r.orientation, covering: false }));
     let pieces_before_derepeat = map.pieces.len();
     poe_world::generate::derepeat_pass(&mut map, &master, &room_list, &mut rng);
     println!("de-repetition: {} re-picks", map.pieces.len() - pieces_before_derepeat);

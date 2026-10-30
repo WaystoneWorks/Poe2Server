@@ -692,7 +692,7 @@ impl InstanceServer {
             if ours != client_hash {
                 return Err(format!("tile hash {ours} differs from the client's {client_hash}"));
             }
-            let grid = poe_world::collision::build(&g.map, data.files(), &g.doodads).map_err(|e| e.to_string())?;
+            let grid = poe_world::collision::build(&g.map, data.files(), g.doodads.iter().chain(&g.tile_objects), poe_world::doodads::Side::Server).map_err(|e| e.to_string())?;
             spawn::Grid::parse(&grid.pwg1()).ok_or_else(|| "generated grid is not PWG1".to_string())
         })
         .await;

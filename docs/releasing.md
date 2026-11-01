@@ -1,6 +1,6 @@
 # Releasing the server
 
-How a `poe-server` release is made: a tag, the CI workflow, what ends up in the package, and the secrets the workflow needs. Users of a release: [hosting.md](hosting.md#getting-a-server-release). The releases of this repository (tags `server-v*`) replace the earlier ones in Poe2ModdingProject (`server-v0.1.0`, `server-v0.2.0`), which stay there as they are. The workflow is WP F1 of [docs/plans/orchestration-2026-10b.md of the hub](https://github.com/WaystoneWorks/Poe2ModdingProject/blob/main/docs/plans/orchestration-2026-10b.md); the launcher's "Host a server" page (WP F2) downloads these packages.
+How a `poe-server` release is made: a tag, the CI workflow, what ends up in the package, and the secrets the workflow needs. Users of a release: [hosting.md](hosting.md#getting-a-server-release). The launcher's "Host a server" page downloads these packages.
 
 ## Cutting a release
 
@@ -21,7 +21,7 @@ A failed run can be re-run from the Actions page; if the release already exists 
 |---|---|
 | `version` | derives the version from the tag and checks it against `Cargo.toml` |
 | `web-admin` | submodule `modules/web-admin` (Poe2WebAdmin); `npm ci`, `npm run check`, `npm test`, `npm run build`; uploads `dist` |
-| `schema` | downloads the community data schema ([poe-tool-dev/dat-schema](https://github.com/poe-tool-dev/dat-schema), MIT) from this repo's release **`dat-schema-<game>`** (for example `dat-schema-0.5.5e.hotfix1`) and **fails if its SHA-256 is not the one `modules/protocol/versions/<game>.toml` pins** (`data.schema_sha256`). The server reads this file at run time and a changed schema can describe other column widths. Upstream only keeps a rolling `latest` (it changed on 2026-10-21, after the pin), so the pinned file is kept here. For a new game version: run `cargo xtask check-build` of the hub with the new upstream file, update the pin (in Poe2Protocol), and create the release with `gh release create dat-schema-<game> schema-poe2.min.json LICENSE-dat-schema --title "dat-schema for <game>" --notes "..."` before tagging the server |
+| `schema` | downloads the community data schema ([poe-tool-dev/dat-schema](https://github.com/poe-tool-dev/dat-schema), MIT) from this repo's release **`dat-schema-<game>`** (for example `dat-schema-0.5.5e.hotfix1`) and **fails if its SHA-256 is not the one `modules/protocol/versions/<game>.toml` pins** (`data.schema_sha256`). The server reads this file at run time and a changed schema can describe other column widths. Upstream only keeps a rolling `latest`, so the pinned file is kept here. For a new game version: run `cargo xtask check-build` of the hub with the new upstream file, update the pin (in Poe2Protocol), and create the release with `gh release create dat-schema-<game> schema-poe2.min.json LICENSE-dat-schema --title "dat-schema for <game>" --notes "..."` before tagging the server |
 | `build` (Linux `x86_64-unknown-linux-gnu` on `ubuntu-latest`, Windows `x86_64-pc-windows-msvc` on `windows-latest`) | submodules `modules/protocol` and `modules/client-hook` (the workspace has path dependencies on them; `poe-server` does not use the hook), the pinned nightly from `rust-toolchain.toml` (`rustup toolchain install`; `poe_data_tools` needs nightly features), `cargo build --release --locked -p poe-server`, on Linux also `cargo test -p poe-config -p poe-accounts -p poe-web-api`, then [`.github/scripts/package-server.sh`](../.github/scripts/package-server.sh) |
 | `release` (tags only) | combines the checksums into `SHA256SUMS`, verifies them and creates (or updates) the GitHub release with `gh` |
 
@@ -36,10 +36,10 @@ cargo build --release -p poe-server
     third_party/dat-schema/schema-poe2.min.json /tmp/pkg
 ```
 
-The Windows build can be cross-checked on Linux with the tool that `third_party/fetch-tools.sh` of the hub installs: `XWIN_CACHE_DIR=$PWD/third_party/xwin-cache third_party/cargo-xwin/bin/cargo-xwin xwin build --release -p poe-server --target x86_64-pc-windows-msvc` (use `CARGO_TARGET_DIR=target/xwin-check` to keep it apart from the normal build). It builds `poe_data_tools`, SQLite and everything else without changes; the first run downloads the MSVC CRT and SDK into `third_party/xwin-cache`. `actionlint` (the hub's `third_party/actionlint/actionlint .github/workflows/release.yml`) checks the workflow syntax.
+The Windows build can be cross-checked on Linux with the tool that `third_party/fetch-tools.sh` of the hub installs: `XWIN_CACHE_DIR=$PWD/third_party/xwin-cache third_party/cargo-xwin/bin/cargo-xwin xwin build --release -p poe-server --target x86_64-pc-windows-msvc` (use `CARGO_TARGET_DIR=target/xwin-check` to keep it apart from the normal build). The first run downloads the MSVC CRT and SDK into `third_party/xwin-cache`. `actionlint` (the hub's `third_party/actionlint/actionlint .github/workflows/release.yml`) checks the workflow syntax.
 
 ## Secrets
 
-The workflow needs **no secrets**. The repositories are public, so `actions/checkout` fetches the submodules (`submodules: true`: `modules/protocol`, `modules/client-hook`, `modules/web-admin`) over plain https, and the release step uses the workflow's own `GITHUB_TOKEN` with `contents: write` for that job only. (Until 2026-10-21 the repositories were private and read-only deploy keys were stored as secrets; they and the composite action that used them are gone, WP D3.) Nothing has to be set up before the first `server-v*` tag.
+The workflow needs **no secrets**. The repositories are public, so `actions/checkout` fetches the submodules (`submodules: true`: `modules/protocol`, `modules/client-hook`, `modules/web-admin`) over plain https, and the release step uses the workflow's own `GITHUB_TOKEN` with `contents: write` for that job only.
 
 Nothing here signs the binaries; the checksums only protect against corrupted downloads and a swapped asset when `SHA256SUMS` comes from another channel.

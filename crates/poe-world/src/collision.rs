@@ -526,7 +526,9 @@ fn stamp_circle(st: &mut Stamp, c: V2, r: f32) {
 /// Stamps an object's hull at cell (x, y) with angle, scale and mirroring (0x141d10650:
 /// walk and projectile shapes into layer 0, projectile shapes into layer 1).
 pub fn stamp_hull(grid: &mut CellGrid, sections: &[HullSection], (x, y): (i32, i32), angle: f32, scale: f32, flip: bool) {
-    let angle = if angle >= std::f32::consts::TAU { angle - std::f32::consts::TAU } else { angle };
+    // The client's angle reaches the stamp in [0, 2π): the gate is byte-identical only with a full
+    // wrap (negative angles too); f32 sin/cos of 4π or -π/2 differ from 0 or 3π/2 at cell edges.
+    let angle = angle.rem_euclid(std::f32::consts::TAU);
     let (s, c) = (angle.sin(), angle.cos());
     let f9 = c * scale;
     let f12 = -s * scale;

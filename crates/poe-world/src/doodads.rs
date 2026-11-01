@@ -533,11 +533,62 @@ pub struct TmdEntry {
 /// The entries of a `.tmd` file (UTF-16 text); empty when it is missing or not a `.tmd`.
 pub fn tmd_entries(files: &dyn Files, path: &str) -> Vec<TmdEntry> {
     let Ok(bytes) = files.read(&path.to_ascii_lowercase()) else { return Vec::new() };
+    if let Some(v) = bytes.first().copied().filter(|&v| v == 5 || v == 6) {
+        return tmd_binary(&bytes, v).unwrap_or_default();
+    }
     let text = crate::text::decode_utf16(&bytes);
     if !text.trim_start().starts_with("version") {
         return Vec::new();
     }
     text.lines().skip(1).filter_map(parse_tmd_line).collect()
+}
+
+/// A binary `.tmd` (`0x14291aab0`, first byte the version): u32 entry count, the entries, then a
+/// UTF-16 string table (u32 length in chars, NUL-terminated strings addressed by char index).
+/// Version 5 entries are 0x24 bytes: world `x y`, height, x-rotation, angle, two asset-name
+/// strings, type string, `.ao` string (scale 1, no flip). Version 6 entries are 0x2d bytes: world
+/// `x y`, height, two rotations, angle `+0x14`, scale `+0x18`, asset names `+0x1c/+0x20`, type
+/// `+0x24`, `.ao` `+0x28`, flip byte `+0x2c`. Binary entries carry no orientation list (all
+/// orientations).
+fn tmd_binary(b: &[u8], v: u8) -> Option<Vec<TmdEntry>> {
+    let u32_at = |o: usize| b.get(o..o + 4).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]));
+    let f32_at = |o: usize| u32_at(o).map(f32::from_bits);
+    let n = u32_at(1)? as usize;
+    let size = if v == 5 { 0x24 } else { 0x2d };
+    let table_at = 5 + n * size;
+    let chars = u32_at(table_at)? as usize;
+    let table: Vec<u16> = b.get(table_at + 4..table_at + 4 + chars * 2)?.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    let string = |i: u32| -> String {
+        let i = i as usize;
+        if i >= table.len() {
+            return String::new();
+        }
+        let end = table[i..].iter().position(|&c| c == 0).map_or(table.len(), |p| i + p);
+        String::from_utf16_lossy(&table[i..end])
+    };
+    let mut out = Vec::with_capacity(n);
+    for k in 0..n {
+        let e = 5 + k * size;
+        let (wx, wy) = (f32_at(e)?, f32_at(e + 4)?);
+        let (radians, scale, kind, ao, flip) = if v == 5 {
+            (f32_at(e + 0x10)?, 1.0, u32_at(e + 0x1c)?, u32_at(e + 0x20)?, false)
+        } else {
+            (f32_at(e + 0x14)?, f32_at(e + 0x18)?, u32_at(e + 0x24)?, u32_at(e + 0x28)?, *b.get(e + 0x2c)? != 0)
+        };
+        out.push(TmdEntry {
+            x: (wx * 0.092).floor() as i32,
+            y: (wy * 0.092).floor() as i32,
+            wx,
+            wy,
+            radians,
+            flip,
+            scale,
+            ao: if ao == u32::MAX { String::new() } else { string(ao) },
+            kind: string(kind),
+            orientations: 0,
+        });
+    }
+    Some(out)
 }
 
 fn parse_tmd_line(line: &str) -> Option<TmdEntry> {

@@ -330,6 +330,9 @@ pub struct HullSection {
     pub proj_tri: Vec<[f32; 6]>,
     pub walk_circle: Vec<[f32; 3]>,
     pub proj_circle: Vec<[f32; 3]>,
+    /// `disable_rotation = true` (`0x141d6e4b0`, hull `+0x88`, one flag for the whole hull, kept
+    /// on every section): the hull is stamped unrotated.
+    pub disable_rotation: bool,
 }
 
 /// The sections of a Hull block's lines (section = name starts a new one; the first is
@@ -341,7 +344,14 @@ pub fn parse_hull(lines: &[(String, String)]) -> Vec<HullSection> {
         let n = nums(v);
         let last = out.last_mut().unwrap();
         match k.as_str() {
-            "section" => out.push(HullSection::default()),
+            "section" => {
+                let disable_rotation = last.disable_rotation;
+                out.push(HullSection { disable_rotation, ..Default::default() });
+            }
+            "disable_rotation" => {
+                let on = v.trim() == "true";
+                out.iter_mut().for_each(|s| s.disable_rotation = on);
+            }
             "walk_tri" if n.len() == 6 => last.walk_tri.push(n.try_into().unwrap()),
             "proj_tri" if n.len() == 6 => last.proj_tri.push(n.try_into().unwrap()),
             "walk_circle" if n.len() == 3 => last.walk_circle.push(n.try_into().unwrap()),
@@ -528,7 +538,9 @@ fn stamp_circle(st: &mut Stamp, c: V2, r: f32) {
 pub fn stamp_hull(grid: &mut CellGrid, sections: &[HullSection], (x, y): (i32, i32), angle: f32, scale: f32, flip: bool) {
     // The client's angle reaches the stamp in [0, 2π): the gate is byte-identical only with a full
     // wrap (negative angles too); f32 sin/cos of 4π or -π/2 differ from 0 or 3π/2 at cell edges.
-    let angle = angle.rem_euclid(std::f32::consts::TAU);
+    // `disable_rotation` hulls keep their mirroring (the gate is better with it than without).
+    let fixed = sections.iter().any(|s| s.disable_rotation);
+    let angle = if fixed { 0.0 } else { angle.rem_euclid(std::f32::consts::TAU) };
     let (s, c) = (angle.sin(), angle.cos());
     let f9 = c * scale;
     let f12 = -s * scale;
@@ -573,4 +585,20 @@ pub fn hull_footprint(sections: &[HullSection], (x, y): (i32, i32), angle: f32, 
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disable_rotation_stamps_unrotated() {
+        // `WovenBasket07.ao` (G3_8): a 12 × 12 square that the client never turns.
+        let line = |k: &str, v: &str| (k.to_string(), v.to_string());
+        let lines = [line("disable_rotation", "true"), line("walk_tri", "-6 -6 -6 6 6 -6"), line("walk_tri", "6 6 6 -6 -6 6")];
+        let hull = parse_hull(&lines);
+        assert!(hull[0].disable_rotation);
+        let cells = |angle| hull_footprint(&hull, (0, 0), angle, 1.0, false, (0, 0));
+        assert_eq!(cells(4.0744), cells(0.0));
+    }
 }

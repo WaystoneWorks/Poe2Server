@@ -380,12 +380,23 @@ pub fn generate_stated(gd: &GameData, files: &dyn crate::generate::Files, area_i
         crate::doodads::mark_outside(&mut map);
     }
     let draws = rng.draws;
+    // `POE_DBG_DOODAD_DRAWS`: print every bounded draw of the doodad passes as `(n, result)`.
+    let dbg_draws = std::env::var_os("POE_DBG_DOODAD_DRAWS").is_some();
+    if dbg_draws && rng.log.is_none() {
+        rng.log = Some(Vec::new());
+    }
     let logged = rng.log.as_ref().map(Vec::len);
     let mut doodads = crate::doodads::resolve(gd, &files, rng, map.doodads.clone());
     let doodad_draws = logged.and_then(|n| rng.log.as_ref().map(|l| l[n..].to_vec())).unwrap_or_default();
+    crate::doodads::no_overlap(rng, &mut doodads, false);
     // `POE_NO_TILE_OBJECTS`: skip the tile-object pass (debugging).
     let mut tile_objects = if std::env::var_os("POE_NO_TILE_OBJECTS").is_none() { crate::doodads::tile_objects(gd, &files, rng, &map) } else { Vec::new() };
-    crate::doodads::no_overlap(rng, &mut doodads, &mut tile_objects);
+    if dbg_draws {
+        for (n, v) in logged.and_then(|n| rng.log.as_ref().map(|l| l[n..].to_vec())).unwrap_or_default() {
+            eprintln!("DOODAD_DRAW {n} {v}");
+        }
+    }
+    crate::doodads::no_overlap(rng, &mut tile_objects, true);
     Ok(Generated { graph: dgr, map, doodads, tile_objects, draws, doodad_draws })
 }
 

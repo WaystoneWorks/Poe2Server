@@ -732,41 +732,36 @@ fn is_no_overlap(kind: &str) -> bool {
     NO_OVERLAP.iter().any(|k| k.eq_ignore_ascii_case(kind))
 }
 
-/// `doodads_post` (`0x141ff4cd0`, called at the end of the tile-object pass): the deferred
-/// no-overlap objects (room doodads in placement order, then tile objects) are placed. Groups go
-/// in descending key order (the map's vector from its end): `below(n)`, a Fisher-Yates shuffle
-/// (`uniform(n - k)` for k = 0.., swapping element k with k + draw), then each object is placed
-/// unless a placed one lies within its 3 x 3 cells (`0x1420006e0`; the placed cells are a set,
-/// `0x141fffb30`). Objects of the listed type are placed afterwards, in order, unless a placed
-/// object or another listed object lies within their 3 x 3 cells. Only objects the generator's
-/// filter keeps take part (the no-overlap types have no side flag, so on either side).
-pub fn no_overlap(rng: &mut TerrainRng, doodads: &mut [Doodad], tile_objects: &mut [Doodad]) {
-    // (list, index): 0 room doodads, 1 tile objects.
-    let mut groups: std::collections::BTreeMap<u8, Vec<(u8, usize)>> = Default::default();
-    let mut listed: Vec<(u8, usize)> = Vec::new();
-    for (l, list) in [(0u8, &mut *doodads), (1u8, &mut *tile_objects)] {
-        for (i, d) in list.iter_mut().enumerate() {
-            if d.leaf.is_empty() || !is_no_overlap(&d.kind) || d.league || d.dropped || d.side != 0 {
-                continue;
-            }
-            d.placed = false;
-            if d.kind.eq_ignore_ascii_case(NO_OVERLAP_LISTED) {
-                listed.push((l, i));
-            } else {
-                groups.entry(if l == 0 { 0 } else { d.group }).or_default().push((l, i));
-            }
+/// `doodads_post` (`0x141ff4cd0`): the deferred no-overlap objects of one pass are placed. It runs
+/// twice, each time with an empty placed set: for the room doodads at the end of
+/// `TerrainGen_Doodads` (`0x141ff6e88`, before the tile-object pass draws), and for the tile
+/// objects after that pass (`0x141fff1bc`). Groups go in descending key order (the map's vector
+/// from its end; room doodads are one group): `below(n)`, a Fisher-Yates shuffle (`uniform(n - k)`
+/// for k = 0.., swapping element k with k + draw), then each object is placed unless a placed one
+/// lies within its 3 x 3 cells (`0x1420006e0`; the placed cells are a set, `0x141fffb30`). Objects
+/// of the listed type are placed afterwards, in order, unless a placed object or another listed
+/// object lies within their 3 x 3 cells. Only objects the generator's filter keeps take part (the
+/// no-overlap types have no side flag, so on either side).
+pub fn no_overlap(rng: &mut TerrainRng, list: &mut [Doodad], tile_objects: bool) {
+    let mut groups: std::collections::BTreeMap<u8, Vec<usize>> = Default::default();
+    let mut listed: Vec<usize> = Vec::new();
+    for (i, d) in list.iter_mut().enumerate() {
+        if d.leaf.is_empty() || !is_no_overlap(&d.kind) || d.league || d.dropped || d.side != 0 {
+            continue;
+        }
+        d.placed = false;
+        if d.kind.eq_ignore_ascii_case(NO_OVERLAP_LISTED) {
+            listed.push(i);
+        } else {
+            groups.entry(if tile_objects { d.group } else { 0 }).or_default().push(i);
         }
     }
-    let cell = |doodads: &[Doodad], tile_objects: &[Doodad], (l, i): (u8, usize)| {
-        let d = if l == 0 { &doodads[i] } else { &tile_objects[i] };
-        (d.x, d.y)
-    };
     let mut placed: std::collections::HashSet<(i32, i32)> = Default::default();
     let near = |set: &std::collections::HashSet<(i32, i32)>, (x, y): (i32, i32)| (-1..=1).any(|dy| (-1..=1).any(|dx| set.contains(&(x + dx, y + dy))));
+    let dbg = std::env::var_os("POE_DBG_NO_OVERLAP").is_some();
     for (_, mut members) in groups.into_iter().rev() {
         let n = members.len();
         let first = rng.below(n as u32);
-        let dbg = std::env::var_os("POE_DBG_NO_OVERLAP").is_some();
         if dbg {
             eprintln!("NO_OVERLAP group n {n} below {first}");
         }
@@ -779,20 +774,20 @@ pub fn no_overlap(rng: &mut TerrainRng, doodads: &mut [Doodad], tile_objects: &m
         }
         if dbg {
             for &m in &members {
-                let d = if m.0 == 0 { &doodads[m.1] } else { &tile_objects[m.1] };
-                eprintln!("NO_OVERLAP order list {} ({}, {}) {}", m.0, d.x, d.y, d.leaf.rsplit('/').next().unwrap_or(""));
+                let d = &list[m];
+                eprintln!("NO_OVERLAP order tiles {tile_objects} ({}, {}) {}", d.x, d.y, d.leaf.rsplit('/').next().unwrap_or(""));
             }
         }
         for m in members {
-            let c = cell(doodads, tile_objects, m);
+            let c = (list[m].x, list[m].y);
             if near(&placed, c) {
                 continue;
             }
             placed.insert(c);
-            if m.0 == 0 { doodads[m.1].placed = true } else { tile_objects[m.1].placed = true }
+            list[m].placed = true;
         }
     }
-    let cells: Vec<(i32, i32)> = listed.iter().map(|&m| cell(doodads, tile_objects, m)).collect();
+    let cells: Vec<(i32, i32)> = listed.iter().map(|&m| (list[m].x, list[m].y)).collect();
     for (k, &m) in listed.iter().enumerate() {
         let (x, y) = cells[k];
         if near(&placed, (x, y)) {
@@ -802,7 +797,7 @@ pub fn no_overlap(rng: &mut TerrainRng, doodads: &mut [Doodad], tile_objects: &m
         if close >= 2 {
             continue;
         }
-        if m.0 == 0 { doodads[m.1].placed = true } else { tile_objects[m.1].placed = true }
+        list[m].placed = true;
     }
 }
 

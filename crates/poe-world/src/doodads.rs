@@ -106,6 +106,43 @@ pub fn turn_angle(radians: f32, o: u8) -> f32 {
     a
 }
 
+/// The `outside_tiles` zones of `room` placed with its turned corner at `origin` (tiles) and
+/// orientation `o`, as cell rectangles (x0, y0, x1, y1, end exclusive). `0x141ffbab0` (after the
+/// layout) turns a zone's first cell and its last cell (`x_max - 1`, `y_max - 1`) like a doodad
+/// cell and hands the rectangle to `0x141fdd690`, which flags the corners ([`mark_outside`]).
+/// The zone's object type (empty in every `outside_tiles` zone of this build) passes the side
+/// filter.
+pub fn room_outside(room: &Room, origin: (i32, i32), o: u8) -> Vec<(i32, i32, i32, i32)> {
+    let (w, h) = (room.width() as i32, room.height() as i32);
+    let Some(zones) = &room.arm.zones else { return Vec::new() };
+    zones
+        .iter()
+        .filter(|z| z.name == "outside_tiles")
+        .map(|z| {
+            let a = turn_cell(z.x_min, z.y_min, w, h, o);
+            let b = turn_cell(z.x_max - 1, z.y_max - 1, w, h, o);
+            let (ox, oy) = (origin.0 * TILE, origin.1 * TILE);
+            (a.0.min(b.0) + ox, a.1.min(b.1) + oy, a.0.max(b.0) + 1 + ox, a.1.max(b.1) + 1 + oy)
+        })
+        .collect()
+}
+
+/// `0x141fdd690`: lattice flag 8 on every corner from `ceil(x0 / 23)` to `ceil(x1 / 23)` and
+/// `ceil(y0 / 23)` to `ceil(y1 / 23)` (inclusive, clamped to the map) of each zone.
+pub fn mark_outside(map: &mut crate::generate::TileMap) {
+    let ceil = |v: i32| v.div_euclid(TILE) + (v.rem_euclid(TILE) != 0) as i32;
+    for (x0, y0, x1, y1) in std::mem::take(&mut map.outside) {
+        let (ex, ey) = (ceil(x1).min(map.width as i32), ceil(y1).min(map.height as i32));
+        for y in ceil(y0).max(0)..=ey {
+            for x in ceil(x0).max(0)..=ex {
+                if let Some(i) = map.point_index(x, y) {
+                    map.lattice[i].flags |= 8;
+                }
+            }
+        }
+    }
+}
+
 /// The doodads of `room` placed with its turned corner at `origin` (tiles) and orientation `o`.
 pub fn room_doodads(room: &Room, origin: (i32, i32), o: u8) -> Vec<Doodad> {
     let (w, h) = (room.width() as i32, room.height() as i32);
@@ -728,10 +765,23 @@ pub fn no_overlap(rng: &mut TerrainRng, doodads: &mut [Doodad], tile_objects: &m
     let near = |set: &std::collections::HashSet<(i32, i32)>, (x, y): (i32, i32)| (-1..=1).any(|dy| (-1..=1).any(|dx| set.contains(&(x + dx, y + dy))));
     for (_, mut members) in groups.into_iter().rev() {
         let n = members.len();
-        rng.below(n as u32);
+        let first = rng.below(n as u32);
+        let dbg = std::env::var_os("POE_DBG_NO_OVERLAP").is_some();
+        if dbg {
+            eprintln!("NO_OVERLAP group n {n} below {first}");
+        }
         for k in 0..n {
             let j = rng.uniform((n - k) as u32) as usize;
+            if dbg {
+                eprintln!("NO_OVERLAP uniform {} -> {j}", n - k);
+            }
             members.swap(k, k + j);
+        }
+        if dbg {
+            for &m in &members {
+                let d = if m.0 == 0 { &doodads[m.1] } else { &tile_objects[m.1] };
+                eprintln!("NO_OVERLAP order list {} ({}, {}) {}", m.0, d.x, d.y, d.leaf.rsplit('/').next().unwrap_or(""));
+            }
         }
         for m in members {
             let c = cell(doodads, tile_objects, m);

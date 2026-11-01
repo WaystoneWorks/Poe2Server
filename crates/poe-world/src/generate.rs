@@ -188,6 +188,9 @@ pub struct TileMap {
     pub raised: bool,
     /// The doodads of the rooms placed in this map, in cells of this map (`crate::doodads`).
     pub doodads: Vec<crate::doodads::Doodad>,
+    /// The `outside_tiles` zones of the rooms placed in this map, in cells of this map
+    /// (x0, y0, x1, y1, end exclusive; [`crate::doodads::room_outside`]).
+    pub outside: Vec<(i32, i32, i32, i32)>,
 }
 
 #[derive(Debug, Clone)]
@@ -215,6 +218,12 @@ fn shifted(d: &crate::doodads::Doodad, offset: (i32, i32)) -> crate::doodads::Do
     crate::doodads::Doodad { x: d.x + offset.0 * crate::doodads::TILE, y: d.y + offset.1 * crate::doodads::TILE, covers, ..d.clone() }
 }
 
+/// A cell rectangle moved by `offset` tiles.
+fn shifted_zone(z: (i32, i32, i32, i32), offset: (i32, i32)) -> (i32, i32, i32, i32) {
+    let (dx, dy) = (offset.0 * crate::doodads::TILE, offset.1 * crate::doodads::TILE);
+    (z.0 + dx, z.1 + dy, z.2 + dx, z.3 + dy)
+}
+
 impl TileMap {
     pub fn new(width: u32, height: u32) -> Self {
         let n = (width * height) as usize;
@@ -233,6 +242,7 @@ impl TileMap {
             bounds: None,
             raised: false,
             doodads: Vec::new(),
+            outside: Vec::new(),
         }
     }
 
@@ -248,6 +258,7 @@ impl TileMap {
             .map(|p| Piece { x: p.x + offset.0, y: p.y + offset.1, ..p.clone() })
             .collect();
         m.doodads = self.doodads.iter().map(|d| shifted(d, offset)).collect();
+        m.outside = self.outside.iter().map(|&z| shifted_zone(z, offset)).collect();
         for y in 0..self.height as i32 {
             for x in 0..self.width as i32 {
                 let i = self.index(x, y).unwrap();
@@ -397,6 +408,7 @@ impl TileMap {
             self.edge_flags.entry(e.clone()).or_insert(*f);
         }
         self.doodads.extend(sub.doodads.iter().map(|d| shifted(d, origin)));
+        self.outside.extend(sub.outside.iter().map(|&z| shifted_zone(z, origin)));
         self.pieces.extend(sub.pieces.iter().map(|p| Piece { x: p.x + origin.0, y: p.y + origin.1, tile: None, ..p.clone() }));
         for y in 0..sub.height as i32 {
             for x in 0..sub.width as i32 {
@@ -1433,6 +1445,7 @@ pub fn derepeat_pass(map: &mut TileMap, master: &Master, rooms: &[RoomPlacement]
                 (l.origin.0, l.origin.1, l.origin.0 + ow, l.origin.1 + oh)
             })
             .collect();
+        map.outside.extend(crate::doodads::room_outside(r.room, r.origin, r.orientation));
         map.doodads.extend(crate::doodads::room_doodads(r.room, r.origin, r.orientation).into_iter().map(|mut d| {
             d.covers = covers.clone();
             d

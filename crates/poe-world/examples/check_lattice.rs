@@ -55,6 +55,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("SIZE {name} client {pw}x{ph} port {mw}x{mh}");
             continue;
         }
+        // `LATTICE_GROUNDS=1`: client ground index against the port's ground, with flag 8 on each side.
+        if std::env::var_os("LATTICE_GROUNDS").is_some() {
+            let mut m: std::collections::BTreeMap<(u8, String, bool, bool), usize> = Default::default();
+            for y in 0..ph {
+                for x in 0..pw {
+                    let r = &raw[8 + (y * pw + x) * 3..];
+                    let p = g.map.point_index(x as i32, y as i32).map(|i| &g.map.lattice[i]);
+                    let gname = p.and_then(|p| p.ground.as_deref()).map_or("-", |g| g.rsplit('/').next().unwrap_or("")).to_string();
+                    *m.entry((r[0], gname, p.is_some_and(|p| p.flags & 8 != 0), r[2] & 8 != 0)).or_default() += 1;
+                }
+            }
+            for ((ci, pg, pf, cf), n) in m {
+                println!("  GROUND client#{ci} port {pg} port8 {pf} client8 {cf}: {n}");
+            }
+        }
         let (mut port_only, mut client_only, mut bits) = (0, 0, 0u8);
         let mut shown = 0;
         for y in 0..ph {

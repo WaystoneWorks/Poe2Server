@@ -374,7 +374,11 @@ pub fn generate_stated(gd: &GameData, files: &dyn crate::generate::Files, area_i
     let files = WithSpecialTiles { inner: files, special, league: std::cell::RefCell::new(crate::league::extra_rooms(gd, area_id, &rolled)), room_sets, paired: area_plugin(gd, area_id).as_deref() == Some(PAIRED_PLUGIN) };
     // `0x141fe1150` returns at once for area kinds 0x20 and 0x21 (world-map panels).
     NO_UNWALKABLE.with(|n| n.set(matches!(area_kind(gd, area_id), Some(0x20 | 0x21))));
-    let map = generate_graph_probed(&files, &graph, rng, probe, &extras)?;
+    let mut map = generate_graph_probed(&files, &graph, rng, probe, &extras)?;
+    // `0x141ffbab0` (after the layout): rooms' `outside_tiles` zones are unwalkable.
+    if std::env::var_os("POE_NO_OUTSIDE_ZONES").is_none() {
+        crate::doodads::mark_outside(&mut map);
+    }
     let draws = rng.draws;
     let logged = rng.log.as_ref().map(Vec::len);
     let mut doodads = crate::doodads::resolve(gd, &files, rng, map.doodads.clone());

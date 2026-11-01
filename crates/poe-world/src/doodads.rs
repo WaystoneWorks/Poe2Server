@@ -223,6 +223,14 @@ pub struct AoInfo {
     pub hull: Vec<(String, String)>,
 }
 
+/// Orientation names in bit order (`.tmd` entry lists, `random_orientation` lists).
+const ORIENTATION_NAMES: [&str; 8] = ["I", "R90", "R180", "R270", "FI", "FR90", "FR180", "FR270"];
+
+/// The orientation mask of a space-separated list of orientation names.
+fn orientation_names(v: &str) -> u8 {
+    v.split_whitespace().filter_map(|t| ORIENTATION_NAMES.iter().position(|n| *n == t)).fold(0, |m, i| m | 1 << i)
+}
+
 fn quoted(v: &str) -> &str {
     v.trim().trim_matches('"')
 }
@@ -270,6 +278,8 @@ fn parse_ao(text: &str) -> (Option<String>, Option<AoInfo>, Vec<(String, String)
                 "random_scale_max" => s.scale.1 = f(v),
                 "random_translate_radius" => s.translate_radius = f(v),
                 "random_orientation" if v == "true" => s.orientation_mask |= 0xff,
+                // A list of orientation names (`"I R180 FI FR180"`) allows only those.
+                "random_orientation" => s.orientation_mask |= orientation_names(v),
                 "random_flip" if v == "true" => s.orientation_mask |= 0x11,
                 _ => {}
             }
@@ -599,9 +609,8 @@ fn parse_tmd_line(line: &str) -> Option<TmdEntry> {
     if n < 7 || quoted.len() < 4 {
         return None;
     }
-    const NAMES: [&str; 8] = ["I", "R90", "R180", "R270", "FI", "FR90", "FR180", "FR270"];
     let custom = std::env::var("POE_DBG_TMD_NAMES").ok();
-    let names: Vec<&str> = custom.as_deref().map(|v| v.split(',').collect()).unwrap_or_else(|| NAMES.to_vec());
+    let names: Vec<&str> = custom.as_deref().map(|v| v.split(',').collect()).unwrap_or_else(|| ORIENTATION_NAMES.to_vec());
     let tail = line.rsplit('"').next().unwrap_or("");
     let orientations = tail.split_whitespace().filter_map(|t| names.iter().position(|n| *n == t)).fold(0u8, |m, i| m | 1 << i);
     Some(TmdEntry {
@@ -664,7 +673,7 @@ pub fn tile_objects(gd: &poe_data::GameData, files: &dyn Files, rng: &mut Terrai
                     let logged = rng.log.as_ref().map_or(0, Vec::len);
                     let picked = pick(&mut cache, &e.ao, rng);
                     if dbg_draws && rng.draws != before {
-                        let ns: Vec<u32> = rng.log.as_ref().map(|l| l[logged..].iter().map(|d| d.0).collect()).unwrap_or_default();
+                        let ns: Vec<(u32, u32)> = rng.log.as_ref().map(|l| l[logged..].to_vec()).unwrap_or_default();
                         eprintln!("TMDDRAW tile ({tx},{ty}) {} n {:?} {}", c.path.rsplit('/').next().unwrap_or(""), ns, e.ao.rsplit('/').next().unwrap_or(""));
                     }
                     let Some(p) = picked else { continue };
@@ -860,6 +869,15 @@ pub fn doodad_hash<'a>(doodads: impl IntoIterator<Item = &'a Doodad>) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn random_orientation_lists() {
+        // `street_short_st_set.ao` (G3_8): a list allows only the named orientations.
+        let set = |v: &str| parse_ao(&format!("version 3\nAOSet\n{{\n\trandom_orientation = \"{v}\"\n\tao = \"100 a.ao\"\n}}\n")).1.unwrap().orientation_mask;
+        assert_eq!(set("I R180 FI FR180"), 0x55);
+        assert_eq!(set("true"), 0xff);
+        assert_eq!(orientation_pick(0x55, 3), 6);
+    }
 
     #[test]
     fn turns_are_bijections() {

@@ -2,7 +2,7 @@
 //! the 50-seed matrix (docs/plans/terrain-all-areas.md, WP7.16).
 //!
 //! `cargo run --release -p poe-world --example forced_verify -- <batch-results.tsv>
-//! [--out dumps/<version>/terrain/vectors/forced-results.tsv] [--threads N]`
+//! [--out dumps/<version>/terrain/vectors/forced-results.tsv] [--threads N] [--grid-fails FILE]`
 //!
 //! Input (`dumps/<version>/terrain/batch/<run>/batch-results.tsv`, written by the client batch,
 //! `#` lines and blanks skipped): `area  seed  topology  orientation  status  tile_hash
@@ -27,6 +27,12 @@
 //!   (`POE_FORCED_MAX_HUNG`) the run stops; each hung job is logged to stderr.
 //!
 //! A per-area summary (`matched/checked`) goes to stderr.
+//!
+//! Collision grids: a row with a 12th column `grid_hash` (FNV-1a 64 of the client's `grids.bin`
+//! bytes, written by the batch since the grid-hash column was added) also builds the port's grid
+//! (client side) when the tile hash matches, and the detail gains `grids match` or `grids differ:
+//! ours X client Y`. `--grid-fails FILE` writes the differing layouts as `area seed topology
+//! orientation` lines (an `export.txt` for a re-run with full exports).
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -52,12 +58,19 @@ struct Job {
     /// The client's doodad hash.
     doodad_hash: String,
     size: Option<(u32, u32)>,
+    /// The client's grid hash (column 12), when the batch wrote one.
+    grid_hash: Option<String>,
+}
+
+/// FNV-1a 64, as the client batch hashes its `grids.bin` bytes.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3))
 }
 
 /// What the port made of one (area, seed, topology, orientation).
 #[derive(Clone)]
 enum Ours {
-    Done { hash: String, doodad_hash: String, size: (u32, u32) },
+    Done { hash: String, doodad_hash: String, size: (u32, u32), grid_hash: Option<String> },
     Error(String),
     Panic,
     Timeout(u64),
@@ -82,7 +95,7 @@ fn parse_batch(text: &str) -> (Vec<Job>, usize) {
             (Ok(w), Ok(h)) if w > 0 && h > 0 => Some((w, h)),
             _ => None,
         };
-        jobs.push(Job { area: f[0].into(), seed, topology, orientation, tile_hash: f[5].into(), doodad_hash: f[6].into(), size });
+        jobs.push(Job { area: f[0].into(), seed, topology, orientation, tile_hash: f[5].into(), doodad_hash: f[6].into(), size, grid_hash: f.get(11).map(|h| h.trim()).filter(|h| !h.is_empty() && h.bytes().any(|b| b != b'0')).map(String::from) });
     }
     (jobs, skipped)
 }
@@ -107,11 +120,13 @@ fn compare(job: &Job, ours: &Ours) -> Option<String> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut positional = Vec::new();
     let mut out: Option<String> = None;
+    let mut grid_fails_out: Option<String> = None;
     let mut threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--out" => out = Some(args.next().ok_or("--out needs a file")?),
+            "--grid-fails" => grid_fails_out = Some(args.next().ok_or("--grid-fails needs a file")?),
             "--threads" => threads = args.next().ok_or("--threads needs a number")?.parse()?,
             _ => positional.push(a),
         }
@@ -137,6 +152,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             keys.len() - 1
         });
     }
+    // The client's tile hash per layout that carries a grid hash: the grid is built only then.
+    let want_grid: HashMap<(String, u32, u32, u8), String> =
+        jobs.iter().filter(|j| j.grid_hash.is_some()).map(|j| ((j.area.clone(), j.seed, j.topology, j.orientation), j.tile_hash.clone())).collect();
+    let want_grid = &want_grid;
     eprintln!("{} rows ({skipped} skipped: client status not ok), {} distinct layouts, {threads} threads", jobs.len(), keys.len());
     let next = AtomicUsize::new(0);
     let hung = AtomicUsize::new(0);
@@ -150,11 +169,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let key = (area.clone(), seed, topology, orientation);
                     let (tx, rx) = mpsc::channel();
                     let area_c = area.clone();
+                    let grid_for = want_grid.get(&key).cloned();
                     std::thread::spawn(move || {
                         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             let mut rng = TerrainRng::new(seed);
                             let forced = Forced { topology: Some(topology), orientation: Some(orientation) };
-                            poe_world::area::generate_with_files(gd, files, &area, &mut rng, Some(forced)).map(|g| Ours::Done { hash: g.map.tile_hash().to_string(), doodad_hash: g.doodad_hash().to_string(), size: (g.map.width, g.map.height) })
+                            poe_world::area::generate_with_files(gd, files, &area, &mut rng, Some(forced)).map(|g| {
+                                let hash = g.map.tile_hash().to_string();
+                                let grid_hash = grid_for.filter(|t| *t == hash).and_then(|_| {
+                                    let grid = poe_world::collision::build(&g.map, files, g.doodads.iter().chain(&g.tile_objects), poe_world::doodads::Side::Client).ok()?;
+                                    Some(format!("{:016x}", fnv1a64(&grid.pwg1())))
+                                });
+                                Ours::Done { hash, doodad_hash: g.doodad_hash().to_string(), size: (g.map.width, g.map.height), grid_hash }
+                            })
                         }));
                         let _ = tx.send(match r {
                             Ok(Ok(o)) => o,
@@ -184,6 +211,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut rows: Vec<((String, u32, u32, u8), String)> = Vec::new();
     let mut per_area: BTreeMap<&str, (u32, u32)> = BTreeMap::new();
     let (mut doodads_match, mut doodads_differ) = (0u32, 0u32);
+    let (mut grids_match, mut grids_differ) = (0u32, 0u32);
+    let mut grid_fails: Vec<String> = Vec::new();
     for j in &jobs {
         let ours = results[index[&(j.area.clone(), j.seed, j.topology, j.orientation)]].clone().expect("every layout was generated");
         let e = per_area.entry(j.area.as_str()).or_default();
@@ -207,9 +236,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Some(d) => format!("fail\t{d}"),
         };
+        let line = match (&ours, &j.grid_hash) {
+            (Ours::Done { grid_hash: Some(g), .. }, Some(c)) if g == c => {
+                grids_match += 1;
+                format!("{line}; grids match")
+            }
+            (Ours::Done { grid_hash: Some(g), .. }, Some(c)) => {
+                grids_differ += 1;
+                grid_fails.push(format!("{} {} {} {}", j.area, j.seed, j.topology, j.orientation));
+                format!("{line}; grids differ: ours {g} client {c}")
+            }
+            _ => line,
+        };
         rows.push(((j.area.clone(), j.seed, j.topology, j.orientation), line));
     }
     eprintln!("tile-matching rows: doodad hash matches {doodads_match}, differs {doodads_differ}");
+    eprintln!("grid hashes: match {grids_match}, differ {grids_differ}");
+    if let Some(file) = &grid_fails_out {
+        grid_fails.sort();
+        grid_fails.dedup();
+        std::fs::write(file, grid_fails.iter().map(|l| format!("{l}\n")).collect::<String>())?;
+        eprintln!("wrote {} differing layouts to {file}", grid_fails.len());
+    }
     for (a, (m, n)) in &per_area {
         eprintln!("{a}\t{m}/{n}");
     }

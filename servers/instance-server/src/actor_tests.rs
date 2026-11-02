@@ -15,8 +15,9 @@ use poe_net::Reader;
 use poe_proto::{
     Direction, Message, Protocol,
     instance::{
-        AddObject, ComponentDelta, MoveDirection, MoveDirectionUpdate, SetAimTarget, SetPause,
-        SimulationTick, SprintInput, SprintState, StartAction, StatsUpdate, UseSkill,
+        AddObject, ComponentDelta, MoveDirection, MoveDirectionUpdate, OrientationLerp,
+        SetAimTarget, SetPause, SimulationTick, SprintInput, SprintState, StartAction, StatsUpdate,
+        UseSkill,
     },
     player_blob::PlayerBlob,
     remote::{DestroyEntity, EntitySleep, PresenceChanged, RemoveObject},
@@ -92,6 +93,7 @@ pub(crate) fn split(protocol: &Protocol, mut bytes: &[u8]) -> Vec<Sent> {
             BuffRemoved,
             SetAimTarget,
             ComponentDelta,
+            OrientationLerp,
             AddObject,
             PresenceChanged,
             DestroyEntity,
@@ -1161,5 +1163,8 @@ async fn the_actor_catches_a_stall_up_with_a_burst() {
     assert_eq!(burst, 41);
     // The next frame comes on the old grid, one tick later.
     a.frames.recv().await.expect("next frame");
-    assert_eq!(tokio::time::Instant::now() - first, Duration::from_millis(42 * 33));
+    assert_eq!(
+        tokio::time::Instant::now() - first,
+        Duration::from_millis(42 * 33)
+    );
 }

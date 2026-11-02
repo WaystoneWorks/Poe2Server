@@ -77,6 +77,9 @@ fn input(v: &Value) -> MoveInput {
         "aim_mode" => MoveInput::AimMode {
             mode: i(v, "mode") as u8,
         },
+        "stance_request" => MoveInput::StanceRequest {
+            value: i(v, "value") as u8,
+        },
         op => panic!("fixture input {op}"),
     }
 }
@@ -125,7 +128,14 @@ fn to_json(e: &MoveEvent) -> Value {
         MoveEvent::ReleasedAck { skill, flag } => {
             json!({"ev": "released_ack", "skill": skill, "flag": flag})
         }
-        MoveEvent::StanceChanged { combat } => json!({"ev": "stance", "combat": combat}),
+        MoveEvent::StanceChanged { combat, request } => {
+            let mut v = json!({"ev": "stance", "combat": combat});
+            if let Some(r) = request {
+                v["request"] = json!(r);
+            }
+            v
+        }
+        MoveEvent::OrientationLerp { value } => json!({"ev": "orientation_lerp", "value": value}),
         MoveEvent::SprintState { held } => json!({"ev": "sprint", "held": held}),
         MoveEvent::BuffAdded { index, row, fade } => {
             let mut v = json!({"ev": "buff_added", "index": index, "row": row});
@@ -234,7 +244,12 @@ fn track_only(name: &str, max_err: f64) {
 /// tracked frame must be within `max_err` cells of the client's. With `track_from` in the
 /// fixture the comparison starts at that frame and is relative to the position there.
 fn run(name: &str, tol: Tol, max_err: Option<f64>, check_events: bool) {
-    let fx = fixture(name);
+    let problems = problems(&fixture(name), name, tol, max_err, check_events);
+    assert!(problems.is_empty(), "{name}:\n{}", problems.join("\n"));
+}
+
+/// The differences of a replay from the official messages (empty: identical).
+fn problems(fx: &Value, name: &str, tol: Tol, max_err: Option<f64>, check_events: bool) -> Vec<String> {
     let start = (
         fx["start_cell"][0].as_i64().unwrap() as i32,
         fx["start_cell"][1].as_i64().unwrap() as i32,
@@ -254,11 +269,14 @@ fn run(name: &str, tol: Tol, max_err: Option<f64>, check_events: bool) {
     }
     let inputs = fx["inputs"].as_array().unwrap();
     let expect = fx["expect"].as_array().unwrap();
+    // Episodes say how many frames they cover (`frames`): nothing may come after the last
+    // official event either.
     let last = expect
         .iter()
         .map(|e| e["f"].as_u64().unwrap())
+        .chain(fx["frames"].as_u64())
         .max()
-        .unwrap();
+        .unwrap_or(1);
     let mut dev = BTreeMap::new();
     let mut problems = Vec::new();
     let mut positions: BTreeMap<u64, (f64, f64)> = BTreeMap::new();
@@ -273,7 +291,11 @@ fn run(name: &str, tol: Tol, max_err: Option<f64>, check_events: bool) {
             .iter()
             .filter(|v| v["f"].as_u64().unwrap() + 1 == frame)
         {
-            assert!(world.input(player, input(inp)));
+            match inp["op"].as_str().unwrap() {
+                "pause" => world.set_paused(inp["paused"].as_bool().unwrap()),
+                "unsupported" => {}
+                _ => assert!(world.input(player, input(inp))),
+            }
         }
         let events = world.tick();
         assert_eq!(world.frame(), frame);
@@ -313,7 +335,9 @@ fn run(name: &str, tol: Tol, max_err: Option<f64>, check_events: bool) {
             ));
         }
     }
-    println!("{name}: largest cell deviations {dev:?}");
+    if max_err.is_some() || check_events {
+        println!("{name}: largest cell deviations {dev:?}");
+    }
     if let (Some(max_err), Some(track)) = (max_err, fx["track"].as_array()) {
         let from = fx["track_from"].as_u64();
         let pts: Vec<(u64, f64, f64)> = track
@@ -351,7 +375,7 @@ fn run(name: &str, tol: Tol, max_err: Option<f64>, check_events: bool) {
             ));
         }
     }
-    assert!(problems.is_empty(), "{name}:\n{}", problems.join("\n"));
+    problems
 }
 
 /// WASD start, turns and stop: the cell stays within 4 cells of the official one over 20
@@ -604,6 +628,39 @@ fn stance_to_combat_mode() {
     );
 }
 
+/// The stance fixtures compare no positions.
+const NO_POS: Tol = Tol {
+    walk: ANY,
+    start: ANY,
+    steer: ANY,
+};
+
+/// First skill use in mouse mode (2026-10-14, the intro wake-up click, its skill messages left
+/// out): `0x2a6` 0.05 and stance 1 with the request value 4 in the next batch.
+#[test]
+fn stance_first_skill_in_mouse_mode() {
+    replay("stance_first_skill_in_mouse_mode", NO_POS);
+}
+
+/// The same in a session whose delta also carries flag words (mask `0x1402`).
+#[test]
+fn stance_first_skill_merged() {
+    replay("stance_first_skill_merged", NO_POS);
+}
+
+/// Entry with the stance request before the entry stance: stance 1, then stance 0 with the
+/// value one frame later.
+#[test]
+fn stance_entry_with_request() {
+    replay("stance_entry_with_request", NO_POS);
+}
+
+/// Entry: stance 1 with `0x2a6` 0.05 in the batch 8 frames after the one answering `AimMode(1)`.
+#[test]
+fn stance_entry() {
+    replay("stance_entry", NO_POS);
+}
+
 // ---- roll heading in click-to-move mode (WP C1, gap #12) ------------------------------------
 
 /// Click-to-move mode: a standing tap roll heads where the cursor is (no WASD, the Move click
@@ -641,4 +698,48 @@ fn attack_while_click_walking() {
 #[test]
 fn attack_ends_sprint_then_walk() {
     track_only("attack_ends_sprint_then_walk", 2.5);
+}
+
+// ---- every input sequence of every official session ---------------------------------------
+
+/// Every episode of `fixtures/episodes/` (`movement_fixtures.py episodes`: each session cut into
+/// input sequences that start and end with nothing held) replays with the official messages,
+/// fields and frame offsets; cells are not compared (the episodes carry no terrain; the
+/// tracked fixtures above cover positions). Episodes that fail for a known reason are listed
+/// in `fixtures/episodes/known.json` with the reason; one that passes must leave the list.
+#[test]
+fn every_captured_episode() {
+    let dir = format!("{}/tests/fixtures/episodes", env!("CARGO_MANIFEST_DIR"));
+    let known: Value = std::fs::read_to_string(format!("{dir}/known.json"))
+        .map(|t| serde_json::from_str(&t).expect("known.json"))
+        .unwrap_or(json!({}));
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .expect("episodes")
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "json") && !p.ends_with("known.json"))
+        .collect();
+    files.sort();
+    let (mut pass, mut total, mut bad) = (0, 0, Vec::new());
+    for path in files {
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let source = doc["source"].as_str().unwrap();
+        for ep in doc["episodes"].as_array().unwrap() {
+            let id = format!("{source}:{}", ep["name"].as_str().unwrap());
+            total += 1;
+            let p = problems(ep, &id, NO_POS, None, true);
+            let reason = known[&id].as_str();
+            match (p.is_empty(), reason) {
+                (true, None) => pass += 1,
+                (false, Some(_)) => {}
+                (true, Some(_)) => bad.push(format!("{id}: passes now, remove it from known.json")),
+                (false, None) => bad.push(format!(
+                    "{id} ({} inputs): {}",
+                    ep["inputs"].as_array().unwrap().len(),
+                    p.first().unwrap()
+                )),
+            }
+        }
+    }
+    println!("episodes: {pass} of {total} pass, {} known", known.as_object().map_or(0, |k| k.len()));
+    assert!(bad.is_empty(), "{} episodes:\n{}", bad.len(), bad.join("\n"));
 }

@@ -1,0 +1,1 @@
+{"name":"stance_entry","description":"entry: AimMode(1) at f1, stance 1 with 0x2a6 0.05 nine frames later","source":"2026-10-15_23-03-45_340","capture_frames":[0,12],"start_cell":[50,50],"inputs":[{"f":0,"op":"aim_mode","mode":1}],"expect":[{"f":9,"ev":"orientation_lerp","value":0.05},{"f":9,"ev":"stance","combat":true}]}

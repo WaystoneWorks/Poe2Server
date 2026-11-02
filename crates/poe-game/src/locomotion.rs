@@ -167,6 +167,10 @@ pub struct MovementConfig {
     /// `0x200`, mouse mode and back) and the stance change, counted from the batch that
     /// answers the input (2026-10-20 capture: 0, the same batch).
     pub stance_toggle_frames: u32,
+    /// `0x2a6` value sent with a change to combat stance (all eight sessions: 0.05).
+    pub stance_lerp_combat: f32,
+    /// `0x2a6` value sent with a change out of combat stance (all eight sessions: 0.2).
+    pub stance_lerp_peaceful: f32,
 }
 
 impl MovementConfig {
@@ -212,8 +216,10 @@ impl MovementConfig {
             },
             walk_speed: 37.0,
             pathfinder: Pathfinder::Client,
-            stance_delay_frames: 9,
+            stance_delay_frames: 8,
             stance_toggle_frames: 0,
+            stance_lerp_combat: 0.05,
+            stance_lerp_peaceful: 0.2,
         }
     }
 }
@@ -262,6 +268,9 @@ pub enum MoveInput {
     AimEntity { entity: u32 },
     /// `0x62` mode 0/1 (once at entry; mode 1 puts the character into combat stance).
     AimMode { mode: u8 },
+    /// `0x200`: the stance request sent with an input-mode toggle and with the first skill use
+    /// in mouse mode (value 1 click-to-move, 4 WASD/combat); echoed in the next stance delta.
+    StanceRequest { value: u8 },
 }
 
 /// Stats the component changes (game stat ids; the session resolves the network keys).
@@ -366,8 +375,11 @@ pub enum MoveEvent {
     BuffRemoved { index: u16 },
     /// `0x1dc` SetAimTarget kind 0: the cursor cell echoed.
     AimEcho { cell: Cell },
-    /// `0x2f9` ComponentDelta of the Player component: the combat stance.
-    StanceChanged { combat: bool },
+    /// `0x2f9` ComponentDelta of the Player component: the combat stance (`0x0400`) and, when
+    /// the client asked with `0x200`, its value (`0x1000`).
+    StanceChanged { combat: bool, request: Option<u8> },
+    /// `0x2a6`: sent before every stance delta (0.05 to combat, 0.2 out of it).
+    OrientationLerp { value: f32 },
     /// The entity was placed by the server (admin command, transfer). The client only snaps
     /// when the distance is 46 cells or more, and only for a `0x64` with a non-zero direction.
     Teleport { cell: Cell },
@@ -518,6 +530,10 @@ pub struct Locomotion {
     stance_scheduled: bool,
     /// The stance at entry has been set; later `AimMode` inputs are input-mode toggles.
     stance_entered: bool,
+    /// The value of the last `0x200` not yet answered.
+    stance_request: Option<u8>,
+    /// The last `AimMode` asked for combat stance (mode 1).
+    aim_combat: bool,
     teleport: Option<Cell>,
     /// A roll asked for while the previous roll's action still runs: it starts when that ends.
     queued_roll: Option<(UseSkill, Cell)>,
@@ -570,6 +586,8 @@ impl Locomotion {
             combat_stance: false,
             stance_scheduled: false,
             stance_entered: false,
+            stance_request: None,
+            aim_combat: true,
             teleport: None,
             queued_roll: None,
             deferred: Vec::new(),
@@ -661,6 +679,21 @@ impl Locomotion {
     }
 
     /// One server frame; see the module docs for the order.
+    /// A frame while the world is paused: only the stance timer runs (the official entry
+    /// stance goes out while the client's post-load pause is on, five sessions).
+    pub fn tick_paused(&mut self, ctx: &mut StepCtx) -> Vec<MoveEvent> {
+        let mut out = Vec::new();
+        let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.due)
+            .into_iter()
+            .partition(|(f, d)| *f <= ctx.frame && matches!(d, Due::Stance(_)));
+        self.due = later;
+        let mut unscaled = false;
+        for (_, due) in now {
+            self.fire(due, ctx, &mut out, &mut unscaled);
+        }
+        out
+    }
+
     pub fn tick(&mut self, ctx: &mut StepCtx) -> Vec<MoveEvent> {
         let mut out = Vec::new();
         // 1. Move. The client's pathing size grows while the sprint runs after the roll.
@@ -776,10 +809,13 @@ impl Locomotion {
                 }
             }
             MoveInput::AimEntity { .. } => {}
+            MoveInput::StanceRequest { value } => self.stance_request = Some(value),
             MoveInput::AimMode { mode } => {
                 let combat = mode == 1;
+                self.aim_combat = combat;
                 if !self.stance_entered {
-                    // At entry the stance follows the first mode 1 after 9 frames (14 in the
+                    // At entry the stance follows the first mode 1 in the batch 8 frames after
+                    // the one answering it (captures: 9 frames after the input's frame; 14 in the
                     // 2026-10-20 session: it depends on the area load).
                     if combat && !self.stance_scheduled {
                         self.stance_scheduled = true;
@@ -788,7 +824,7 @@ impl Locomotion {
                             Due::Stance(true),
                         ));
                     }
-                } else if combat != self.combat_stance {
+                } else if combat != self.combat_stance || self.stance_request.is_some() {
                     // Input mode toggled (with the stance request `0x200`): 2 of 2 in the
                     // 2026-10-20 capture, in the batch answering the input, in both directions,
                     // while standing.
@@ -1198,11 +1234,13 @@ impl Locomotion {
             entity: req.entity,
             unk: req.unk,
         });
+        // Every action start but Move's has a `0x1ca` (all eight sessions: 0x80400040 147 of
+        // 147, 0x2000c266 31 of 31, 0x85000040 47 of 47; skills with their own stats or buffs
+        // send those first), then the ack.
         let Some(run) = self.sprint().copied() else {
+            out.push(MoveEvent::ActionEvent);
             if ack {
                 out.push(Self::skill_ack(&req, target));
-            } else {
-                out.push(MoveEvent::ActionEvent);
             }
             return;
         };
@@ -1272,10 +1310,13 @@ impl Locomotion {
                 }
                 let n = *ctx.next_buff;
                 *ctx.next_buff += 3;
+                // A vector handled in the frame the sprint starts opens the stream already
+                // (2026-10-14_22-23-02 f308: scaled in the sprint-start batch).
+                let streaming = self.ack_wanted && self.wasd != (0, 0);
                 r.sprint = Some(SprintRun {
                     start_frame: roll,
                     buff_base: n,
-                    streaming: false,
+                    streaming,
                 });
                 r.sprinted = true;
                 self.mover.sprint_roll();
@@ -1441,10 +1482,26 @@ impl Locomotion {
             }
             Due::UnscaledAck => *unscaled = true,
             Due::Stance(combat) => {
-                self.stance_entered = true;
-                if self.combat_stance != combat {
+                let entered = std::mem::replace(&mut self.stance_entered, true);
+                // Before entry a request waits: 2026-10-14 (four sessions, `0x200` value 1 and
+                // mode 0 right after mode 1 at f1) answers it one frame after the entry stance.
+                let request = if entered {
+                    self.stance_request.take()
+                } else {
+                    None
+                };
+                if self.combat_stance != combat || request.is_some() {
                     self.combat_stance = combat;
-                    out.push(MoveEvent::StanceChanged { combat });
+                    let value = if combat {
+                        ctx.config.stance_lerp_combat
+                    } else {
+                        ctx.config.stance_lerp_peaceful
+                    };
+                    out.push(MoveEvent::OrientationLerp { value });
+                    out.push(MoveEvent::StanceChanged { combat, request });
+                }
+                if !entered && self.stance_request.is_some() {
+                    self.due.push((ctx.frame + 1, Due::Stance(self.aim_combat)));
                 }
             }
         }
@@ -1949,16 +2006,83 @@ mod tests {
         let mut r = Rig::new((50, 50));
         r.loco.set_stance(true);
         assert_eq!(
-            r.tick(&[MoveInput::AimMode { mode: 0 }]),
-            vec![MoveEvent::StanceChanged { combat: false }]
+            r.tick(&[
+                MoveInput::StanceRequest { value: 1 },
+                MoveInput::AimMode { mode: 0 }
+            ]),
+            vec![
+                MoveEvent::OrientationLerp { value: 0.2 },
+                MoveEvent::StanceChanged {
+                    combat: false,
+                    request: Some(1)
+                }
+            ]
         );
         assert!(!r.loco.in_combat_stance());
         assert_eq!(
-            r.tick(&[MoveInput::AimMode { mode: 1 }]),
-            vec![MoveEvent::StanceChanged { combat: true }]
+            r.tick(&[
+                MoveInput::StanceRequest { value: 4 },
+                MoveInput::AimMode { mode: 1 }
+            ]),
+            vec![
+                MoveEvent::OrientationLerp { value: 0.05 },
+                MoveEvent::StanceChanged {
+                    combat: true,
+                    request: Some(4)
+                }
+            ]
         );
-        // No change: no event.
+        // No change and no request: no event.
         assert!(r.tick(&[MoveInput::AimMode { mode: 1 }]).is_empty());
+        // A request alone in the same stance is still answered (2026-10-14: the first skill
+        // use in mouse mode can come when the stance is already combat).
+        assert_eq!(
+            r.tick(&[
+                MoveInput::StanceRequest { value: 4 },
+                MoveInput::AimMode { mode: 1 }
+            ]),
+            vec![
+                MoveEvent::OrientationLerp { value: 0.05 },
+                MoveEvent::StanceChanged {
+                    combat: true,
+                    request: Some(4)
+                }
+            ]
+        );
+    }
+
+    /// 2026-10-14 entry: mode 1, `0x200` value 1 and mode 0 at f1; the entry stance (combat)
+    /// 9 capture frames later (8 after the input's tick), then the request one frame after it (stance 0, value 1).
+    #[test]
+    fn a_request_before_entry_is_answered_after_the_entry_stance() {
+        let mut r = Rig::new((10, 10));
+        r.tick(&[
+            MoveInput::AimMode { mode: 1 },
+            MoveInput::StanceRequest { value: 1 },
+            MoveInput::AimMode { mode: 0 },
+        ]);
+        let ev = r.run(12);
+        assert_eq!(
+            ev,
+            vec![
+                (9, MoveEvent::OrientationLerp { value: 0.05 }),
+                (
+                    9,
+                    MoveEvent::StanceChanged {
+                        combat: true,
+                        request: None
+                    }
+                ),
+                (10, MoveEvent::OrientationLerp { value: 0.2 }),
+                (
+                    10,
+                    MoveEvent::StanceChanged {
+                        combat: false,
+                        request: Some(1)
+                    }
+                ),
+            ]
+        );
     }
 
     #[test]
@@ -2765,6 +2889,7 @@ mod tests {
                     entity: Some(77),
                     ..
                 },
+                MoveEvent::ActionEvent,
                 MoveEvent::SkillAck {
                     x: 40,
                     y: 41,
@@ -2777,12 +2902,24 @@ mod tests {
     }
 
     #[test]
-    fn stance_changes_9_frames_after_aim_mode_one() {
+    fn stance_changes_8_frames_after_aim_mode_one() {
         let mut r = Rig::new((10, 10));
         r.tick(&[MoveInput::AimMode { mode: 0 }]);
         r.tick(&[MoveInput::AimMode { mode: 1 }]);
         let ev = r.run(12);
-        assert_eq!(ev, vec![(11, MoveEvent::StanceChanged { combat: true })]);
+        assert_eq!(
+            ev,
+            vec![
+                (10, MoveEvent::OrientationLerp { value: 0.05 }),
+                (
+                    10,
+                    MoveEvent::StanceChanged {
+                        combat: true,
+                        request: None
+                    }
+                )
+            ]
+        );
         assert!(r.loco.in_combat_stance());
         // Once only.
         r.tick(&[MoveInput::AimMode { mode: 1 }]);
@@ -2897,7 +3034,11 @@ mod tests {
         let d = (r.loco.position().0 - start.0, r.loco.position().1 - start.1);
         // The client's line goes to a whole goal cell (floor(vector * 0.092) away), so the coast is
         // up to two degrees off the cursor direction.
-        assert!((d.0 / total - 100.0 / 180.03).abs() < 0.03, "{}", d.0 / total);
+        assert!(
+            (d.0 / total - 100.0 / 180.03).abs() < 0.03,
+            "{}",
+            d.0 / total
+        );
         assert_eq!(r.loco.state(), &MoveState::Idle);
         assert!(r.run(5).is_empty());
     }

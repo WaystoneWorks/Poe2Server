@@ -15,8 +15,9 @@ use poe_net::Reader;
 use poe_proto::{
     Direction, Message, OpcodeTable, Protocol,
     instance::{
-        AimTarget, ComponentDelta, MoveDirection, MoveDirectionUpdate, SetAimTarget, SkillReleased,
-        SprintInput, SprintState, StartAction, StatsUpdate, UpdateSkillTarget, UseSkill,
+        AimTarget, ComponentDelta, MoveDirection, MoveDirectionUpdate, OrientationLerp,
+        SetAimTarget, SkillReleased, SprintInput, SprintState, StanceRequest, StartAction,
+        StatsUpdate, UpdateSkillTarget, UseSkill,
     },
     skill::{
         BuffAdded, BuffRemoved, SkillInputEnd, SkillInputEndAck, SkillReleasedAck,
@@ -224,6 +225,9 @@ fn expected_name(ev: &str) -> &'static str {
         "buff_added" => BuffAdded::NAME,
         "buff_removed" => BuffRemoved::NAME,
         "aim_echo" => SetAimTarget::NAME,
+        "stance" => ComponentDelta::NAME,
+        "orientation_lerp" => OrientationLerp::NAME,
+        "released_ack" => SkillReleasedAck::NAME,
         other => panic!("fixture event {other}"),
     }
 }
@@ -331,6 +335,27 @@ fn check_fields(exp: &Value, sent: &Sent) -> Result<(), String> {
                 format!("{},{}", m.x, m.y),
             )
         }
+        "stance" => {
+            let m = sent.decode::<ComponentDelta>();
+            let mut want = vec![0u8, 0x04, exp["combat"].as_bool().unwrap() as u8];
+            if let Some(r) = exp["request"].as_u64() {
+                want[1] |= 0x10;
+                want.push(r as u8);
+            }
+            same(
+                "delta",
+                format!("{} {want:02x?}", m.component == 6),
+                format!("true {:02x?}", m.delta),
+            )
+        }
+        "orientation_lerp" => {
+            let m = sent.decode::<OrientationLerp>();
+            same(
+                "value",
+                format!("{:.3} 0", exp["value"].as_f64().unwrap()),
+                format!("{:.3} {}", m.value, m.flag),
+            )
+        }
         _ => Ok(()),
     }
 }
@@ -345,6 +370,30 @@ fn replay(name: &str) {
         fx["start_cell"][1].as_i64().unwrap() as i32,
     );
     let mut s = Session::new(start);
+    // Fixtures that start after the entry stance say which one it was: play the entry first.
+    if let Some(combat) = fx["combat_stance"].as_bool() {
+        s.send(&AimTarget {
+            local_index: 1,
+            mode: 1,
+            cell: None,
+            entity: None,
+        });
+        if !combat {
+            s.send(&StanceRequest {
+                player: 1,
+                value: 1,
+            });
+            s.send(&AimTarget {
+                local_index: 1,
+                mode: 0,
+                cell: None,
+                entity: None,
+            });
+        }
+        for _ in 0..20 {
+            s.tick();
+        }
+    }
     let inputs = fx["inputs"].as_array().unwrap();
     let expect = fx["expect"].as_array().unwrap();
     let last = expect
@@ -382,6 +431,21 @@ fn replay(name: &str) {
                     player: 1,
                     held: i["held"].as_bool().unwrap(),
                 }),
+                "released" => s.send(&SkillReleased {
+                    player: 1,
+                    skill: num(i, "skill") as u32,
+                    unk: num(i, "flag") as u8,
+                }),
+                "aim_mode" => s.send(&AimTarget {
+                    local_index: 1,
+                    mode: num(i, "mode") as u8,
+                    cell: None,
+                    entity: None,
+                }),
+                "stance_request" => s.send(&StanceRequest {
+                    player: 1,
+                    value: num(i, "value") as u8,
+                }),
                 op => panic!("fixture input {op}"),
             }
         }
@@ -406,6 +470,22 @@ fn replay(name: &str) {
         }
     }
     assert!(problems.is_empty(), "{name}:\n{}", problems.join("\n"));
+}
+
+/// Stance changes through the codec: `0x2a6` before the Player delta with the stance byte
+/// and the requested value (`0x1000`).
+#[test]
+fn stance_fixtures() {
+    for name in [
+        "stance_to_mouse_mode",
+        "stance_to_combat_mode",
+        "stance_first_skill_in_mouse_mode",
+        "stance_first_skill_merged",
+        "stance_entry_with_request",
+        "stance_entry",
+    ] {
+        replay(name);
+    }
 }
 
 #[test]
@@ -529,7 +609,7 @@ fn combat_stance_goes_out_after_the_first_aim_mode() {
         }
     }
     let (frame, delta) = stance.expect("a stance change");
-    assert_eq!(frame, 9 + 1, "stance_delay_frames after the input's tick");
+    assert_eq!(frame, 8 + 1, "stance_delay_frames after the input's tick");
     assert_eq!(delta.component, 6);
     assert_eq!(delta.delta, [0x00, 0x04, 0x01]);
     assert_eq!(delta.header.unk_14, 0xffff_ffff);
@@ -607,6 +687,7 @@ fn non_movement_packets_are_not_consumed() {
         SkillReleased::NAME,
         SprintInput::NAME,
         AimTarget::NAME,
+        StanceRequest::NAME,
     ] {
         assert!(
             protocol.instance.id(Direction::Client, name).is_ok(),
@@ -618,9 +699,7 @@ fn non_movement_packets_are_not_consumed() {
 #[test]
 fn action_event_is_skipped_while_instance_toml_lacks_it() {
     use poe_game::locomotion::MoveEvent;
-    let raw = Arc::new(
-        Protocol::load(&capture_opcodes_dir()).unwrap(),
-    );
+    let raw = Arc::new(Protocol::load(&capture_opcodes_dir()).unwrap());
     let listed = raw
         .instance
         .id(Direction::Server, ActionEvent::NAME)

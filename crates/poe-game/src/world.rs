@@ -127,7 +127,7 @@ impl World {
     }
 
     /// While paused, frames still count but nothing moves and nothing is answered; inputs
-    /// wait. (Solo escape menu.)
+    /// wait (solo escape menu). Only the stance timer runs.
     pub fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
     }
@@ -215,9 +215,7 @@ impl World {
     /// in the order the messages are sent.
     pub fn tick(&mut self) -> Vec<WorldEvent> {
         self.frame += 1;
-        if self.paused {
-            return Vec::new();
-        }
+        let paused = self.paused;
         let dt = self.config.tick_ms as f32 / 1000.0;
         let mut out = Vec::new();
         for e in self.entities.values_mut() {
@@ -229,7 +227,12 @@ impl World {
                 next_action: &mut self.next_action,
                 next_buff: &mut e.next_buff,
             };
-            for event in e.movement.tick(&mut ctx) {
+            let events = if paused {
+                e.movement.tick_paused(&mut ctx)
+            } else {
+                e.movement.tick(&mut ctx)
+            };
+            for event in events {
                 out.push(WorldEvent {
                     frame: self.frame,
                     entity: e.id,

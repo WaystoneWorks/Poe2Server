@@ -18,9 +18,9 @@ use poe_proto::{
     Direction, Message, Protocol,
     entity::{PLAYER_COMPONENT, PlayerDelta},
     instance::{
-        AimTarget, ComponentDelta, MoveDirection, MoveDirectionUpdate, SetAimTarget,
-        SimulationHeader, SkillReleased, SprintInput, SprintState, StartAction, StatsUpdate,
-        UpdateSkillTarget, UseSkill,
+        AimTarget, ComponentDelta, MoveDirection, MoveDirectionUpdate, OrientationLerp,
+        SetAimTarget, SimulationHeader, SkillReleased, SprintInput, SprintState, StanceRequest,
+        StartAction, StatsUpdate, UpdateSkillTarget, UseSkill,
     },
     skill::{
         BuffAdded, BuffRemoved, SkillInputEnd, SkillInputEndAck, SkillReleasedAck, SkillUseParams,
@@ -118,6 +118,9 @@ pub fn client_input(name: &str, r: &mut Reader<'_>) -> Result<Option<MoveInput>,
                 flag: m.unk,
             }
         }
+        StanceRequest::NAME => MoveInput::StanceRequest {
+            value: StanceRequest::decode(r)?.value,
+        },
         SprintInput::NAME => MoveInput::SprintInput {
             held: SprintInput::decode(r)?.held,
         },
@@ -355,7 +358,16 @@ impl Codec {
                 "out-aim",
                 format!("0\t{}\t{}", cell.0, cell.1),
             )?),
-            MoveEvent::StanceChanged { combat } => out.push(
+            MoveEvent::OrientationLerp { value } => out.push(self.pack(
+                &OrientationLerp {
+                    header: plain,
+                    value: *value,
+                    flag: 0,
+                },
+                "out-orientation-lerp",
+                value.to_string(),
+            )?),
+            MoveEvent::StanceChanged { combat, request } => out.push(
                 self.pack(
                     &ComponentDelta {
                         // Official: after all entities (order key 0xffffffff).
@@ -368,12 +380,13 @@ impl Codec {
                         component: PLAYER_COMPONENT,
                         delta: PlayerDelta {
                             combat_stance: Some(*combat),
+                            unk_3e7: *request,
                             ..Default::default()
                         }
                         .encode(),
                     },
                     "out-component",
-                    format!("stance\t{combat}"),
+                    format!("stance\t{combat}\t{request:?}"),
                 )?,
             ),
             // The client checks the cell of a direction update only for a non-zero direction,

@@ -221,6 +221,9 @@ pub struct AoInfo {
     pub orientation_mask: u8,
     /// `Hull` block lines (`key`, unquoted value) over the `extends` chain, base first.
     pub hull: Vec<(String, String)>,
+    /// The `AnimationController` block of some file of the chain has `anim_driven_subobject`
+    /// lines: the hull is stamped a second time unturned ([`crate::collision::build`]).
+    pub anim_driven: bool,
 }
 
 /// Orientation names in bit order (`.tmd` entry lists, `random_orientation` lists).
@@ -236,9 +239,10 @@ fn quoted(v: &str) -> &str {
 }
 
 /// Parses one `.ao` file's text: its `extends` and `AOSet` block.
-fn parse_ao(text: &str) -> (Option<String>, Option<AoInfo>, Vec<(String, String)>) {
+fn parse_ao(text: &str) -> (Option<String>, Option<AoInfo>, Vec<(String, String)>, bool) {
     let mut extends = None;
     let mut hull: Vec<(String, String)> = Vec::new();
+    let mut anim_driven = false;
     let mut set: Option<AoInfo> = None;
     let (mut depth, mut name) = (0usize, String::new());
     for line in text.lines() {
@@ -255,6 +259,9 @@ fn parse_ao(text: &str) -> (Option<String>, Option<AoInfo>, Vec<(String, String)
             if name == "AOSet" && set.is_none() {
                 set = Some(AoInfo { has_set: true, scale: (1.0, 1.0), ..Default::default() });
             }
+        }
+        if depth == 1 && name == "AnimationController" && let Some((k, _)) = l.split_once('=') {
+            anim_driven |= k.trim() == "anim_driven_subobject";
         }
         if depth == 1 && name == "Hull" && let Some((k, v)) = l.split_once('=') {
             hull.push((k.trim().to_string(), quoted(v).to_string()));
@@ -292,7 +299,7 @@ fn parse_ao(text: &str) -> (Option<String>, Option<AoInfo>, Vec<(String, String)
             }
         }
     }
-    (extends, set, hull)
+    (extends, set, hull, anim_driven)
 }
 
 /// Object files by path, parsed once.
@@ -320,7 +327,8 @@ impl<'a> AoCache<'a> {
                 break;
             }
             let Ok(bytes) = self.files.read(&format!("{p}")) else { break };
-            let (ext, set, hull) = parse_ao(&crate::text_utf16(&bytes));
+            let (ext, set, hull, anim_driven) = parse_ao(&crate::text_utf16(&bytes));
+            info.anim_driven |= anim_driven;
             chain.push((set, hull));
             next = ext.filter(|e| !e.is_empty() && e != "nothing").map(|e| crate::generate::normalize_path(&format!("{e}.ao")));
         }

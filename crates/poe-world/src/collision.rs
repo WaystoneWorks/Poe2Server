@@ -246,6 +246,7 @@ pub fn build<'a>(map: &TileMap, files: &dyn Files, doodads: impl IntoIterator<It
     // Object hulls (any order: the layers only ever take minimums).
     let mut cache = crate::doodads::AoCache::new(files);
     let mut hulls: HashMap<String, std::sync::Arc<Vec<HullSection>>> = HashMap::new();
+    let mut anim_driven: HashMap<String, bool> = HashMap::new();
     for d in doodads {
         if d.leaf.is_empty() || !d.solid || !d.placed || !d.exists(side) {
             continue;
@@ -254,6 +255,7 @@ pub fn build<'a>(map: &TileMap, files: &dyn Files, doodads: impl IntoIterator<It
         if !hulls.contains_key(&key) {
             let info = cache.get(&d.leaf);
             hulls.insert(key.clone(), std::sync::Arc::new(parse_hull(&info.hull)));
+            anim_driven.insert(key.clone(), info.anim_driven);
         }
         if std::env::var("POE_DBG_HULLS").is_ok() && hulls[&key].iter().any(|s| !s.walk_tri.is_empty() || !s.proj_tri.is_empty() || !s.walk_circle.is_empty() || !s.proj_circle.is_empty()) {
             eprintln!("HULL {} counted {} kind {} leaf {}", d.path.rsplit('/').next().unwrap_or(""), d.counted, d.kind, d.leaf.rsplit('/').next().unwrap_or(""));
@@ -263,6 +265,14 @@ pub fn build<'a>(map: &TileMap, files: &dyn Files, doodads: impl IntoIterator<It
             (n.len() == 3).then(|| (n[0], n[1], n[2]))
         });
         let before = watch.map(|(x, y, l)| grid.get(l, x, y));
+        // An `AnimationController` with `anim_driven_subobject` lines (the breakable fences):
+        // the client grid holds the hull twice, unturned and unmirrored (as if stamped before the
+        // Positioned angle `+0x44c` and flip `+0x1e4` are set) and with the final transform.
+        // Found with the grid gate (`MapPlantation` `WoodenFenceShort01.ao`, 800 of 800
+        // layouts), not traced in the code. `POE_NO_ANIM_DRIVEN` turns it off.
+        if anim_driven[&key] && std::env::var_os("POE_NO_ANIM_DRIVEN").is_none() {
+            stamp_hull(&mut grid, &hulls[&key], (d.x, d.y), 0.0, d.scale, false);
+        }
         stamp_hull(&mut grid, &hulls[&key], (d.x, d.y), d.angle, d.scale, d.flip);
         if let (Some((x, y, l)), Some(b)) = (watch, before) {
             if grid.get(l, x, y) != b {

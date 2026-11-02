@@ -178,6 +178,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let hash = g.map.tile_hash().to_string();
                                 let grid_hash = grid_for.filter(|t| *t == hash).and_then(|_| {
                                     let grid = poe_world::collision::build(&g.map, files, g.doodads.iter().chain(&g.tile_objects), poe_world::doodads::Side::Client).ok()?;
+                                    // `POE_DBG_GRID_DUMP=DIR`: the port's grid (`area_seed_topology_orientation.bin`)
+                                    // and its solid placed objects (`.objects.tsv`: x y angle flip leaf) per layout.
+                                    if let Some(d) = std::env::var_os("POE_DBG_GRID_DUMP") {
+                                        let stem = std::path::Path::new(&d).join(format!("{area_c}_{seed}_{topology}_{orientation}"));
+                                        let _ = std::fs::write(stem.with_extension("bin"), grid.pwg1());
+                                        let objs: String = g.doodads.iter().chain(&g.tile_objects).filter(|o| o.placed && o.solid).map(|o| format!("{}\t{}\t{:.4}\t{}\t{}\n", o.x, o.y, o.angle, o.flip, o.leaf)).collect();
+                                        let _ = std::fs::write(stem.with_extension("objects.tsv"), objs);
+                                    }
                                     Some(format!("{:016x}", fnv1a64(&grid.pwg1())))
                                 });
                                 Ours::Done { hash, doodad_hash: g.doodad_hash().to_string(), size: (g.map.width, g.map.height), grid_hash }

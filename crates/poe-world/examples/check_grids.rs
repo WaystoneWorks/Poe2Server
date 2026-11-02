@@ -122,7 +122,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Ok(v) = std::env::var("POE_DBG_NEAR") {
                             let n: Vec<i32> = v.split(',').filter_map(|x| x.parse().ok()).collect();
                             for d in doodads.iter().filter(|d| (d.x - n[0]).abs() <= n[2] && (d.y - n[1]).abs() <= n[2]) {
-                                eprintln!("NEAR {name} ({}, {}) {:.3} counted {} solid {} side {} league {} kind {} path {} leaf {}", d.x, d.y, d.angle, d.counted, d.solid, d.side, d.league, d.kind, d.path, d.leaf);
+                                eprintln!("NEAR {name} ({}, {}) {:.3} counted {} solid {} side {} league {} flip {} (mirrored {} entry {}) scale {} kind {} path {} leaf {}", d.x, d.y, d.angle, d.counted, d.solid, d.side, d.league, d.flip, d.mirrored, d.entry_flip, d.scale, d.kind, d.path, d.leaf);
                             }
                         }
                         if let Some(d) = &dump {

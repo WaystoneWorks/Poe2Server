@@ -2,7 +2,7 @@
 //! builds it with `[terrain] generated_grid`) for the in-game wall scenarios (hub PLAN R2,
 //! `scripts/game-test/`):
 //!
-//! `cargo run --release -p poe-world --example wall_probe -- <area id> <seed> [--count N] [--layout FILE]`
+//! `cargo run --release -p poe-world --example wall_probe -- <area id> <seed> [--count N] [--runs] [--layout FILE]`
 //! (`--layout` also writes the generated layout in the DLL's `terrain_layout_<hash>.tsv` format)
 //! (`POE_FORCE=<topology>:<orientation>` as in `area_gen`; unset = the natural layout, which is
 //! what `transfer <area> <seed>` gets with `[terrain] force_layout`)
@@ -13,6 +13,8 @@
 //! - `wall x y keys free solid`: from (x, y) the W/A/S/D combination `keys` walks `free` cells
 //!   in a straight line, then `solid` unwalkable cells follow (a wall or cliff edge 5+ cells
 //!   wide across the line);
+//! - with `--runs`, after each `open` line: `runs x y K:n ...`, the free cells (up to 80) from
+//!   the spot along each of the 8 key directions (room for a roll plus a sprint);
 //! - `narrow x y keys width`: a passage `width` cells wide; walking `keys` from (x, y) goes
 //!   through it after 15 cells and comes out in the open after 30.
 //!
@@ -60,9 +62,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let seed: u32 = args.next().ok_or("seed")?.parse()?;
     let mut count = 5;
     let mut layout = None;
+    let mut runs = false;
     while let Some(a) = args.next() {
         if a == "--count" {
             count = args.next().ok_or("--count N")?.parse()?;
+        } else if a == "--runs" {
+            runs = true;
         } else if a == "--layout" {
             layout = Some(args.next().ok_or("--layout FILE")?);
         }
@@ -93,6 +98,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if open.len() < count && far(&open, p) && gr.clear(p.0, p.1, 12) {
             open.push(p);
             println!("open {} {}", p.0, p.1);
+            if runs {
+                let r: Vec<String> = DIRS.iter().map(|(k, d)| format!("{k}:{}", gr.run(p, unit(*d), 80))).collect();
+                println!("runs {} {} {}", p.0, p.1, r.join(" "));
+            }
         }
     }
     let mut walls = Vec::new();

@@ -739,12 +739,17 @@ fn a_sprint_without_a_stream_ends_with_the_unscaled_direction() {
     assert!(!batch.iter().any(|b| b.is::<MoveDirectionUpdate>()));
     let m = s.tick()[0].decode::<MoveDirectionUpdate>();
     assert_eq!((m.dir_x, m.dir_y), (180, 0));
-    // The walk goes on: the server's cell advances at walking speed after the restart gap.
+    // The client stands through its `SprintEnd` animation (no stream: no coast), then the
+    // held key walks on from the sprint-off batch + 32.
     let x = s.cell().0;
-    for _ in 0..10 {
+    for _ in 0..28 {
         s.tick();
     }
-    assert!(s.cell().0 >= x + 10, "{} -> {}", x, s.cell().0);
+    assert!(s.cell().0 <= x + 1, "{} -> {}", x, s.cell().0);
+    for _ in 0..12 {
+        s.tick();
+    }
+    assert!(s.cell().0 >= x + 9, "{} -> {}", x, s.cell().0);
 }
 
 #[test]
@@ -771,10 +776,10 @@ fn sim_config_comes_from_game_data_and_config() {
             cfg.sprint.coast_start_scale,
             cfg.sprint.coast_frames,
             cfg.sprint.coast_delay_frames,
-            cfg.sprint.restart_delay_frames,
+            cfg.sprint.end_anim_frames,
             cfg.sprint.release_window_frames
         ),
-        (1.0614, 29.5, 1, 2, 6)
+        (1.0614, 29.5, 1, 31, 6)
     );
     assert_eq!(
         (

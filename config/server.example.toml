@@ -78,8 +78,9 @@ sprint_coast_start_scale = 1.0614
 sprint_coast_frames = 29.5
 # Frames between the sprint-off batch and the first coasting step.
 sprint_coast_delay_frames = 1
-# Frames between the sprint-off batch and the first step of a walk that a held key restarts.
-sprint_restart_delay_frames = 2
+# Frames between the sprint-off batch and the end of the client's SprintEnd animation: no WASD walk
+# starts while it plays; at its end a held key walks on (first step one frame later).
+sprint_end_anim_frames = 31
 # A zero direction within this many frames after a cursor sprint's end means the keys were already
 # up when the restart arrived (the client coasts instead of walking on); measured 1-5 frames.
 # In click-to-move mode (no keys) the sprint coasts at once; this is how long vectors in flight are ignored.

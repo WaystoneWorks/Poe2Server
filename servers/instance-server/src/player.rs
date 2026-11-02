@@ -63,7 +63,7 @@ pub fn sim_config(
     cfg.sprint.coast_start_scale = config.sprint_coast_start_scale;
     cfg.sprint.coast_frames = config.sprint_coast_frames;
     cfg.sprint.coast_delay_frames = config.sprint_coast_delay_frames;
-    cfg.sprint.restart_delay_frames = config.sprint_restart_delay_frames;
+    cfg.sprint.end_anim_frames = config.sprint_end_anim_frames;
     cfg.sprint.release_window_frames = config.sprint_release_window_frames;
     cfg.sprint.cursor_match_degrees = config.sprint_cursor_match_degrees;
     cfg.attack_speed.floor = config.attack_speed_floor;

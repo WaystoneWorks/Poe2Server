@@ -978,11 +978,13 @@ pub struct MovementConfig {
     /// Frames between the sprint-off batch and the first coasting step (default 1).
     #[serde(default = "default_sprint_coast_delay_frames")]
     pub sprint_coast_delay_frames: u32,
-    /// Frames between the sprint-off batch and the first step of a walk the unscaled direction
-    /// ack restarts, when a key is still held (default 2: new Move action 2 frames after the
-    /// batch, first step one later; official `f2394` -> Move at `f2395`, step `f2396`).
-    #[serde(default = "default_sprint_restart_delay_frames")]
-    pub sprint_restart_delay_frames: u32,
+    /// Frames between the sprint-off batch and the end of the client's `SprintEnd` animation
+    /// (default 31). While it plays the client starts no WASD walk (`Actor_StartWasdWalk`
+    /// `0x141e4fb40` refuses on animation `0x36a`/`0x36b`), so the unscaled direction ack
+    /// restarts nothing; at its end a held key starts a Move by itself (first step one frame
+    /// later; batch + 31 measured in three runs of ours, docs/protocol/movement.md).
+    #[serde(default = "default_sprint_end_anim_frames")]
+    pub sprint_end_anim_frames: u32,
     /// A zero direction this many frames after the sprint-off batch, after a sprint that
     /// followed the cursor (Space only), means the keys were already up when the restart reached
     /// the client, which coasts (default 6: the client sends the zero 1 to 2 frames after the
@@ -1032,7 +1034,7 @@ impl Default for MovementConfig {
             sprint_coast_start_scale: default_sprint_coast_start_scale(),
             sprint_coast_frames: default_sprint_coast_frames(),
             sprint_coast_delay_frames: default_sprint_coast_delay_frames(),
-            sprint_restart_delay_frames: default_sprint_restart_delay_frames(),
+            sprint_end_anim_frames: default_sprint_end_anim_frames(),
             sprint_release_window_frames: default_sprint_release_window_frames(),
             sprint_cursor_match_degrees: default_sprint_cursor_match_degrees(),
             attack_speed_floor: default_attack_speed_floor(),
@@ -1060,8 +1062,8 @@ fn default_sprint_coast_delay_frames() -> u32 {
     1
 }
 
-fn default_sprint_restart_delay_frames() -> u32 {
-    2
+fn default_sprint_end_anim_frames() -> u32 {
+    31
 }
 
 fn default_sprint_release_window_frames() -> u32 {

@@ -109,9 +109,14 @@ pub struct SprintConfig {
     /// Frames between the sprint-off batch and the first coasting step (the batch's own frame
     /// still has the sprint step, the next one none).
     pub coast_delay_frames: u32,
-    /// Frames between the sprint-off batch and the first step of a walk the unscaled `MoveAck`
-    /// restarts (client: new Move action 2 frames after the batch, first step 1 later).
-    pub restart_delay_frames: u32,
+    /// Frames between the sprint-off batch and the end of the client's `SprintEnd` animation.
+    /// The sprint's end (`0x141b773a0`) ends the Move action, stops the entity and plays
+    /// `SprintEnd` (animation `0x36a`; `SprintEndBonk` `0x36b` at a wall); while it plays
+    /// `Actor_StartWasdWalk` (`0x141e4fb40`) starts no walk, neither for the unscaled `MoveAck`
+    /// nor for a held or new key. The Actor tick calls it every frame, so a key held at the
+    /// animation's end walks on at once: Move at batch + 31, first step one frame later (three
+    /// runs of ours with W held since before the roll; 21 once with a stream, not explained).
+    pub end_anim_frames: u32,
     /// A zero WASD vector this many frames after the sprint-off batch, after a sprint that
     /// followed the cursor (Space held, no key), means the keys were already up when the
     /// unscaled `MoveAck` reached the client, which then coasted instead of walking on (the
@@ -141,10 +146,13 @@ pub struct AttackSpeedConfig {
     /// Ramp rate of the factor, per second (measured 0.050-0.054 per 33 ms frame).
     pub ramp_per_second: f32,
     /// Frames after the attack's `StartAction` at which the factor drops to `floor` at once
-    /// (7 in all 4 cases; until then it ramps down).
+    /// (7 in all 4 cases; until then it ramps down). The client snaps at the attack
+    /// animation's contact event (`0x141a3be21`), which the server does not model.
     pub snap_frames: u32,
-    /// Frames after the attack's `StartAction` from which the factor ramps back to 1 (the
-    /// first higher step is the frame after; 12 in 3 of 4 cases, 16 once).
+    /// Frames after the attack's `StartAction` from which the factor ramps back to 1 at the
+    /// same rate (the first higher step is the frame after; 12 in 3 of 4 cases, 16 once). The
+    /// client ramps back once `movement_speed_while_performing_action_locked_duration_%` of
+    /// the action has passed, or when the action ends (`0x141e43f51`, `0x141e455b8`).
     pub lock_frames: u32,
 }
 
@@ -210,7 +218,7 @@ impl MovementConfig {
                 coast_start_scale: 1.0614,
                 coast_frames: 29.5,
                 coast_delay_frames: 1,
-                restart_delay_frames: 2,
+                end_anim_frames: 31,
                 release_window_frames: 6,
                 cursor_match_degrees: 10.0,
             },
@@ -494,6 +502,11 @@ enum Due {
     AttackWindow {
         roll: u64,
     },
+    /// The client's `SprintEnd` animation of the sprint that ended in frame `end` is over: a
+    /// held key walks on.
+    SprintEndAnimOver {
+        end: u64,
+    },
     /// Re-issues the Move `StartAction` of a held click.
     MoveRestart {
         seq: u64,
@@ -556,6 +569,9 @@ pub struct Locomotion {
     attack_after_ack: Option<(UseSkill, Cell)>,
     /// The sprint that just ended by key release, see [`SprintEnd`].
     sprint_end: Option<SprintEnd>,
+    /// The client's `SprintEnd` animation runs until this frame: no WASD walk starts before it
+    /// (see [`SprintConfig::end_anim_frames`]).
+    sprint_anim_until: Option<u64>,
     /// The latest `0x63` was sent in click-to-move mode ([`MoveInput::CursorDirection`]).
     cursor_mode: bool,
     /// The cursor's offset from the player, as the roll key's target last said (`0x1a5`,
@@ -600,6 +616,7 @@ impl Locomotion {
             release_pending: false,
             release_due: false,
             sprint_end: None,
+            sprint_anim_until: None,
             cursor_mode: false,
             roll_cursor: (0, 0),
             unscaled_dir: None,
@@ -843,6 +860,18 @@ impl Locomotion {
         self.cursor_mode = cursor;
         self.ack_wanted = true;
         let moving = dir != (0, 0);
+        if !cursor
+            && self
+                .sprint_anim_until
+                .is_some_and(|until| ctx.frame < until)
+        {
+            // The client's `SprintEnd` animation still plays: `Actor_StartWasdWalk` starts no
+            // walk and the coast goes on; the key, if still down at its end, walks on then.
+            if moving {
+                self.facing = dir;
+            }
+            return;
+        }
         if moving {
             self.facing = dir;
             // Cursor vectors still in flight when the sprint ended keep its direction up to
@@ -1040,6 +1069,7 @@ impl Locomotion {
             self.facing = heading;
         }
         self.sprint_end = None;
+        self.sprint_anim_until = None;
         self.mover.start(if heading == (0, 0) {
             Motion::Idle
         } else {
@@ -1102,6 +1132,7 @@ impl Locomotion {
             self.facing = (target.0 - cell.0, target.1 - cell.1);
         }
         self.sprint_end = None;
+        self.sprint_anim_until = None;
         self.state = MoveState::Walking(Walk::Target { goal: target });
         self.mover.start(Motion::MoveTo {
             x: target.0 as f32 + 0.5,
@@ -1481,6 +1512,19 @@ impl Locomotion {
                 }
             }
             Due::UnscaledAck => *unscaled = true,
+            Due::SprintEndAnimOver { end } => {
+                if self.sprint_anim_until != Some(end + cfg.sprint.end_anim_frames as u64) {
+                    return;
+                }
+                self.sprint_anim_until = None;
+                // The Actor tick's `Actor_StartWasdWalk` call finds the key down (WASD mode
+                // only: click-to-move mode has no keys).
+                if self.wasd != (0, 0) && !self.cursor_mode && matches!(self.state, MoveState::Idle)
+                {
+                    self.sprint_end = None;
+                    self.resume_walking();
+                }
+            }
             Due::Stance(combat) => {
                 let entered = std::mem::replace(&mut self.stance_entered, true);
                 // Before entry a request waits: 2026-10-14 (four sessions, `0x200` value 1 and
@@ -1609,11 +1653,11 @@ impl Locomotion {
             self.due.push((frame + 1, Due::UnscaledAck));
             self.unscaled_dir = Some(self.wasd);
         }
-        self.finish_sprint_by_release(ctx);
+        self.finish_sprint_by_release(run.streaming, ctx);
     }
 
     /// The sprint ended by the key release: walks on, or coasts.
-    fn finish_sprint_by_release(&mut self, ctx: &StepCtx) {
+    fn finish_sprint_by_release(&mut self, streaming: bool, ctx: &StepCtx) {
         if !matches!(self.state, MoveState::Sprinting(_)) {
             self.finish_sprint();
             return;
@@ -1635,30 +1679,41 @@ impl Locomotion {
                 coasting: true,
             });
             self.start_coast(dir, ctx.frame + 1 + cfg.coast_delay_frames as u64, ctx);
-        } else if self.wasd != (0, 0) {
-            // The restart: the unscaled `MoveAck` of the next frame starts a new Move action
-            // on the client, which steps `restart_delay_frames` after this batch.
-            let dir = self.wasd;
-            self.state = MoveState::Walking(Walk::Direction(dir));
-            self.mover.start_after(
-                Motion::Direction {
-                    x: dir.0 as f32,
-                    y: dir.1 as f32,
-                },
-                cfg.restart_delay_frames,
-            );
+        } else if self.wasd != (0, 0) || self.facing != (0, 0) {
+            // The client plays `SprintEnd` and coasts whether or not a key is held; the
+            // unscaled `MoveAck` of the next frame restarts nothing (`Actor_StartWasdWalk`
+            // refuses during the animation). A key still down at its end walks on.
+            let dir = if self.wasd != (0, 0) {
+                self.wasd
+            } else {
+                self.facing
+            };
+            self.state = MoveState::Idle;
             self.sprint_end = Some(SprintEnd {
                 frame: ctx.frame,
                 dir,
                 cursor: self.is_cursor_vector(dir, ctx),
                 coasting: false,
             });
-        } else if self.facing != (0, 0) {
-            self.state = MoveState::Idle;
-            let first = ctx.frame + 1 + cfg.coast_delay_frames as u64;
-            self.start_coast(self.facing, first, ctx);
+            if streaming {
+                self.start_coast(dir, ctx.frame + 1 + cfg.coast_delay_frames as u64, ctx);
+            } else {
+                // No `MoveAck` stream (a key held since before the roll): the client stops
+                // where it is and stands through `SprintEnd` (two runs of ours, 2026-11-02:
+                // one partial step, then none for 30 frames). Why the stream makes the
+                // difference is not traced (the `0x64` of the sprint-off batch is a guess).
+                self.mover.start(Motion::Idle);
+            }
+            self.sprint_anim_until = Some(ctx.frame + cfg.end_anim_frames as u64);
         } else {
             self.finish_sprint();
+        }
+        if let Some(until) = self.sprint_anim_until
+            && until == ctx.frame + cfg.end_anim_frames as u64
+            && !self.cursor_mode
+        {
+            self.due
+                .push((until, Due::SprintEndAnimOver { end: ctx.frame }));
         }
     }
 
@@ -2537,10 +2592,9 @@ mod tests {
                 "all_hits"
             ]
         );
-        assert_eq!(
-            r.loco.state(),
-            &MoveState::Walking(Walk::Direction((0, -180)))
-        );
+        // The client coasts through its `SprintEnd` animation (no walk before its end).
+        assert_eq!(r.loco.state(), &MoveState::Idle);
+        assert!(matches!(r.mover_motion(), Motion::Coast { .. }));
         let ev = r.tick(&[]);
         assert!(matches!(
             &ev[..],
@@ -2977,28 +3031,46 @@ mod tests {
     }
 
     #[test]
-    fn a_sprint_ended_with_a_key_held_is_restarted_by_the_unscaled_ack() {
+    fn a_streamless_sprint_ended_with_a_key_held_stands_then_walks_on_after_the_sprint_end_animation() {
         let mut r = sprinting_with_a_key_held((180, 0));
-        // F: the sprint-off batch; the client's Move action ends with it, so there is no
-        // `MoveAck` stream to stop, but the unscaled direction follows in F + 1 (a stream-less
-        // sprint used to end silently and the client walked on by itself at a crawl).
+        // F: the sprint-off batch; the client's Move action ends with it and `SprintEnd`
+        // plays. The unscaled direction still follows in F + 1 (as in every official sprint)
+        // but restarts nothing: `Actor_StartWasdWalk` refuses during the animation.
         let ev = r.tick(&[MoveInput::SkillInputEnd, space(false)]);
         assert!(!ev.iter().any(|e| matches!(e, MoveEvent::MoveAck { .. })));
-        let ev = r.tick(&[]);
+        let ev = r.tick(&[]); // F + 1
         assert!(
             ev.iter()
                 .any(|e| matches!(e, MoveEvent::MoveAck { dir: (180, 0), .. })),
             "{ev:?}"
         );
-        // The client's new Move action steps from F + 3 on, at walking speed.
+        // F + 2 ..: no stream ran, so the client stands through `SprintEnd` (no coast, no
+        // walk).
+        let here = r.loco.position();
+        r.run(29); // F + 30
+        assert_eq!(r.loco.position(), here);
+        assert_eq!(r.loco.state(), &MoveState::Idle);
+        // F + 31: the animation is over and W is still down: Move, first step in F + 32.
+        assert!(step(&mut r, &[]) < 0.1);
         let walk = r.cfg.walk_speed * 0.033;
-        assert_eq!(step(&mut r, &[]), 0.0);
-        assert!((step(&mut r, &[]) - walk).abs() < 1e-3);
         assert!((step(&mut r, &[]) - walk).abs() < 1e-3);
         assert_eq!(
             r.loco.state(),
             &MoveState::Walking(Walk::Direction((180, 0)))
         );
+    }
+
+    #[test]
+    fn a_key_released_during_the_sprint_end_animation_does_not_walk_on() {
+        let mut r = sprinting_with_a_key_held((180, 0));
+        r.tick(&[MoveInput::SkillInputEnd, space(false)]); // F
+        r.run(10);
+        r.tick(&[dir(0, 0)]);
+        r.run(30);
+        assert_eq!(r.loco.state(), &MoveState::Idle);
+        let here = r.loco.position();
+        r.run(5);
+        assert_eq!(r.loco.position(), here);
     }
 
     /// The cursor-direction sprint of the official capture (Space only): the keys are up when
@@ -3063,10 +3135,14 @@ mod tests {
     }
 
     #[test]
-    fn a_new_direction_during_the_coast_walks_on_at_walking_speed() {
-        let mut r = sprinting_with_cursor_release_at_f2();
+    fn a_new_direction_during_the_coast_walks_on_when_the_animation_ends() {
+        let mut r = sprinting_with_cursor_release_at_f2(); // F + 2
         r.run(8);
-        r.tick(&[dir(180, 0)]);
+        r.tick(&[dir(180, 0)]); // F + 11: the coast goes on
+        assert!(matches!(r.mover_motion(), Motion::Coast { .. }));
+        r.run(19); // F + 30
+        assert!(matches!(r.mover_motion(), Motion::Coast { .. }));
+        r.tick(&[]); // F + 31: Move
         let walk = r.cfg.walk_speed * 0.033;
         assert!((step(&mut r, &[]) - walk).abs() < 1e-3);
         assert_eq!(
@@ -3076,9 +3152,9 @@ mod tests {
     }
 
     #[test]
-    fn a_key_released_just_after_the_sprint_stops_at_once() {
-        // The vector is a key vector: the client restarted its walk with the unscaled `MoveAck`
-        // and a key release is the usual immediate stop.
+    fn a_key_released_just_after_the_sprint_does_not_stop_the_coast() {
+        // The client's Move action is over and `SprintEnd` plays: a key release has nothing
+        // to stop (sprint-w game test cases 2 and 3: both coast to a stop).
         let mut r = sprinting((0, -180));
         r.run(3);
         r.tick(&[MoveInput::SkillInputEnd, space(false)]);
@@ -3086,7 +3162,7 @@ mod tests {
         r.tick(&[dir(0, 0)]);
         let here = r.loco.position();
         r.run(10);
-        assert_eq!(r.loco.position(), here);
+        assert!(dist(here, r.loco.position()) > 8.0);
     }
 
     // ---- problem 1: an exactly diagonal cursor (movement.md, "In-game check, 2026-10-21") ------
@@ -3217,11 +3293,12 @@ mod tests {
     }
 
     #[test]
-    fn the_same_vector_with_the_cursor_elsewhere_is_a_key_and_stops_at_once() {
-        // W pressed while sprinting towards another cursor: its release is the usual stop.
-        assert!(wasd_sprint_released_with_zero_in_f1((-30, 30), (127, 127)) < 0.01);
-        assert!(wasd_sprint_released_with_zero_in_f1((20, 50), (127, 127)) < 0.01);
-        assert!(wasd_sprint_released_with_zero_in_f1((0, 0), (180, 0)) < 0.01);
+    fn a_key_vector_released_at_the_sprint_end_coasts_as_well() {
+        // W pressed while sprinting towards another cursor: the client coasts all the same
+        // (`SprintEnd`), the release has no walk to stop.
+        assert!(wasd_sprint_released_with_zero_in_f1((-30, 30), (127, 127)) > 15.0);
+        assert!(wasd_sprint_released_with_zero_in_f1((20, 50), (127, 127)) > 15.0);
+        assert!(wasd_sprint_released_with_zero_in_f1((0, 0), (180, 0)) > 15.0);
     }
 
     #[test]

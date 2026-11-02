@@ -1654,20 +1654,23 @@ impl Locomotion {
             index: run.buff_base + 2,
         });
         out.push(MoveEvent::Stats(vec![(MoveStat::AllHitsStunYou, 0)]));
-        // The client's Move action ends with the sprint, whether or not a `MoveAck` stream ran;
-        // a key still held restarts it with the unscaled direction of the next frame. (Official
-        // sprints with a stream, 6 of 6: `0x64` unscaled at r+1. WASD held since before the
-        // roll has no stream and no capture: the client coasts to a stop without it, 2 runs of
-        // ours.)
-        if self.wasd != (0, 0) {
+        // The stream's last `0x64` carried the scaled vector: the next frame sends the unscaled
+        // one (official sprints with a stream, 6 of 6: `0x64` unscaled at r+1). Without a
+        // stream the client's direction (Actor +0x400) was never scaled, so that `0x64` would
+        // change nothing but could snap: in lockstep the Actor handler (`0x1421497c0`) places
+        // the entity at any non-zero `0x64` whose cell differs from its grid (+0x444)
+        // (`0x141ddb6f0`, which stops the `SprintEnd` root move via `0x141de5f50`). The
+        // official server's cell equals the client's; ours can be a cell off after the roll,
+        // so it sends none (2026-11-02: one cell off, the client stood instead of coasting).
+        if self.wasd != (0, 0) && run.streaming {
             self.due.push((frame + 1, Due::UnscaledAck));
             self.unscaled_dir = Some(self.wasd);
         }
-        self.finish_sprint_by_release(run.streaming, ctx);
+        self.finish_sprint_by_release(ctx);
     }
 
     /// The sprint ended by the key release: walks on, or coasts.
-    fn finish_sprint_by_release(&mut self, streaming: bool, ctx: &StepCtx) {
+    fn finish_sprint_by_release(&mut self, ctx: &StepCtx) {
         if !matches!(self.state, MoveState::Sprinting(_)) {
             self.finish_sprint();
             return;
@@ -1705,15 +1708,8 @@ impl Locomotion {
                 cursor: self.is_cursor_vector(dir, ctx),
                 coasting: false,
             });
-            if streaming {
-                self.start_coast(dir, ctx.frame + 1 + cfg.coast_delay_frames as u64, ctx);
-            } else {
-                // No `MoveAck` stream (a key held since before the roll): the client stops
-                // where it is and stands through `SprintEnd` (two runs of ours, 2026-11-02:
-                // one partial step, then none for 30 frames). Why the stream makes the
-                // difference is not traced (the `0x64` of the sprint-off batch is a guess).
-                self.mover.start(Motion::Idle);
-            }
+            // The coast is `SprintEnd`'s root motion, with or without a stream.
+            self.start_coast(dir, ctx.frame + 1 + cfg.coast_delay_frames as u64, ctx);
             self.sprint_anim_until = Some(ctx.frame + cfg.end_anim_frames as u64);
         } else {
             self.finish_sprint();
@@ -3056,24 +3052,16 @@ mod tests {
     }
 
     #[test]
-    fn a_streamless_sprint_ended_with_a_key_held_stands_then_walks_on_after_the_sprint_end_animation() {
+    fn a_streamless_sprint_ended_with_a_key_held_coasts_then_walks_on_after_the_sprint_end_animation() {
         let mut r = sprinting_with_a_key_held((180, 0));
         // F: the sprint-off batch; the client's Move action ends with it and `SprintEnd`
-        // plays. The unscaled direction still follows in F + 1 (as in every official sprint)
-        // but restarts nothing: `Actor_StartWasdWalk` refuses during the animation.
+        // plays. No stream ran, so the client's direction was never scaled and no unscaled
+        // `MoveAck` follows (its cell could only snap the client out of the coast).
         let ev = r.tick(&[MoveInput::SkillInputEnd, space(false)]);
         assert!(!ev.iter().any(|e| matches!(e, MoveEvent::MoveAck { .. })));
-        let ev = r.tick(&[]); // F + 1
-        assert!(
-            ev.iter()
-                .any(|e| matches!(e, MoveEvent::MoveAck { dir: (180, 0), .. })),
-            "{ev:?}"
-        );
-        // F + 2 ..: no stream ran, so the client stands through `SprintEnd` (no coast, no
-        // walk).
-        let here = r.loco.position();
-        r.run(29); // F + 30
-        assert_eq!(r.loco.position(), here);
+        assert!(step(&mut r, &[]) < 1e-3); // F + 1: no step
+        assert!(!r.run(29).iter().any(|(_, e)| matches!(e, MoveEvent::MoveAck { .. })));
+        // F + 2 .. F + 30: the `SprintEnd` root motion, about 20 cells.
         assert_eq!(r.loco.state(), &MoveState::Idle);
         // F + 31: the animation is over and W is still down: Move, first step in F + 32.
         assert!(step(&mut r, &[]) < 0.1);
@@ -3083,6 +3071,18 @@ mod tests {
             r.loco.state(),
             &MoveState::Walking(Walk::Direction((180, 0)))
         );
+    }
+
+    #[test]
+    fn a_streamless_sprint_coasts_like_one_with_a_stream() {
+        let mut r = sprinting_with_a_key_held((180, 0));
+        let start = r.loco.position();
+        r.tick(&[MoveInput::SkillInputEnd, space(false)]); // F
+        let f = r.loco.position();
+        r.run(30); // F + 30
+        let coast = dist(f, r.loco.position());
+        assert!((coast - 19.4).abs() < 1.0, "coast {coast}");
+        assert!(dist(start, f) > 1.0, "F keeps the sprint step");
     }
 
     #[test]

@@ -709,11 +709,11 @@ fn action_event_is_skipped_while_instance_toml_lacks_it() {
     assert_eq!(sent.len(), usize::from(listed));
 }
 
-/// WASD held since before the roll: the sprint has no `MoveDirectionUpdate` stream, and its end
-/// still sends the unscaled direction one tick after the sprint-off batch (it restarts the
-/// client's walk; without it the client coasts to a stop while the server walks on, gap #11).
+/// WASD held since before the roll: the sprint has no `MoveDirectionUpdate` stream and its end
+/// sends none either (the client's direction was never scaled; a cell one off would snap it out
+/// of the `SprintEnd` coast, `0x1421497c0`). Server and client coast, then the held key walks on.
 #[test]
-fn a_sprint_without_a_stream_ends_with_the_unscaled_direction() {
+fn a_sprint_without_a_stream_coasts_without_a_direction_update() {
     let mut s = Session::new((100, 100));
     s.walk(180, 0);
     s.tick();
@@ -736,20 +736,19 @@ fn a_sprint_without_a_stream_ends_with_the_unscaled_direction() {
     });
     let batch = s.tick();
     assert!(batch.iter().any(|b| b.is::<SprintState>()));
-    assert!(!batch.iter().any(|b| b.is::<MoveDirectionUpdate>()));
-    let m = s.tick()[0].decode::<MoveDirectionUpdate>();
-    assert_eq!((m.dir_x, m.dir_y), (180, 0));
-    // The client stands through its `SprintEnd` animation (no stream: no coast), then the
-    // held key walks on from the sprint-off batch + 32.
     let x = s.cell().0;
-    for _ in 0..28 {
+    for _ in 0..30 {
+        let batch = s.tick();
+        assert!(!batch.iter().any(|b| b.is::<MoveDirectionUpdate>()));
+    }
+    // The `SprintEnd` root motion: about 20 cells.
+    let coasted = s.cell().0 - x;
+    assert!((18..=21).contains(&coasted), "{x} -> {}", s.cell().0);
+    // The held key walks on from the sprint-off batch + 32.
+    for _ in 0..10 {
         s.tick();
     }
-    assert!(s.cell().0 <= x + 1, "{} -> {}", x, s.cell().0);
-    for _ in 0..12 {
-        s.tick();
-    }
-    assert!(s.cell().0 >= x + 9, "{} -> {}", x, s.cell().0);
+    assert!(s.cell().0 >= x + coasted + 8, "{x} -> {}", s.cell().0);
 }
 
 #[test]

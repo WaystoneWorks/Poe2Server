@@ -192,6 +192,9 @@ pub struct Mover {
     /// walk ends (the coast after a sprint) and stops at the first wall.
     last_dir: Option<(f32, f32)>,
     coast_dir: Option<(f32, f32)>,
+    /// The entity moved in the previous frame: its plans then test line of sight to the start
+    /// from its exact position ([`clientpath::Params::moving`]).
+    moved: bool,
 }
 
 /// Cells the pathfinder may expand per plan.
@@ -220,6 +223,7 @@ impl Mover {
             line_start: (x, y),
             last_dir: None,
             coast_dir: None,
+            moved: false,
         }
     }
 
@@ -280,6 +284,12 @@ impl Mover {
 
     /// Advances one frame of `dt` seconds.
     pub fn advance(&mut self, dt: f32, terrain: &dyn Walkable) {
+        let before = (self.x, self.y);
+        self.advance_frame(dt, terrain);
+        self.moved = (self.x, self.y) != before;
+    }
+
+    fn advance_frame(&mut self, dt: f32, terrain: &dyn Walkable) {
         if self.delay > 0 && self.motion != Motion::Idle {
             self.delay -= 1;
             return;
@@ -470,8 +480,7 @@ impl Mover {
     /// in exactly this cell against 45 % for the cell of the position). Where that cell is a
     /// wall, the cell of the position or its free neighbour is used.
     fn planning_cell(&self, terrain: &dyn Walkable) -> (i32, i32) {
-        let along = |p: f32, c0: i32| c0 + (p - 0.5 - c0 as f32).trunc() as i32;
-        let lagging = (along(self.x, self.line_start.0), along(self.y, self.line_start.1));
+        let lagging = self.line_cell();
         let blocked = |c: (i32, i32)| terrain.nibble(c.0, c.1) == 0;
         if !blocked(lagging) {
             return lagging;
@@ -490,9 +499,19 @@ impl Mover {
             .unwrap_or(here)
     }
 
+    /// The cell the client's current line has reached (see [`Mover::planning_cell`]).
+    fn line_cell(&self) -> (i32, i32) {
+        let along = |p: f32, c0: i32| c0 + (p - 0.5 - c0 as f32).trunc() as i32;
+        (along(self.x, self.line_start.0), along(self.y, self.line_start.1))
+    }
+
     /// The client's plan from the entity's cell to `goal`.
     fn plan_client(&mut self, terrain: &dyn Walkable, goal: (i32, i32)) -> clientpath::Plan {
         let start = self.planning_cell(terrain);
+        // Moving along a line whose cell is the start: line of sight to the start is tested
+        // from the exact position (`FUN_141b87580`), in the client's cell-centred coordinates.
+        let moving =
+            (self.moved && start == self.line_cell()).then_some((self.x - 0.5, self.y - 0.5));
         // The next line starts from the cell of the position.
         self.line_start = self.cell();
         let (dx, dy) = (goal.0 as i64 - start.0 as i64, goal.1 as i64 - start.1 as i64);
@@ -506,7 +525,11 @@ impl Mover {
                 (start.1 as i64 + (dy as f32 * k + 0.5).floor() as i64) as i32,
             )
         };
-        clientpath::plan(terrain, start, goal, self.level, &Params::default())
+        let params = Params {
+            moving,
+            ..Params::default()
+        };
+        clientpath::plan(terrain, start, goal, self.level, &params)
     }
 
     /// Waypoints of the client's plan from the entity's cell to `goal`, in walking order.

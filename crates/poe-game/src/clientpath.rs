@@ -17,10 +17,11 @@
 //!   the path is rebuilt backwards through the nodes keeping only the cells that break
 //!   line of sight, then thinned once more in windows of five.
 //!
-//! Not ported: dynamic obstacles (other entities), the A* fallback (taken when the start cell is
-//! blocked; the search runs again at level 0 instead, which agreed with the client), and the
-//! variant of the last line-of-sight test used while the entity is already moving along a line
-//! (5 of 476 logged plans differ in one waypoint next to the start).
+//! The line-of-sight tests that end at the start run from the entity's exact point on its line
+//! while it moves along one ([`Params::moving`]).
+//!
+//! Not ported: dynamic obstacles (other entities) and the A* fallback (taken when the start cell
+//! is blocked; the search runs again at level 0 instead, which agreed with the client).
 //!
 //! The heap reproduces MSVC's `std::push_heap`/`pop_heap`, because equal costs are common on a
 //! grid and the client's tie order decides which of several equally good paths it takes.
@@ -81,13 +82,18 @@ const BLOCKED: u8 = 0x20;
 const SEEN: u8 = 0x80;
 
 /// What the planner needs from the search call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Params {
     /// Lowest and highest wanted distance to the goal (0, 0: the goal cell itself).
     pub min_dist: u32,
     pub max_dist: u32,
     /// Stop this many cells from the goal (-1: none).
     pub radius: i8,
+    /// The entity's exact position on the line it is moving along, in cell coordinates with
+    /// cell centres on whole numbers (position - 0.5), when it moves along a line whose current
+    /// cell is the start cell (`FUN_141b87580`). The line-of-sight tests that end at the start
+    /// then run from this point (`FUN_141edc6e0`) instead of from the start cell.
+    pub moving: Option<(f32, f32)>,
 }
 
 impl Default for Params {
@@ -96,6 +102,7 @@ impl Default for Params {
             min_dist: 0,
             max_dist: 0,
             radius: -1,
+            moving: None,
         }
     }
 }
@@ -502,15 +509,7 @@ impl Search<'_> {
         let (mut m, mut n) = (m1, n1);
         while m != m2 + step_major {
             let c = if steep { (n, m) } else { (m, n) };
-            if self.blocked_at(c) {
-                return false;
-            }
-            let Some(i) = self.index(c) else {
-                return false;
-            };
-            if let Some(nd) = self.node(i)
-                && nd.flags & (CLOSED | BLOCKED) == CLOSED | BLOCKED
-            {
+            if !self.sight_cell(c) {
                 return false;
             }
             err += dm_minor;
@@ -519,6 +518,72 @@ impl Search<'_> {
                 n += step_minor;
                 err -= dm_major;
             }
+        }
+        true
+    }
+
+    /// Whether line of sight passes a cell: not a wall at the entity's level, inside the window
+    /// and not a node the search closed as a wall.
+    fn sight_cell(&self, c: Cell) -> bool {
+        if self.blocked_at(c) {
+            return false;
+        }
+        let Some(i) = self.index(c) else {
+            return false;
+        };
+        !self
+            .node(i)
+            .is_some_and(|nd| nd.flags & (CLOSED | BLOCKED) == CLOSED | BLOCKED)
+    }
+
+    /// Line of sight from the start to `d`, or from the moving entity's exact point `p` when
+    /// it moves along a line ([`Params::moving`]; `FUN_141eca7f0` + `FUN_141edc6e0`).
+    ///
+    /// The client projects the start cell onto the line `p -> d` (`q`, rounded), walks from the
+    /// start cell to `q` one step on each axis at a time, then walks the float line from `p` to
+    /// `d` cell by cell along its major axis, from `q`'s major coordinate on.
+    fn los_from_start(&self, d: Cell) -> bool {
+        let Some(p) = self.params.moving else {
+            return self.los(self.start, d);
+        };
+        let round = |v: f32| (v + 0.5).floor() as i32;
+        let v = (d.0 as f32 - p.0, d.1 as f32 - p.1);
+        let w = (self.start.0 as f32 - p.0, self.start.1 as f32 - p.1);
+        let t = (v.0 * w.0 + v.1 * w.1) / (v.0 * v.0 + v.1 * v.1);
+        let q = (round(v.0 * t + p.0), round(v.1 * t + p.1));
+        let mut c = self.start;
+        while c != q {
+            if !self.sight_cell(c) {
+                return false;
+            }
+            c.0 += (q.0 - c.0).signum();
+            c.1 += (q.1 - c.1).signum();
+        }
+        // The float line, in (major, minor) order.
+        let steep = (d.1 - q.1).abs() > (d.0 - q.0).abs();
+        let (mut major, mut minor, end, end_minor, pm, pn) = if steep {
+            (q.1, q.0, d.1, d.0, p.1, p.0)
+        } else {
+            (q.0, q.1, d.0, d.1, p.0, p.1)
+        };
+        let step = if major < end { 1 } else { -1 };
+        let span = (end as f32 - pm).abs();
+        let slope = (end_minor as f32 - pn) * (1.0 / span);
+        let behind = ((end - major).abs() as f32) - span;
+        let bias = if slope > 0.0 { 0.49 } else { 0.5 };
+        let mut acc = pn - slope * behind + bias;
+        while major != end + step {
+            let c = if steep {
+                (minor, major)
+            } else {
+                (major, minor)
+            };
+            if !self.sight_cell(c) {
+                return false;
+            }
+            acc += slope;
+            minor = acc.floor() as i32;
+            major += step;
         }
         true
     }
@@ -619,7 +684,12 @@ impl Search<'_> {
         let mut c = parent(self, end);
         while c != start {
             let next = parent(self, c);
-            if !self.los(next, kept) {
+            let sight = if next == start {
+                self.los_from_start(kept)
+            } else {
+                self.los(next, kept)
+            };
+            if !sight {
                 path.push(c);
                 kept = c;
             }
@@ -635,7 +705,12 @@ impl Search<'_> {
                 let last = path.len() - 1;
                 let mut j = (i + 5).min(last);
                 while j > i {
-                    if self.los(path[j], path[i]) {
+                    let sight = if j == last {
+                        self.los_from_start(path[i])
+                    } else {
+                        self.los(path[j], path[i])
+                    };
+                    if sight {
                         path.drain(i + 1..j);
                         break;
                     }

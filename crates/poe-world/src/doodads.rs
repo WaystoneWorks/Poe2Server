@@ -426,6 +426,9 @@ fn pick(cache: &mut AoCache, path: &str, rng: &mut TerrainRng) -> Option<Pick> {
         }
         let total: u32 = info.choices.iter().map(|c| c.1).sum();
         let mut r = rng.below(total) as i64;
+        if std::env::var("POE_DBG_DOODADS").is_ok() {
+            eprintln!("DOODAD draw {path}: r {r} of {total}");
+        }
         let mut chosen = None;
         for (p, w) in &info.choices {
             if r < *w as i64 {

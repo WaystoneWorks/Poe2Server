@@ -1345,6 +1345,7 @@ fn build_dungeon(files: &dyn crate::generate::Files, graph: &Graph, removed: &[b
         }
     }
     let (mut fill_rooms, wiggle) = crate::fill::fill_cells(&mut map, &mut master, files, &cells, rng)?;
+    let pre_count = pre_rooms.len();
     fill_rooms.splice(0..0, pre_rooms);
     let wiggle = [pre_wiggle, wiggle].concat();
     dbg_cell(&map, "post-fill");
@@ -1361,10 +1362,16 @@ fn build_dungeon(files: &dyn crate::generate::Files, graph: &Graph, removed: &[b
         .iter()
         .filter_map(|r| Some(RoomPlacement { room: rooms.get(&r.path)?, origin: (r.origin.0 * step as i32, r.origin.1 * step as i32), orientation: r.orientation, covering: false }))
         .collect();
-    placements.extend(fill_rooms.iter().map(|r| RoomPlacement { room: &r.room, origin: r.origin, orientation: r.orientation, covering: false }));
+    // The client's placement list in placement order: the pre-placed (league, hosted) rooms, the
+    // overlays' phase 1, the fill pass, the overlays' phase 2.
+    fn as_placement(r: &crate::fill::PlacedFillRoom) -> RoomPlacement<'_> { RoomPlacement { room: &r.room, origin: r.origin, orientation: r.orientation, covering: false } }
+    placements.extend(fill_rooms[..pre_count].iter().map(as_placement));
     if let Some(o) = &overlays {
-        placements.extend(o.placed.iter().map(|&(i, origin, orientation)| RoomPlacement { room: o.room(i), origin, orientation, covering: o.suppresses(i) }));
-        placements.extend(o.fill_rooms.iter().map(|r| RoomPlacement { room: &r.room, origin: r.origin, orientation: r.orientation, covering: false }));
+        placements.extend(o.placements(1));
+    }
+    placements.extend(fill_rooms[pre_count..].iter().map(as_placement));
+    if let Some(o) = &overlays {
+        placements.extend(o.placements(2));
     }
     derepeat_pass(&mut map, &master, &placements, rng);
     dbg_cell(&map, "post-derepeat");
@@ -1946,6 +1953,7 @@ fn build_tgr(files: &dyn crate::generate::Files, graph: &Graph, removed: Vec<boo
         o.run(1, &mut map, &mut master, &mut types, files, rng)?;
     }
     probe(Stage::Lattice("fill", &map));
+    let pre_count = pre_rooms.len();
     let mut fill_rooms = pre_rooms;
     fill_rooms.extend(fill_pass(&mut map, &mut master, files, rng)?);
     if let Some(o) = &mut overlays {
@@ -1960,10 +1968,15 @@ fn build_tgr(files: &dyn crate::generate::Files, graph: &Graph, removed: Vec<boo
         .filter(|p| p.tile.is_none())
         .map(|p| RoomPlacement { room: &set.rooms[p.room].room, origin: p.pos, orientation: p.orientation, covering: false })
         .collect();
-    rooms.extend(fill_rooms.iter().map(|r| RoomPlacement { room: &r.room, origin: r.origin, orientation: r.orientation, covering: false }));
+    // Placement order (see the grid path): pre-placed rooms, overlay phase 1, fill, phase 2.
+    fn as_placement(r: &crate::fill::PlacedFillRoom) -> RoomPlacement<'_> { RoomPlacement { room: &r.room, origin: r.origin, orientation: r.orientation, covering: false } }
+    rooms.extend(fill_rooms[..pre_count].iter().map(as_placement));
     if let Some(o) = &overlays {
-        rooms.extend(o.placed.iter().map(|&(i, origin, orientation)| RoomPlacement { room: o.room(i), origin, orientation, covering: o.suppresses(i) }));
-        rooms.extend(o.fill_rooms.iter().map(|r| RoomPlacement { room: &r.room, origin: r.origin, orientation: r.orientation, covering: false }));
+        rooms.extend(o.placements(1));
+    }
+    rooms.extend(fill_rooms[pre_count..].iter().map(as_placement));
+    if let Some(o) = &overlays {
+        rooms.extend(o.placements(2));
     }
     derepeat_pass(&mut map, &master, &rooms, rng);
     crate::postunique::run(&mut map, &mut master, files, rng)?;

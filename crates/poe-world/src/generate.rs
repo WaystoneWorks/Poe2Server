@@ -1446,6 +1446,9 @@ pub fn derepeat_pass(map: &mut TileMap, master: &Master, rooms: &[RoomPlacement]
             })
             .collect();
         map.outside.extend(crate::doodads::room_outside(r.room, r.origin, r.orientation));
+        if std::env::var("POE_DBG_DOODAD_ORDER").is_ok() {
+            eprintln!("PLACEMENT #{i} doodads from {} room {}x{} at {:?} o {} covering {} n {}", map.doodads.len(), r.room.width(), r.room.height(), r.origin, r.orientation, r.covering, crate::doodads::room_doodads(r.room, r.origin, r.orientation).len());
+        }
         map.doodads.extend(crate::doodads::room_doodads(r.room, r.origin, r.orientation).into_iter().map(|mut d| {
             d.covers = covers.clone();
             d

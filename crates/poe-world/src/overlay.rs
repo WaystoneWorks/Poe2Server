@@ -190,9 +190,13 @@ pub struct Overlays {
     pub placed: Vec<(usize, (i32, i32), u8)>,
     /// Rooms whose entry has `+SuppressUnderlyingDoodads`.
     suppressing: std::collections::HashSet<usize>,
-    /// Fill rooms the second phase placed where an overlay took tiles away (for the
-    /// de-repetition pass's ground overrides).
+    /// Refill rooms placed where an overlay took tiles away (phase 2, and phase 1 of a `.dgr`;
+    /// for the de-repetition pass's ground overrides).
     pub fill_rooms: Vec<crate::fill::PlacedFillRoom>,
+    /// [`Self::placed`] and [`Self::fill_rooms`] in the order they were placed, with the phase:
+    /// (phase, refill room, index). The client's room placement list (region `+0x58`, which the
+    /// doodad pass walks) grows as rooms are placed, so phase-1 rooms come before the fill pass's.
+    order: Vec<(u8, bool, usize)>,
     /// `SpecialTiles` row 2 (`OverlayBlank`): the tile an overlay room leaves where it covers
     /// nothing of its own; the second phase puts the old tile back under it.
     overlay_blank: Option<String>,
@@ -219,6 +223,19 @@ impl Overlays {
     /// Whether room `i` (as in [`Self::placed`]) suppresses the doodads under it.
     pub fn suppresses(&self, i: usize) -> bool {
         self.suppressing.contains(&i)
+    }
+
+    /// The rooms phase `phase` placed, overlay rooms and their refill rooms, in placement order.
+    pub fn placements(&self, phase: u8) -> impl Iterator<Item = crate::generate::RoomPlacement<'_>> {
+        self.order.iter().filter(move |e| e.0 == phase).map(|&(_, fill, i)| {
+            if fill {
+                let r = &self.fill_rooms[i];
+                crate::generate::RoomPlacement { room: &r.room, origin: r.origin, orientation: r.orientation, covering: false }
+            } else {
+                let (ri, origin, orientation) = self.placed[i];
+                crate::generate::RoomPlacement { room: self.room(ri), origin, orientation, covering: self.suppresses(ri) }
+            }
+        })
     }
 
     pub fn new(files: &dyn Files, toy: &str, map: &TileMap, master: &mut Master, rooms_placed: &[RoomRect], overlay_blank: Option<String>) -> Result<Self, GenError> {
@@ -283,7 +300,7 @@ impl Overlays {
             built.push((pass, groups));
         }
         let (width, height) = (map.width as i32, map.height as i32);
-        let mut s = Self { passes: built, rooms, occupied: vec![0; (width * height) as usize], width, height, dungeon: false, wiggle: Vec::new(), counts: HashMap::new(), placed: Vec::new(), suppressing, fill_rooms: Vec::new(), overlay_blank: overlay_blank.map(|p| p.to_ascii_lowercase()) };
+        let mut s = Self { passes: built, rooms, occupied: vec![0; (width * height) as usize], width, height, dungeon: false, wiggle: Vec::new(), counts: HashMap::new(), placed: Vec::new(), suppressing, fill_rooms: Vec::new(), order: Vec::new(), overlay_blank: overlay_blank.map(|p| p.to_ascii_lowercase()) };
         if s.passes.iter().any(|p| p.0.phases & 3 != 0) {
             if std::env::var_os("POE_DBG_RECTS").is_some() {
                 for r in rooms_placed.iter().filter(|r| r.feature || r.described) {
@@ -619,9 +636,12 @@ impl Overlays {
             }
             self.mark((pos.0, pos.1, pos.0 + w, pos.1 + h), 1);
             *self.counts.entry(room.room).or_default() += 1;
+            self.order.push((phase, false, self.placed.len()));
             self.placed.push((room.room, pos, o));
             if refill {
+                let before = self.fill_rooms.len();
                 self.refill(taken, map, master, files, rng)?;
+                self.order.extend((before..self.fill_rooms.len()).map(|i| (phase, true, i)));
             }
         }
         Ok(())

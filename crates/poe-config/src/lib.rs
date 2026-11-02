@@ -985,6 +985,13 @@ pub struct MovementConfig {
     /// later; batch + 31 measured in three runs of ours, docs/protocol/movement.md).
     #[serde(default = "default_sprint_end_anim_frames")]
     pub sprint_end_anim_frames: u32,
+    /// The coast and `SprintEnd` values above are the walking-speed case. When true (default),
+    /// a sprint ended by the release batch (Space released after `must_sprint` went off) plays
+    /// `SprintEnd` at sprint speed, as the private client does: coast and animation last
+    /// 1/1.5 as long over the same distance (docs/protocol/movement.md, "Coasting after a
+    /// sprint"). The official client of the 2026-10-20 captures did not.
+    #[serde(default = "default_true")]
+    pub sprint_release_ends_at_sprint_speed: bool,
     /// A zero direction this many frames after the sprint-off batch, after a sprint that
     /// followed the cursor (Space only), means the keys were already up when the restart reached
     /// the client, which coasts (default 6: the client sends the zero 1 to 2 frames after the
@@ -1035,6 +1042,7 @@ impl Default for MovementConfig {
             sprint_coast_frames: default_sprint_coast_frames(),
             sprint_coast_delay_frames: default_sprint_coast_delay_frames(),
             sprint_end_anim_frames: default_sprint_end_anim_frames(),
+            sprint_release_ends_at_sprint_speed: true,
             sprint_release_window_frames: default_sprint_release_window_frames(),
             sprint_cursor_match_degrees: default_sprint_cursor_match_degrees(),
             attack_speed_floor: default_attack_speed_floor(),

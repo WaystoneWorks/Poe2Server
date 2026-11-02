@@ -81,6 +81,10 @@ sprint_coast_delay_frames = 1
 # Frames between the sprint-off batch and the end of the client's SprintEnd animation: no WASD walk
 # starts while it plays; at its end a held key walks on (first step one frame later).
 sprint_end_anim_frames = 31
+# The values above are the walking-speed case. SprintEnd plays at the movement speed seen by the client's
+# end check: a sprint ended by the release batch (Space up after must_sprint went off) sees the sprint speed
+# on the private client, so coast and animation last 1/1.5 as long over the same distance.
+sprint_release_ends_at_sprint_speed = true
 # A zero direction within this many frames after a cursor sprint's end means the keys were already
 # up when the restart arrived (the client coasts instead of walking on); measured 1-5 frames.
 # In click-to-move mode (no keys) the sprint coasts at once; this is how long vectors in flight are ignored.

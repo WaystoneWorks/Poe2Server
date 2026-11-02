@@ -24,13 +24,17 @@ const ROLL_SKILL: u32 = 0x8000_0040;
 const BUFF_ROWS: [u16; 3] = [2758, 2737, 2853];
 
 fn config() -> MovementConfig {
-    MovementConfig::new(
+    let mut cfg = MovementConfig::new(
         SkillIds {
             move_skill: MOVE_SKILL,
             roll_skill: ROLL_SKILL,
         },
         BUFF_ROWS,
-    )
+    );
+    // The fixtures are official captures: that client played `SprintEnd` at walking speed
+    // after a release batch too (the private client does not, see `SprintConfig`).
+    cfg.sprint.release_ends_at_sprint_speed = false;
+    cfg
 }
 
 fn fixture(name: &str) -> Value {

@@ -737,14 +737,15 @@ fn a_sprint_without_a_stream_coasts_without_a_direction_update() {
     let batch = s.tick();
     assert!(batch.iter().any(|b| b.is::<SprintState>()));
     let x = s.cell().0;
-    for _ in 0..30 {
+    for _ in 0..20 {
         let batch = s.tick();
         assert!(!batch.iter().any(|b| b.is::<MoveDirectionUpdate>()));
     }
-    // The `SprintEnd` root motion: about 20 cells.
+    // The `SprintEnd` root motion: about 20 cells, at sprint speed (the release batch ended
+    // the sprint: 20 frames).
     let coasted = s.cell().0 - x;
     assert!((18..=21).contains(&coasted), "{x} -> {}", s.cell().0);
-    // The held key walks on from the sprint-off batch + 32.
+    // The held key walks on from the sprint-off batch + 22.
     for _ in 0..10 {
         s.tick();
     }

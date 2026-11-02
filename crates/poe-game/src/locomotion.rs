@@ -117,6 +117,13 @@ pub struct SprintConfig {
     /// animation's end walks on at once: Move at batch + 31, first step one frame later (three
     /// runs of ours with W held since before the roll; 21 once with a stream, not explained).
     pub end_anim_frames: u32,
+    /// The values above are the walking-speed case. A sprint ended by the release batch (the
+    /// `SprintState` echo with the sprint-off stats) plays `SprintEnd` at sprint speed on the
+    /// private client (`speed_scale` times faster: coast and animation 1/`speed_scale` as long,
+    /// same distance); the official client did not (2026-10-20 captures, walking speed), most
+    /// likely because of the end check's Player `+0x20a` branch (`0x141b76f01`). See
+    /// `Locomotion::sprint_end_rate`.
+    pub release_ends_at_sprint_speed: bool,
     /// A zero WASD vector this many frames after the sprint-off batch, after a sprint that
     /// followed the cursor (Space held, no key), means the keys were already up when the
     /// unscaled `MoveAck` reached the client, which then coasted instead of walking on (the
@@ -219,6 +226,7 @@ impl MovementConfig {
                 coast_frames: 29.5,
                 coast_delay_frames: 1,
                 end_anim_frames: 31,
+                release_ends_at_sprint_speed: true,
                 release_window_frames: 6,
                 cursor_match_degrees: 10.0,
             },
@@ -578,6 +586,9 @@ pub struct Locomotion {
     /// The client's `SprintEnd` animation runs until this frame: no WASD walk starts before it
     /// (see [`SprintConfig::end_anim_frames`]).
     sprint_anim_until: Option<u64>,
+    /// Play rate of the client's `SprintEnd` relative to the walking-speed case (see
+    /// [`Locomotion::sprint_end_rate`]): scales the coast and the animation's length.
+    sprint_end_rate: f32,
     /// The latest `0x63` was sent in click-to-move mode ([`MoveInput::CursorDirection`]).
     cursor_mode: bool,
     /// The cursor's offset from the player, as the roll key's target last said (`0x1a5`,
@@ -623,6 +634,7 @@ impl Locomotion {
             release_due: false,
             sprint_end: None,
             sprint_anim_until: None,
+            sprint_end_rate: 1.0,
             cursor_mode: false,
             roll_cursor: (0, 0),
             unscaled_dir: None,
@@ -764,9 +776,11 @@ impl Locomotion {
             self.start_attack(req, target, false, ctx, &mut out);
             out.append(&mut self.deferred);
         }
-        // 5. Sprint end.
+        // 5. Sprint end. `end_sprint` alone: this batch also carries the `SprintState` echo.
+        let in_release_batch = end_sprint;
         end_sprint |= std::mem::take(&mut self.release_due);
         if end_sprint {
+            self.sprint_end_rate = Self::sprint_end_rate(in_release_batch, ctx);
             self.end_sprint(ctx, &mut out);
         }
         out
@@ -1523,7 +1537,7 @@ impl Locomotion {
             }
             Due::UnscaledAck => *unscaled = true,
             Due::SprintEndAnimOver { end } => {
-                if self.sprint_anim_until != Some(end + cfg.sprint.end_anim_frames as u64) {
+                if self.sprint_anim_until != Some(end + self.end_anim_frames(ctx) as u64) {
                     return;
                 }
                 self.sprint_anim_until = None;
@@ -1710,12 +1724,12 @@ impl Locomotion {
             });
             // The coast is `SprintEnd`'s root motion, with or without a stream.
             self.start_coast(dir, ctx.frame + 1 + cfg.coast_delay_frames as u64, ctx);
-            self.sprint_anim_until = Some(ctx.frame + cfg.end_anim_frames as u64);
+            self.sprint_anim_until = Some(ctx.frame + self.end_anim_frames(ctx) as u64);
         } else {
             self.finish_sprint();
         }
         if let Some(until) = self.sprint_anim_until
-            && until == ctx.frame + cfg.end_anim_frames as u64
+            && until == ctx.frame + self.end_anim_frames(ctx) as u64
             && !self.cursor_mode
         {
             self.due
@@ -1745,13 +1759,38 @@ impl Locomotion {
             .cos()
     }
 
+    /// Play rate of the client's `SprintEnd` over the walking-speed case. `SprintEnd` is a
+    /// movement-speed animation (`sprinting_end_*_01 : speed = 600` in `character.act`):
+    /// `0x141e57b80` plays it at rate = movement speed (`0x141e4db00`, `Pathfinding_GetSpeed`
+    /// x 10.869565 units per cell) / (600 x `dexfour.ao` `offset_scale` 0.9 x Positioned +0x474 x
+    /// action speed) (`0x141e56ae0`), read when the sprint's end check (`0x141b76da0`) fires,
+    /// and the root move (`0x141f5f650`) lasts 0.75 s / rate. Traced (2026-11-02, private):
+    /// walking speed 402.17 -> 0.745 (30 frames), sprint speed 603.26 -> 1.117 (20 frames).
+    /// A release batch (`SprintState` echo with the sprint-off stats, after `must_sprint` went
+    /// off) ends the sprint as the echo is applied, before the stats: sprint speed. A sprint
+    /// ended at t0 + 35 by an earlier release, or by an attack, sees the stats first.
+    fn sprint_end_rate(in_release_batch: bool, ctx: &StepCtx) -> f32 {
+        if in_release_batch && ctx.config.sprint.release_ends_at_sprint_speed {
+            ctx.config.sprint.speed_scale
+        } else {
+            1.0
+        }
+    }
+
+    /// Frames between the sprint-off batch and the end of `SprintEnd` at the current rate.
+    fn end_anim_frames(&self, ctx: &StepCtx) -> u32 {
+        (ctx.config.sprint.end_anim_frames as f32 / self.sprint_end_rate).round() as u32
+    }
+
     /// Coasts along `dir`; the client's first coasting step is in frame `first_step`. Steps of
     /// frames before the next advance (`ctx.frame + 1`) that the entity has not made yet (it
     /// was waiting for a restart that never came) are made now.
     fn start_coast(&mut self, dir: Cell, first_step: u64, ctx: &StepCtx) {
         let cfg = &ctx.config.sprint;
-        let step = self.mover.speed * CLIENT_FRAME_SECS * cfg.coast_start_scale;
-        let decay = step / cfg.coast_frames;
+        // `SprintEnd` played `rate` times faster: same root displacement in 1/rate the time.
+        let rate = self.sprint_end_rate;
+        let step = self.mover.speed * CLIENT_FRAME_SECS * cfg.coast_start_scale * rate;
+        let decay = step / (cfg.coast_frames / rate);
         let next = ctx.frame + 1;
         let delay = first_step.saturating_sub(next) as u32;
         self.mover.start_after(
@@ -3056,14 +3095,16 @@ mod tests {
         let mut r = sprinting_with_a_key_held((180, 0));
         // F: the sprint-off batch; the client's Move action ends with it and `SprintEnd`
         // plays. No stream ran, so the client's direction was never scaled and no unscaled
-        // `MoveAck` follows (its cell could only snap the client out of the coast).
+        // `MoveAck` follows (its cell could only snap the client out of the coast). The
+        // release batch ends the sprint before its stats apply: `SprintEnd` at sprint speed
+        // (rate 1.117, 21 frames; traced 2026-11-02).
         let ev = r.tick(&[MoveInput::SkillInputEnd, space(false)]);
         assert!(!ev.iter().any(|e| matches!(e, MoveEvent::MoveAck { .. })));
         assert!(step(&mut r, &[]) < 1e-3); // F + 1: no step
-        assert!(!r.run(29).iter().any(|(_, e)| matches!(e, MoveEvent::MoveAck { .. })));
-        // F + 2 .. F + 30: the `SprintEnd` root motion, about 20 cells.
+        assert!(!r.run(19).iter().any(|(_, e)| matches!(e, MoveEvent::MoveAck { .. })));
+        // F + 2 .. F + 20: the `SprintEnd` root motion, about 20 cells.
         assert_eq!(r.loco.state(), &MoveState::Idle);
-        // F + 31: the animation is over and W is still down: Move, first step in F + 32.
+        // F + 21: the animation is over and W is still down: Move, first step in F + 22.
         assert!(step(&mut r, &[]) < 0.1);
         let walk = r.cfg.walk_speed * 0.033;
         assert!((step(&mut r, &[]) - walk).abs() < 1e-3);
@@ -3074,12 +3115,38 @@ mod tests {
     }
 
     #[test]
+    fn a_release_before_must_sprint_goes_off_ends_the_sprint_at_walking_speed() {
+        // Space released at t0 + 25 (W held): the sprint ends at t0 + 35 with `must_sprint`
+        // off and the sprint-off stats, no `SprintState` echo in that batch: the client's end
+        // check sees the walking speed, `SprintEnd` plays at rate 0.745 (31 frames; p5 runs).
+        let mut r = Rig::new((50, 50));
+        r.tick(&[dir(180, 0)]);
+        r.run(2);
+        r.tick(&[space(true), roll(10, 0)]); // t0
+        r.run(24);
+        r.tick(&[MoveInput::SkillInputEnd, space(false)]); // t0 + 25
+        r.run(9); // t0 + 34
+        assert!(matches!(r.loco.state(), MoveState::Sprinting(_)));
+        r.tick(&[]); // F = t0 + 35
+        let f = r.loco.position();
+        r.run(29); // F + 29: still coasting, no walk
+        assert_eq!(r.loco.state(), &MoveState::Idle);
+        let coast = dist(f, r.loco.position());
+        assert!((coast - 19.4).abs() < 1.0, "coast {coast}");
+        r.run(1); // F + 30
+        assert_eq!(r.loco.state(), &MoveState::Idle);
+        r.tick(&[]); // F + 31: Move
+        let walk = r.cfg.walk_speed * 0.033;
+        assert!((step(&mut r, &[]) - walk).abs() < 1e-3);
+    }
+
+    #[test]
     fn a_streamless_sprint_coasts_like_one_with_a_stream() {
         let mut r = sprinting_with_a_key_held((180, 0));
         let start = r.loco.position();
         r.tick(&[MoveInput::SkillInputEnd, space(false)]); // F
         let f = r.loco.position();
-        r.run(30); // F + 30
+        r.run(20); // F + 20, before the walk goes on
         let coast = dist(f, r.loco.position());
         assert!((coast - 19.4).abs() < 1.0, "coast {coast}");
         assert!(dist(start, f) > 1.0, "F keeps the sprint step");
@@ -3112,21 +3179,21 @@ mod tests {
     fn a_sprint_ended_after_the_cursor_direction_coasts_to_a_stop() {
         let mut r = sprinting_with_cursor_release_at_f2();
         let start = r.loco.position();
-        // The client's steps: 1.309 falling by 0.0444 per frame, 30 of them, about 20 cells
-        // (own sessions, f1795 and f4585 of the capture); the first one is made by the tick
-        // that saw the zero vector.
+        // Ended by the release batch: `SprintEnd` at sprint speed, the same ~20 cells in
+        // 1/1.5 the time: 1.964 falling by 0.0998 per frame, 20 steps (private client,
+        // 2026-11-02, rate 1.117); the first one is made by the tick that saw the zero vector.
         let mut steps = Vec::new();
         for _ in 0..40 {
             steps.push(step(&mut r, &[]));
         }
         assert!(
-            (steps[0] - 1.265).abs() < 0.01 && (steps[1] - 1.221).abs() < 0.01,
+            (steps[0] - 1.864).abs() < 0.01 && (steps[1] - 1.764).abs() < 0.01,
             "{steps:?}"
         );
-        assert!(steps.windows(2).take(28).all(|w| w[1] < w[0]), "{steps:?}");
-        assert!(steps[28] < 0.1 && steps[29] == 0.0, "{steps:?}");
+        assert!(steps.windows(2).take(18).all(|w| w[1] < w[0]), "{steps:?}");
+        assert!(steps[18] < 0.1 && steps[19] == 0.0, "{steps:?}");
         let total = dist(start, r.loco.position());
-        assert!((total + 1.309 - 19.95).abs() < 0.5, "{total}");
+        assert!((total + 1.964 - 20.3).abs() < 0.5, "{total}");
         // Along the cursor direction, and over: no message, idle.
         let d = (r.loco.position().0 - start.0, r.loco.position().1 - start.1);
         // The client's line goes to a whole goal cell (floor(vector * 0.092) away), so the coast is
@@ -3165,9 +3232,9 @@ mod tests {
         r.run(8);
         r.tick(&[dir(180, 0)]); // F + 11: the coast goes on
         assert!(matches!(r.mover_motion(), Motion::Coast { .. }));
-        r.run(19); // F + 30
+        r.run(9); // F + 20
         assert!(matches!(r.mover_motion(), Motion::Coast { .. }));
-        r.tick(&[]); // F + 31: Move
+        r.tick(&[]); // F + 21: Move (`SprintEnd` at sprint speed, 21 frames)
         let walk = r.cfg.walk_speed * 0.033;
         assert!((step(&mut r, &[]) - walk).abs() < 1e-3);
         assert_eq!(
@@ -3336,7 +3403,7 @@ mod tests {
         r.tick(&[dir(0, 0)]); // F + 4
         let start = r.loco.position();
         r.run(40);
-        assert!(dist(start, r.loco.position()) > 15.0);
+        assert!(dist(start, r.loco.position()) > 12.0);
     }
 
     #[test]

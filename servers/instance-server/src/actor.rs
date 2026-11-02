@@ -3,7 +3,7 @@
 //!
 //! - **One world, one clock.** The actor owns one `poe_game::world::World` with entity ids from
 //!   one per-instance counter (`[instance] first_entity_id`, official: players from 12000), runs
-//!   one frame timer (`[instance] tick_ms`) and holds the area's grid. Nothing in it is tied to
+//!   one frame clock (`[instance] tick_ms`, absolute deadlines with burst catch-up: [`crate::clock`]) and holds the area's grid. Nothing in it is tied to
 //!   a connection, an account or a machine: a session is a [`SessionId`] and an output channel.
 //! - **Sessions to the actor** are [`Cmd`]s on an unbounded channel: `Join` (with the output
 //!   channel), `Input` (movement input of the session's entity), `Leave`, and the dev/admin
@@ -58,7 +58,12 @@ use poe_mod_host::{
     Submitted,
 };
 
-use crate::{modlink::ModSink, movement::Codec, spawn};
+use crate::{
+    clock::{FrameClock, MAX_BURST},
+    modlink::ModSink,
+    movement::Codec,
+    spawn,
+};
 
 /// Identifies a session (one client connection) for the actor. Unique per server process; not
 /// derived from the account, the character or the client's address.
@@ -783,9 +788,8 @@ async fn run(
     mut closed: Option<watch::Receiver<bool>>,
     ticks: Arc<poe_cluster::TickStats>,
 ) {
-    let mut ticker =
-        tokio::time::interval(Duration::from_millis(u64::from(actor.init.tick_ms.max(1))));
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Absolute deadlines with burst catch-up after a stall, like official servers (clock.rs).
+    let mut clock = FrameClock::new(tokio::time::Instant::now(), actor.init.tick_ms, MAX_BURST);
     let idle = actor.init.idle;
     let mut empty_since = Some(tokio::time::Instant::now());
     // Server-scope events: the instance's actor started / ended.
@@ -801,20 +805,33 @@ async fn run(
                 let was_empty = actor.is_empty();
                 actor.handle(cmd);
                 if was_empty && !actor.is_empty() {
-                    ticker.reset();
+                    clock.reset(tokio::time::Instant::now());
                 }
             }
-            _ = ticker.tick(), if !actor.is_empty() => {
-                // Inputs that arrived before the tick are answered by it.
-                while let Ok(cmd) = rx.try_recv() {
-                    actor.handle(cmd);
+            () = tokio::time::sleep_until(clock.deadline()), if !actor.is_empty() => {
+                let due = clock.due(tokio::time::Instant::now());
+                if due > 1 {
+                    if due >= MAX_BURST {
+                        warn!(instance = actor.instance(), frames = due, "stall: catching up at most {MAX_BURST} frames, the rest is dropped");
+                    } else {
+                        debug!(instance = actor.instance(), frames = due, "stall: catching up missed frames");
+                    }
                 }
-                let started = Instant::now();
-                actor.tick();
-                let took = started.elapsed();
-                ticks.record(took);
-                if took.as_millis() as u32 > actor.init.tick_ms / 2 {
-                    warn!(instance = actor.instance(), ?took, "slow simulation frame");
+                for _ in 0..due {
+                    // Inputs that arrived before the tick are answered by it.
+                    while let Ok(cmd) = rx.try_recv() {
+                        actor.handle(cmd);
+                    }
+                    if actor.is_empty() {
+                        break;
+                    }
+                    let started = Instant::now();
+                    actor.tick();
+                    let took = started.elapsed();
+                    ticks.record(took);
+                    if took.as_millis() as u32 > actor.init.tick_ms / 2 {
+                        warn!(instance = actor.instance(), ?took, "slow simulation frame");
+                    }
                 }
             }
             () = instance_closed(&mut closed) => {

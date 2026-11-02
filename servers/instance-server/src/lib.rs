@@ -17,6 +17,7 @@ use poe_store::Store;
 pub mod actor;
 mod admin;
 mod appearance;
+mod clock;
 pub mod chat;
 pub mod commands;
 mod exec;

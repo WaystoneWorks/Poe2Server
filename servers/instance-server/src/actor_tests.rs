@@ -1140,3 +1140,26 @@ fn a_second_player_does_not_spawn_on_the_first() {
     assert_eq!(b.joined.own.cell, cb);
     assert_eq!(*seen.lock().unwrap(), [cb]);
 }
+
+/// A stall is caught up with the missed frames back to back, like official servers (1,353 ms
+/// gap, 41 ticks), and the clock keeps its absolute deadlines afterwards.
+#[tokio::test(start_paused = true)]
+async fn the_actor_catches_a_stall_up_with_a_burst() {
+    let mut w = World2::new();
+    let mut a = w.join("Alice", (100, 100), Duration::ZERO).await;
+    a.frames.recv().await.expect("first frame");
+    let first = tokio::time::Instant::now();
+    // Time jumps past 41 deadlines without the actor running (a stalled runtime).
+    tokio::time::advance(Duration::from_millis(41 * 33)).await;
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    let mut burst = 0;
+    while a.frames.try_recv().is_ok() {
+        burst += 1;
+    }
+    assert_eq!(burst, 41);
+    // The next frame comes on the old grid, one tick later.
+    a.frames.recv().await.expect("next frame");
+    assert_eq!(tokio::time::Instant::now() - first, Duration::from_millis(42 * 33));
+}

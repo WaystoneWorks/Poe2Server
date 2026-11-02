@@ -20,7 +20,8 @@ use poe_proto::{
     instance::{
         AimTarget, ComponentDelta, MoveDirection, MoveDirectionUpdate, OrientationLerp,
         SetAimTarget, SimulationHeader, SkillReleased, SprintInput, SprintState, StanceRequest,
-        StartAction, StatsUpdate, UpdateSkillTarget, UseSkill,
+        StartAction, StatsUpdate, UpdateSkillTarget, UseSkill, SetWeaponSet, WeaponSetSwap,
+        WeaponSetSwapDone,
     },
     skill::{
         BuffAdded, BuffRemoved, SkillInputEnd, SkillInputEndAck, SkillReleasedAck, SkillUseParams,
@@ -120,6 +121,9 @@ pub fn client_input(name: &str, r: &mut Reader<'_>) -> Result<Option<MoveInput>,
         }
         StanceRequest::NAME => MoveInput::StanceRequest {
             value: StanceRequest::decode(r)?.value,
+        },
+        WeaponSetSwap::NAME => MoveInput::WeaponSwap {
+            set: WeaponSetSwap::decode(r)?.set,
         },
         SprintInput::NAME => MoveInput::SprintInput {
             held: SprintInput::decode(r)?.held,
@@ -367,6 +371,21 @@ impl Codec {
                 "out-orientation-lerp",
                 value.to_string(),
             )?),
+            // Stats component `0x1d5`, then the session message `0xff` that lets the client use
+            // skills and swap again (owner only: other clients never sent the request).
+            MoveEvent::WeaponSet { set } => {
+                out.push(self.pack(
+                    &SetWeaponSet {
+                        header: plain,
+                        set: *set,
+                    },
+                    "out-weapon-set",
+                    set.to_string(),
+                )?);
+                if owner {
+                    out.push(self.pack(&WeaponSetSwapDone { unk: 1 }, "out-weapon-swap-done", String::new())?);
+                }
+            }
             MoveEvent::StanceChanged { combat, request } => out.push(
                 self.pack(
                     &ComponentDelta {

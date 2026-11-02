@@ -279,6 +279,9 @@ pub enum MoveInput {
     /// `0x200`: the stance request sent with an input-mode toggle and with the first skill use
     /// in mouse mode (value 1 click-to-move, 4 WASD/combat); echoed in the next stance delta.
     StanceRequest { value: u8 },
+    /// `0xfe`: switch to weapon set `set` (client `0x1421150d0`). The lockstep client applies
+    /// nothing itself and blocks skill use and swaps until the answer.
+    WeaponSwap { set: u8 },
 }
 
 /// Stats the component changes (game stat ids; the session resolves the network keys).
@@ -388,6 +391,9 @@ pub enum MoveEvent {
     StanceChanged { combat: bool, request: Option<u8> },
     /// `0x2a6`: sent before every stance delta (0.05 to combat, 0.2 out of it).
     OrientationLerp { value: f32 },
+    /// Answer to [`MoveInput::WeaponSwap`] in the batch answering it: `0x1d5` SetWeaponSet
+    /// then the session message `0xff` WeaponSetSwapDone (2 of 2 official swaps, standing).
+    WeaponSet { set: u8 },
     /// The entity was placed by the server (admin command, transfer). The client only snaps
     /// when the distance is 46 cells or more, and only for a `0x64` with a non-zero direction.
     Teleport { cell: Cell },
@@ -827,6 +833,10 @@ impl Locomotion {
             }
             MoveInput::AimEntity { .. } => {}
             MoveInput::StanceRequest { value } => self.stance_request = Some(value),
+            // The client cannot use a skill or swap again until this answer (session +0x7a90,
+            // cleared by 0xff), so every request is answered. Whether a swap during an action
+            // or a walk changes it is not captured (gap #7).
+            MoveInput::WeaponSwap { set } => out.push(MoveEvent::WeaponSet { set }),
             MoveInput::AimMode { mode } => {
                 let combat = mode == 1;
                 self.aim_combat = combat;
@@ -2054,6 +2064,21 @@ mod tests {
             ),
             "{ev:?}"
         );
+    }
+
+    #[test]
+    fn a_weapon_swap_is_answered_in_the_same_batch() {
+        // 2026-10-20_18-41-14: 0xfe {1, 1} and {1, 0} (standing) -> 0x1d5 + 0xff in r+0.
+        let mut r = Rig::new((50, 50));
+        assert_eq!(
+            r.tick(&[MoveInput::WeaponSwap { set: 1 }]),
+            vec![MoveEvent::WeaponSet { set: 1 }]
+        );
+        assert_eq!(
+            r.tick(&[MoveInput::WeaponSwap { set: 0 }]),
+            vec![MoveEvent::WeaponSet { set: 0 }]
+        );
+        assert_eq!(r.tick(&[]), vec![]);
     }
 
     #[test]

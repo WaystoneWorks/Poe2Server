@@ -80,6 +80,9 @@ fn input(v: &Value) -> MoveInput {
         "stance_request" => MoveInput::StanceRequest {
             value: i(v, "value") as u8,
         },
+        "weapon_swap" => MoveInput::WeaponSwap {
+            set: i(v, "set") as u8,
+        },
         op => panic!("fixture input {op}"),
     }
 }
@@ -136,6 +139,7 @@ fn to_json(e: &MoveEvent) -> Value {
             v
         }
         MoveEvent::OrientationLerp { value } => json!({"ev": "orientation_lerp", "value": value}),
+        MoveEvent::WeaponSet { set } => json!({"ev": "weapon_set", "set": set}),
         MoveEvent::SprintState { held } => json!({"ev": "sprint", "held": held}),
         MoveEvent::BuffAdded { index, row, fade } => {
             let mut v = json!({"ev": "buff_added", "index": index, "row": row});

@@ -400,6 +400,14 @@ pub fn generate_stated(gd: &GameData, files: &dyn crate::generate::Files, area_i
     Ok(Generated { graph: dgr, map, doodads, tile_objects, draws, doodad_draws })
 }
 
+/// `.tsi` `DoNotFillOutside` (master `+0x166`): `0x141ff7b90` skips the unwalkable marking
+/// (`0x141fe1150`) of every region. The DLL's `regions.tsv` shows `+0x166` set exactly for the
+/// masters with this key (world maps, `MapUniqueLake`) and clear for `RoomOcclusion` masters
+/// (`G2_4_2`, `MapChannel`).
+fn do_not_fill_outside(tsi: &std::collections::HashMap<String, String>) -> bool {
+    tsi.get("DoNotFillOutside").is_some_and(|v| v.trim() != "0" && !v.trim().is_empty())
+}
+
 thread_local! {
     /// The current area is one whose generation skips the unwalkable marking.
     static NO_UNWALKABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -1025,10 +1033,9 @@ fn finish_dungeon(files: &dyn crate::generate::Files, built: Built, owner: &[Opt
     let mut map = outer_buffer(&map, margins, outer_ground, repair, &mut master, files, &edge_types, rng)?;
     // `0x141ff7b90` (after the layout and its outer buffer): the unwalkable marking per region
     // on the region's rectangle; a dungeon's (main) region is the whole buffered map (the DLL's
-    // `regions.tsv`: (0, 0) and the map's size), unless the master sets `RoomOcclusion` (master
+    // `regions.tsv`: (0, 0) and the map's size), unless the master sets `DoNotFillOutside` (master
     // +0x166). Subgraph regions are marked only with master +0x164 (not ported).
-    let occlusion = tsi.get("RoomOcclusion").is_some_and(|v| v.trim() != "0" && !v.trim().is_empty());
-    if !occlusion && !NO_UNWALKABLE.with(|n| n.get()) && std::env::var_os("POE_NO_DGR_UNWALKABLE").is_none() {
+    if !do_not_fill_outside(&tsi) && !NO_UNWALKABLE.with(|n| n.get()) && std::env::var_os("POE_NO_DGR_UNWALKABLE").is_none() {
         let win = (0, 0, map.width as i32, map.height as i32);
         lattice::load_ground_flags(&mut map, files);
         lattice::mark_unwalkable_in(&mut map, &master.tiles, win);
@@ -1885,7 +1892,7 @@ fn build_tgr(files: &dyn crate::generate::Files, graph: &Graph, removed: Vec<boo
     }
     // The unwalkable marking (`0x141fe1150`) works from the real map's border: a subgraph's
     // window marks nothing (G3_1's `End_*.tgr`: no corner gets flag 8).
-    if window.is_none() && !NO_UNWALKABLE.with(|n| n.get()) {
+    if window.is_none() && !NO_UNWALKABLE.with(|n| n.get()) && !do_not_fill_outside(&tsi) {
         lattice::load_ground_flags(&mut map, files);
         lattice::mark_unwalkable(&mut map, &master.tiles);
         lattice::mark_enclosed_fills(&mut map, files).map_err(data)?;

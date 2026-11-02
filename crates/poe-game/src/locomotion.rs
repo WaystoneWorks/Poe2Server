@@ -125,6 +125,29 @@ pub struct SprintConfig {
     pub cursor_match_degrees: f32,
 }
 
+/// How an attack slows walking (official values as defaults; `docs/protocol/movement.md`,
+/// "Action speed factor"). The client ramps the Actor's speed factor (`+0x440` towards `+0x448`
+/// at `+0x444` per second, `0x141e441ab`) from the running action's
+/// `1 + movement_speed_+%_final_while_performing_action / 100 x (1 + virtual_movement_speed_penalty_% / 100)`
+/// (`0x14197ea40`) at `movement_speed_acceleration_+%_per_second_while_performing_action / 100`
+/// (`0x14197eb10`), and back to 1 once `movement_speed_while_performing_action_locked_duration_%`
+/// of the action has passed (`0x141e43fdb`). The numbers are measured on the client's own steps
+/// (2026-10-20 capture, 4 attacks while walking): the attack skill's stats come from the weapon,
+/// which the server does not model yet.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AttackSpeedConfig {
+    /// The factor the attack slows walking to (measured 0.28-0.31).
+    pub floor: f32,
+    /// Ramp rate of the factor, per second (measured 0.050-0.054 per 33 ms frame).
+    pub ramp_per_second: f32,
+    /// Frames after the attack's `StartAction` at which the factor drops to `floor` at once
+    /// (7 in all 4 cases; until then it ramps down).
+    pub snap_frames: u32,
+    /// Frames after the attack's `StartAction` from which the factor ramps back to 1 (the
+    /// first higher step is the frame after; 12 in 3 of 4 cases, 16 once).
+    pub lock_frames: u32,
+}
+
 /// Everything the component needs to know about the game (shared by all entities of a world).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MovementConfig {
@@ -132,6 +155,7 @@ pub struct MovementConfig {
     pub roll: RollConfig,
     pub sprint: SprintConfig,
     pub click: ClickConfig,
+    pub attack_speed: AttackSpeedConfig,
     /// Characters' walking speed, cells per second.
     pub walk_speed: f32,
     /// Which pathfinder plans walks, rolls and sprints.
@@ -161,6 +185,12 @@ impl MovementConfig {
             click: ClickConfig {
                 restart_frames: 15,
                 first_restart_frames: 2,
+            },
+            attack_speed: AttackSpeedConfig {
+                floor: 0.3,
+                ramp_per_second: 1.5,
+                snap_frames: 7,
+                lock_frames: 12,
             },
             sprint: SprintConfig {
                 buff_rows,
@@ -521,6 +551,8 @@ pub struct Locomotion {
     /// The direction the entity last moved or aimed in: the client rolls along it when the
     /// roll has no target (cursor on the player) and no key is held.
     facing: Cell,
+    /// Start frame of the attack whose speed factor is still in effect ([`AttackSpeedConfig`]).
+    attack_slow: Option<u64>,
 }
 
 impl Locomotion {
@@ -554,6 +586,7 @@ impl Locomotion {
             roll_cursor: (0, 0),
             unscaled_dir: None,
             facing: (0, 0),
+            attack_slow: None,
         }
     }
 
@@ -637,6 +670,7 @@ impl Locomotion {
         } else {
             0
         };
+        self.update_speed_factor(ctx);
         self.mover.advance(ctx.dt, ctx.terrain);
         if matches!(self.state, MoveState::Walking(Walk::Target { .. })) && !self.mover.is_moving()
         {
@@ -953,6 +987,11 @@ impl Locomotion {
         // vector, else the direction to the action's target, and the entity's facing when the
         // target is the player's own cell.
         self.roll_cursor = offset;
+        // The roll is the running action now: its own factor (1, no ramp) replaces an
+        // attack's. UNVERIFIED: the one attack a roll cut short (f4021) shows only the roll's
+        // own steps, and the walk after it was at full speed.
+        self.attack_slow = None;
+        self.mover.factor = 1.0;
         let wasd_driven = self.wasd != (0, 0);
         let heading = if wasd_driven {
             self.wasd
@@ -1087,8 +1126,8 @@ impl Locomotion {
         // An attack during a roll is acked at once and the last one asked for starts when the
         // roll lets go: `attack_cancel_frames` after the roll started (the roll is cut short
         // there), or, when Space was held past +15, with the end of the sprint at +35 (2026-10-20
-        // capture: 3 of 3 and 1 of 1). Attacks end a running sprint; they do not stop walking
-        // (UNVERIFIED (gap #6): attacks while walking, in click-to-move mode).
+        // capture: 3 of 3 and 1 of 1). Attacks end a running sprint; they do not stop walking but
+        // slow it (`update_speed_factor`; UNVERIFIED (gap #6) for a plain WASD walk).
         if let MoveState::Rolling(r) = self.state {
             out.push(Self::skill_ack(&req, target));
             // A held repeat does not replace the request (the attack on a hovered monster
@@ -1109,6 +1148,34 @@ impl Locomotion {
         self.start_attack(req, target, true, ctx, out);
     }
 
+    /// The client's action speed factor for this frame's step: after an attack's `StartAction`
+    /// in frame `s` it ramps towards `floor` from frame `s + 1`, is `floor` from `s + snap`, and
+    /// ramps back to 1 from `s + lock + 1` ([`AttackSpeedConfig`]).
+    fn update_speed_factor(&mut self, ctx: &StepCtx) {
+        let Some(start) = self.attack_slow else {
+            return;
+        };
+        let cfg = &ctx.config.attack_speed;
+        let n = ctx.frame.saturating_sub(start);
+        if n == 0 {
+            return;
+        }
+        let rate = cfg.ramp_per_second * ctx.dt;
+        let f = &mut self.mover.factor;
+        if n <= cfg.lock_frames as u64 {
+            *f = if n >= cfg.snap_frames as u64 {
+                cfg.floor
+            } else {
+                (*f - rate).max(cfg.floor)
+            };
+        } else {
+            *f = (*f + rate).min(1.0);
+            if *f >= 1.0 {
+                self.attack_slow = None;
+            }
+        }
+    }
+
     /// Starts an attack now; `ack` is false for a queued one, whose ack went out when it was
     /// asked for.
     fn start_attack(
@@ -1120,6 +1187,7 @@ impl Locomotion {
         out: &mut Vec<MoveEvent>,
     ) {
         let cell = self.mover.cell();
+        self.attack_slow = Some(ctx.frame);
         out.push(MoveEvent::ActionStart {
             kind: ActionKind::Other,
             skill: req.skill,
@@ -2370,6 +2438,84 @@ mod tests {
         let ev = r.tick(&[MoveInput::SkillInputEnd, space(false)]);
         assert!(!ev.iter().any(|e| matches!(e, MoveEvent::MoveAck { .. })));
         assert_eq!(r.loco.state(), &MoveState::Idle);
+    }
+
+    /// Client speed factors (step / 1.2333) after the Melee start at f4005 of the 2026-10-20
+    /// capture (held-click walk, attack at frame 0), frames 1..=16; frame 6 is a partial step.
+    const CAPTURE_ATTACK_FACTORS: [f32; 16] = [
+        0.958, 0.912, 0.850, 0.803, 0.748, 0.607, 0.306, 0.303, 0.306, 0.304, 0.305, 0.306, 0.357,
+        0.411, 0.468, 0.518,
+    ];
+
+    #[test]
+    fn an_attack_while_walking_slows_the_walk_like_the_client() {
+        let mut r = Rig::new((50, 50));
+        r.tick(&[dir(180, 0)]);
+        r.run(5);
+        let full = step(&mut r, &[]);
+        assert!((full - 37.0 * 0.033).abs() < 1e-3, "{full}");
+        r.tick(&[MoveInput::UseSkill(skill(ATTACK, 20, 0))]);
+        let (mut ours, mut theirs) = (0.0, 0.0);
+        for (n, want) in CAPTURE_ATTACK_FACTORS.iter().enumerate() {
+            let got = step(&mut r, &[]) / full;
+            // Frame 6 is the client's partial step into the drop.
+            let tol = if n + 1 == 6 { 0.1 } else { 0.03 };
+            assert!((got - want).abs() < tol, "frame {}: {got} vs {want}", n + 1);
+            ours += got * full;
+            theirs += want * full;
+        }
+        assert!((ours - theirs).abs() < 0.3, "{ours} vs {theirs} cells");
+        assert!(matches!(r.loco.state, MoveState::Walking(_)));
+    }
+
+    #[test]
+    fn the_walk_is_back_to_full_speed_after_the_ramp() {
+        let mut r = Rig::new((50, 50));
+        r.tick(&[dir(180, 0), MoveInput::UseSkill(skill(ATTACK, 20, 0))]);
+        // 12 locked frames, then 14 frames from 0.3 to 1 at 0.0495 per frame.
+        r.run(26);
+        assert!(r.loco.mover.factor < 1.0);
+        r.run(1);
+        assert_eq!(r.loco.mover.factor, 1.0);
+        assert!(r.loco.attack_slow.is_none());
+        let s = step(&mut r, &[]);
+        assert!((s - 37.0 * 0.033).abs() < 1e-3, "{s}");
+    }
+
+    #[test]
+    fn a_walk_started_during_the_attack_is_slow_from_its_first_step() {
+        let mut r = Rig::new((50, 50));
+        r.tick(&[MoveInput::UseSkill(skill(ATTACK, 20, 0))]);
+        r.run(7);
+        r.tick(&[dir(180, 0)]);
+        let s = step(&mut r, &[]);
+        assert!((s - 0.3 * 37.0 * 0.033).abs() < 1e-3, "{s}");
+    }
+
+    #[test]
+    fn a_new_attack_restarts_the_slow() {
+        let mut r = Rig::new((50, 50));
+        r.tick(&[dir(180, 0), MoveInput::UseSkill(skill(ATTACK, 20, 0))]);
+        r.run(20);
+        let before = r.loco.mover.factor;
+        assert!(before > 0.3 && before < 1.0, "{before}");
+        r.tick(&[MoveInput::UseSkill(skill(ATTACK, 20, 0))]);
+        r.run(6);
+        assert!(r.loco.mover.factor < before);
+        r.run(1);
+        assert_eq!(r.loco.mover.factor, 0.3);
+    }
+
+    #[test]
+    fn a_roll_ends_the_attack_slow() {
+        let mut r = Rig::new((50, 50));
+        r.tick(&[dir(180, 0), MoveInput::UseSkill(skill(ATTACK, 20, 0))]);
+        r.run(8);
+        assert_eq!(r.loco.mover.factor, 0.3);
+        r.tick(&[space(true), roll(10, 0)]);
+        assert!(r.loco.is_rolling());
+        assert_eq!(r.loco.mover.factor, 1.0);
+        assert!(r.loco.attack_slow.is_none());
     }
 
     #[test]

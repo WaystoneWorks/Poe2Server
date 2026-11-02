@@ -625,3 +625,20 @@ fn click_mode_roll_east() {
 fn click_mode_roll_west() {
     track_only("click_mode_roll_west", 3.5);
 }
+
+// ---- action speed factor (attacks while walking, gap #6) ------------------------------------
+
+/// A held-click walk with an attack at f4005: the walk goes on at the client's action speed
+/// factor (down to 0.3 from 7 frames in, back up from frame 13): 1.5 cells from the client at
+/// worst, 7.4 without the factor.
+#[test]
+fn attack_while_click_walking() {
+    track_only("attack_while_click_walking", 2.0);
+}
+
+/// A WASD sprint ended by an attack (f2393): the walk the unscaled `MoveAck` restarts is slowed
+/// by the attack: 1.9 cells from the client at worst, 12.4 without the factor.
+#[test]
+fn attack_ends_sprint_then_walk() {
+    track_only("attack_ends_sprint_then_walk", 2.5);
+}

@@ -165,6 +165,10 @@ pub struct Mover {
     pub y: f32,
     /// Walking speed in cells per second.
     pub speed: f32,
+    /// The client's action speed factor (Pathfinding `+0x55c`): walks, WASD and sprints move at
+    /// `speed * factor` while an attack slows the entity (see `locomotion::ActionSpeed`); rolls
+    /// and coasts are not scaled.
+    pub factor: f32,
     pub motion: Motion,
     /// Waypoints (cells) of the current walk.
     path: Vec<(i32, i32)>,
@@ -205,6 +209,7 @@ impl Mover {
             x: x as f32 + 0.5,
             y: y as f32 + 0.5,
             speed,
+            factor: 1.0,
             motion: Motion::Idle,
             path: Vec::new(),
             replan_in: 0,
@@ -345,7 +350,7 @@ impl Mover {
                     // Plan once per click.
                     self.replan_in = u32::MAX;
                 }
-                if !self.follow(self.speed * dt) {
+                if !self.follow(self.speed * self.factor * dt) {
                     // The client plans again where a plan ended short of the goal (a goal
                     // beyond the search window, or inside a wall) and stops when that plan
                     // has nowhere to go.
@@ -455,7 +460,7 @@ impl Mover {
             self.replan_in = REPLAN_FRAMES;
         }
         self.replan_in -= 1;
-        self.follow(self.speed * scale * dt);
+        self.follow(self.speed * self.factor * scale * dt);
     }
 
     /// The cell the client plans from. The client moves its cell along a digital line that
@@ -543,7 +548,7 @@ impl Mover {
             self.path = self.waypoints_to(terrain, goal);
             self.aim_timer = AIM_PERIOD;
         }
-        self.follow(self.speed * scale * dt);
+        self.follow(self.speed * self.factor * scale * dt);
     }
 
     /// One frame of a roll towards `(ux, uy)` with `remaining` cells to go: plan to the point

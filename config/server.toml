@@ -87,6 +87,15 @@ sprint_release_window_frames = 6
 # A key-shaped direction (axis or exact diagonal) after a sprint is the cursor's when the roll key's cursor
 # offset points within this many degrees of it (an exactly diagonal cursor sends the same vector as W).
 sprint_cursor_match_degrees = 10
+# An attack slows walking (docs/protocol/movement.md, "Action speed factor"); measured on the client's
+# steps in the official 2026-10-20 capture. Factor the attack slows walking to.
+attack_speed_floor = 0.3
+# Ramp rate of the factor, per second (down from the attack's start, up after the lock).
+attack_speed_ramp_per_second = 1.5
+# Frames after the attack's start at which the factor drops to the floor at once.
+attack_speed_snap_frames = 7
+# Frames after the attack's start from which the factor ramps back to 1.
+attack_speed_lock_frames = 12
 # Which search plans walks, rolls and sprints: "client" is a port of the client's own pathfinder
 # (docs/re/pathfinding.md), "approx" the older A* with wall sliding.
 pathfinder = "client"

@@ -997,6 +997,18 @@ pub struct MovementConfig {
     /// diagonal cursor sends the same vector as W.
     #[serde(default = "default_sprint_cursor_match_degrees")]
     pub sprint_cursor_match_degrees: f32,
+    /// An attack slows walking (docs/protocol/movement.md, "Action speed factor"): the speed
+    /// factor ramps down at `attack_speed_ramp_per_second`, drops to `attack_speed_floor`
+    /// `attack_speed_snap_frames` after the attack's start and ramps back to 1 after
+    /// `attack_speed_lock_frames`. Measured on the official 2026-10-20 capture.
+    #[serde(default = "default_attack_speed_floor")]
+    pub attack_speed_floor: f32,
+    #[serde(default = "default_attack_speed_ramp_per_second")]
+    pub attack_speed_ramp_per_second: f32,
+    #[serde(default = "default_attack_speed_snap_frames")]
+    pub attack_speed_snap_frames: u32,
+    #[serde(default = "default_attack_speed_lock_frames")]
+    pub attack_speed_lock_frames: u32,
     /// Which search plans walks, rolls and sprints: `"client"` (default), a port of the client's
     /// own pathfinder that keeps the server's positions where the client's are near walls
     /// (docs/re/pathfinding.md), or `"approx"`, the older A* with wall sliding.
@@ -1023,6 +1035,10 @@ impl Default for MovementConfig {
             sprint_restart_delay_frames: default_sprint_restart_delay_frames(),
             sprint_release_window_frames: default_sprint_release_window_frames(),
             sprint_cursor_match_degrees: default_sprint_cursor_match_degrees(),
+            attack_speed_floor: default_attack_speed_floor(),
+            attack_speed_ramp_per_second: default_attack_speed_ramp_per_second(),
+            attack_speed_snap_frames: default_attack_speed_snap_frames(),
+            attack_speed_lock_frames: default_attack_speed_lock_frames(),
             pathfinder: Pathfinder::default(),
         }
     }
@@ -1054,6 +1070,22 @@ fn default_sprint_release_window_frames() -> u32 {
 
 fn default_sprint_cursor_match_degrees() -> f32 {
     10.0
+}
+
+fn default_attack_speed_floor() -> f32 {
+    0.3
+}
+
+fn default_attack_speed_ramp_per_second() -> f32 {
+    1.5
+}
+
+fn default_attack_speed_snap_frames() -> u32 {
+    7
+}
+
+fn default_attack_speed_lock_frames() -> u32 {
+    12
 }
 
 /// `[dev]`: development and research tools. None of these are needed for normal play.

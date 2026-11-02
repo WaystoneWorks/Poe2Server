@@ -66,6 +66,10 @@ pub fn sim_config(
     cfg.sprint.restart_delay_frames = config.sprint_restart_delay_frames;
     cfg.sprint.release_window_frames = config.sprint_release_window_frames;
     cfg.sprint.cursor_match_degrees = config.sprint_cursor_match_degrees;
+    cfg.attack_speed.floor = config.attack_speed_floor;
+    cfg.attack_speed.ramp_per_second = config.attack_speed_ramp_per_second;
+    cfg.attack_speed.snap_frames = config.attack_speed_snap_frames;
+    cfg.attack_speed.lock_frames = config.attack_speed_lock_frames;
     cfg.pathfinder = match config.pathfinder {
         poe_config::Pathfinder::Client => poe_game::movement::Pathfinder::Client,
         poe_config::Pathfinder::Approx => poe_game::movement::Pathfinder::Approx,

@@ -692,7 +692,11 @@ impl InstanceServer {
             if ours != client_hash {
                 return Err(format!("tile hash {ours} differs from the client's {client_hash}"));
             }
-            let grid = poe_world::collision::build(&g.map, data.files(), g.doodads.iter().chain(&g.tile_objects), poe_world::doodads::Side::Server).map_err(|e| e.to_string())?;
+            // The client's live grid is its own generation (client side) plus the hull of every static
+            // entity the server sends (`0x141d0ce70`). This server sends none of the `server_only`
+            // static objects yet, so the grid it must agree with is the client side one; a
+            // `Side::Server` grid would block cells (healing wells, benches) the client walks through.
+            let grid = poe_world::collision::build(&g.map, data.files(), g.doodads.iter().chain(&g.tile_objects), poe_world::doodads::Side::Client).map_err(|e| e.to_string())?;
             spawn::Grid::parse(&grid.pwg1()).ok_or_else(|| "generated grid is not PWG1".to_string())
         })
         .await;

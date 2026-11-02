@@ -454,7 +454,10 @@ pub const SIDE_CLIENT: u8 = 2;
 /// server (the globals `0x1445c995c` / `0x14458c74c` set) keeps `server_only` types and drops
 /// `client_only` ones, a client process does the opposite. The official server's grid is the
 /// [`Side::Server`] one; the DLL's batch exports run the same generator in the client process
-/// ([`Side::Client`]), which is what they are compared with.
+/// ([`Side::Client`]), which is what they are compared with. A live client reaches the
+/// [`Side::Server`] grid only once the server has sent those `server_only` objects as entities
+/// (their hulls are stamped on arrival), so a server that does not send them builds
+/// [`Side::Client`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
     Client,

@@ -458,6 +458,8 @@ mod tests {
             filler: vec!["fill".into()],
             ..Default::default()
         };
+        // Uploads are off by default (`[terrain] generated_grid` replaces them); these tests use them.
+        c.upload.enabled = true;
         c.start_tiles.insert(
             "G1_1".into(),
             StartTile {

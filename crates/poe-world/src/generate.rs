@@ -1511,6 +1511,21 @@ pub fn derepeat_pass(map: &mut TileMap, master: &Master, rooms: &[RoomPlacement]
 }
 
 impl TileMap {
+    /// The layout in the client DLL's `terrain_layout_<hash>.tsv` format (`size w h`, then
+    /// `x y path sub` row by row; an empty cell has an empty path), which the instance server's
+    /// spawn reads (`[spawn.start_tiles]`).
+    pub fn layout_tsv(&self) -> String {
+        use std::fmt::Write;
+        let mut out = format!("size\t{}\t{}\n", self.width, self.height);
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let (path, sub) = self.get(x, y).map_or(("", 0), |c| (c.path.as_str(), c.sub));
+                let _ = writeln!(out, "{x}\t{y}\t{path}\t{sub}");
+            }
+        }
+        out
+    }
+
     /// The client's tile hash of this layout (column by column).
     pub fn tile_hash(&self) -> u32 {
         let mut tiles = Vec::new();

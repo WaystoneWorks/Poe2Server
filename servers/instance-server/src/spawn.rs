@@ -273,13 +273,18 @@ pub async fn from_client_layout(
         return None;
     };
     let layout = Layout::parse(&text)?;
+    let grid = store.grid_path(tile_hash).and_then(|p| std::fs::read(&p).ok()).and_then(|d| Grid::parse(&d));
+    from_layout(&layout, grid.as_ref(), config, area, "client")
+}
+
+/// The spawn point of `layout` (`source` names it in the log): the area's start
+/// (`[spawn.start_tiles]`), snapped to the nearest walkable cell of `grid` when there is one.
+pub fn from_layout(layout: &Layout, grid: Option<&Grid>, config: &SpawnConfig, area: &str, source: &str) -> Option<(i32, i32)> {
     let target = layout.start(config.start_tiles.get(area), &config.filler)?;
-    let grid_path = store.grid_path(tile_hash)?;
-    let grid = std::fs::read(&grid_path).ok().and_then(|d| Grid::parse(&d));
-    let start = match &grid {
+    let start = match grid {
         Some(g) => g.nearest_walkable(target, 400).or(Some(target)),
         None => {
-            warn!(file = %grid_path.display(), "no cell grid; not snapping to walkable");
+            warn!("no cell grid; not snapping to walkable");
             Some(target)
         }
     };
@@ -288,7 +293,8 @@ pub async fn from_client_layout(
         ?start,
         width = layout.width,
         height = layout.height,
-        "spawn from client layout"
+        source,
+        "spawn from layout"
     );
     start
 }

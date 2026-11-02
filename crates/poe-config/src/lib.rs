@@ -518,15 +518,16 @@ pub struct TerrainConfig {
     pub generate: bool,
     /// Use the walkability grid the server generates (`poe-world`, docs/architecture/instance-world.md in the hub)
     /// instead of the one the client uploads or the layout cache holds. It is used only when the
-    /// server's tile hash equals the client's; otherwise the uploaded grid stands in. Off by
-    /// default until the generator covers every area.
-    #[serde(default)]
+    /// server's tile hash equals the client's; otherwise the uploaded or cached grid stands in.
+    /// On by default since 2026-11-02 (the generated grid equals the client's in the broad sample
+    /// and in the live wall tests, hub PLAN R2).
+    #[serde(default = "default_true")]
     pub generated_grid: bool,
 }
 
 impl Default for TerrainConfig {
     fn default() -> Self {
-        Self { force_layout: true, generate: true, generated_grid: false }
+        Self { force_layout: true, generate: true, generated_grid: true }
     }
 }
 
@@ -676,7 +677,8 @@ impl Default for SpawnConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct UploadConfig {
-    /// Accept uploads. Needs `[spawn] layout_dir`.
+    /// Accept uploads. Needs `[spawn] layout_dir`. Off by default since the server generates
+    /// the grid itself (`[terrain] generated_grid`); a fallback for areas it cannot generate.
     pub enabled: bool,
     /// Largest upload as sent (zlib-compressed layout and grid), in bytes.
     pub max_bytes: usize,
@@ -694,7 +696,7 @@ pub struct UploadConfig {
 impl Default for UploadConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             max_bytes: 32 << 20,
             max_layout_bytes: 16 << 20,
             max_grid_bytes: 128 << 20,
@@ -1455,8 +1457,9 @@ mod tests {
         assert!(!cfg.dev.debug_link && !cfg.dev.position_sync && !cfg.dev.drift_check);
         assert!(cfg.dev.movement_trace.as_os_str().is_empty());
         assert!(cfg.dev.sweep.as_os_str().is_empty());
-        // Server-side generation is on (a capped background check); the layout is forced.
-        assert!(cfg.terrain.generate && cfg.terrain.force_layout && !cfg.terrain.generated_grid);
+        // Server-side generation and its grid are on; the layout is forced; uploads are off.
+        assert!(cfg.terrain.generate && cfg.terrain.force_layout && cfg.terrain.generated_grid);
+        assert!(!cfg.spawn.upload.enabled);
         // The pre-login limits are on.
         let l = &cfg.network.login;
         assert!(l.pre_auth_read_timeout_secs > 0 && l.pre_auth_login_timeout_secs > 0);

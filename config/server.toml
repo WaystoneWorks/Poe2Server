@@ -140,8 +140,9 @@ generate = true
 # Use the collision grid the server generates (poe-world: tile planes plus doodad hulls, byte
 # for byte the client's for the areas the generator reproduces) instead of the one the client
 # uploads or the layout cache holds. Used only when the server's tile hash equals the client's;
-# otherwise the uploaded grid stands in. docs/architecture/instance-world.md (hub). Off by default.
-generated_grid = false
+# otherwise the uploaded or cached grid stands in. docs/architecture/instance-world.md (hub). On by
+# default: it equals the client's in the broad sample and the live wall tests (hub PLAN R2).
+generated_grid = true
 
 [cluster]
 # Identity of this cluster (docs/architecture/accounts.md). Login tokens carry it; a token
@@ -333,9 +334,10 @@ point = [9, 33]
 # Terrain uploads from client DLLs on trusted servers (docs/guides/hosting.md): the first
 # client to generate an area sends its layout and cell grid, the server caches them in
 # layout_dir per tile hash and the other clients reuse them. A remote client needs no shared
-# disk. Local files in layout_dir still work.
+# disk. Local files in layout_dir still work. Off by default: the server generates the grid itself
+# ([terrain] generated_grid); turn it on as a fallback for areas the generator cannot make.
 [spawn.upload]
-enabled = true
+enabled = false
 # Limits: the upload as sent (compressed), and each part after decompression, in bytes.
 max_bytes = 33554432
 max_layout_bytes = 16777216

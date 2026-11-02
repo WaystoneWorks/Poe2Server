@@ -2,7 +2,8 @@
 //! builds it with `[terrain] generated_grid`) for the in-game wall scenarios (hub PLAN R2,
 //! `scripts/game-test/`):
 //!
-//! `cargo run --release -p poe-world --example wall_probe -- <area id> <seed> [--count N]`
+//! `cargo run --release -p poe-world --example wall_probe -- <area id> <seed> [--count N] [--layout FILE]`
+//! (`--layout` also writes the generated layout in the DLL's `terrain_layout_<hash>.tsv` format)
 //! (`POE_FORCE=<topology>:<orientation>` as in `area_gen`; unset = the natural layout, which is
 //! what `transfer <area> <seed>` gets with `[terrain] force_layout`)
 //!
@@ -58,9 +59,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let area = args.next().ok_or("usage: wall_probe <area> <seed> [--count N]")?;
     let seed: u32 = args.next().ok_or("seed")?.parse()?;
     let mut count = 5;
+    let mut layout = None;
     while let Some(a) = args.next() {
         if a == "--count" {
             count = args.next().ok_or("--count N")?.parse()?;
+        } else if a == "--layout" {
+            layout = Some(args.next().ok_or("--layout FILE")?);
         }
     }
     let forced = std::env::var("POE_FORCE").ok().map(|v| {
@@ -72,6 +76,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let g = poe_world::area::generate_with(&gd, &area, &mut TerrainRng::new(seed), forced)?;
     let grid = poe_world::collision::build(&g.map, &files, g.doodads.iter().chain(&g.tile_objects), poe_world::doodads::Side::Client)?;
     println!("{area} seed {seed} tile_hash {} grid {}x{}", g.map.tile_hash(), grid.cells_x, grid.cells_y);
+    if let Some(path) = layout {
+        std::fs::write(&path, g.map.layout_tsv())?;
+        println!("layout written to {path}");
+    }
     let gr = G(&grid);
     let (w, h) = (grid.cells_x as i32, grid.cells_y as i32);
     // Spots from the middle out, so the first ones are not all in one corner.

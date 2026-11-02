@@ -540,21 +540,96 @@ pub struct TmdEntry {
     pub orientations: u8,
 }
 
-/// The entries of a `.tmd` file (UTF-16 text); empty when it is missing or not a `.tmd`.
-/// The tile's art object list (tile data `+0x178`, `0x141d082a0`): only when tile data `+0x16c`
-/// (the low byte of [`crate::tdt::Tdt::body_flags`]) lacks bit 8, the `.tgt` path with the
-/// extension swapped for `.tmd` (`0x141d083f0`). P3_1's `ambush_CenterHoleLarge_01.tdt` (flags
-/// `0x9a`) has none: its `.tmd` beside the `.tgt` repeats the `.tdt`'s own objects. With tile
-/// data `+0x16d & 2` the `.tgt` is a `;` list, one per sub-tile, and `0x141d07630` places each
-/// sub-tile's `.tmd` instead of this list (not ported: such tiles get no art objects).
-fn art_tmd(tdt: &crate::tdt::Tdt) -> Option<String> {
-    if tdt.body_flags & 8 != 0 || tdt.body_flags & 0x200 != 0 {
-        return None;
+/// The tile's art object list (tile data `+0x178`, loaded by `0x141d082a0` only when tile data
+/// `+0x16c` (the low byte of [`crate::tdt::Tdt::body_flags`]) lacks bit 8; it keeps the last
+/// existing `.tmd` of the `.tgt`'s `;` segments). P3_1's `ambush_CenterHoleLarge_01.tdt` (flags
+/// `0x9a`) has none: its `.tmd` beside the `.tgt` repeats the `.tdt`'s own objects. `0x141d07630`
+/// places it: without body flag 0x200 the whole `.tgt` path with the extension swapped for `.tmd`
+/// (`0x141d07eb0`), with it the per-sub-tile objects ([`subtile_objects`]).
+fn art_entries(files: &dyn Files, tdt: &crate::tdt::Tdt) -> Vec<TmdEntry> {
+    if tdt.body_flags & 8 != 0 {
+        return Vec::new();
     }
-    let tgt = tdt.tgt.as_deref().filter(|t| t.len() > 4)?;
-    Some(format!("{}.tmd", &tgt[..tgt.len() - 4]))
+    let Some(tgt) = tdt.tgt.as_deref() else { return Vec::new() };
+    if tdt.body_flags & 0x200 != 0 {
+        return subtile_objects(files, tdt, tgt);
+    }
+    tgt_tmd(tgt).map(|p| tmd_entries(files, &p)).unwrap_or_default()
 }
 
+/// A `.tgt` path with the extension swapped for `.tmd` (`0x141d083f0`).
+fn tgt_tmd(tgt: &str) -> Option<String> {
+    let tgt = tgt.trim();
+    (tgt.len() > 4).then(|| format!("{}.tmd", &tgt[..tgt.len() - 4]))
+}
+
+/// `0x143512a00[o + mask * 8]` is the OR over the mask's bits `j` of bit `ORIENT_COMPOSE[j][o]`:
+/// an entry orientation `j` seen through a sub-tile group turned by `o`.
+const ORIENT_COMPOSE: [[u8; 8]; 8] = [
+    [0, 3, 2, 1, 4, 5, 6, 7],
+    [1, 0, 3, 2, 5, 6, 7, 4],
+    [2, 1, 0, 3, 6, 7, 4, 5],
+    [3, 2, 1, 0, 7, 4, 5, 6],
+    [4, 5, 6, 7, 0, 3, 2, 1],
+    [5, 6, 7, 4, 1, 0, 3, 2],
+    [6, 7, 4, 5, 2, 1, 0, 3],
+    [7, 4, 5, 6, 3, 2, 1, 0],
+];
+
+fn compose_mask(mask: u8, o: u8) -> u8 {
+    (0..8).filter(|j| mask & (1 << j) != 0).fold(0, |m, j| m | 1 << ORIENT_COMPOSE[j][(o & 7) as usize])
+}
+
+/// The per-sub-tile objects of a tile with body flag 0x200 (tile data `+0x16d & 2`,
+/// `0x141d07630`): row by row over the sub-tiles (row-major, the tile's width), each group origin
+/// (`b1` without 2 joined left, 4 joined above, 8 skipped) places the `.tmd` of `.tgt` segment
+/// `parts[0]` (`0x141d07c80`; skipped when missing), turned by the group's orientation `parts[1]`
+/// within its span (`0x141d074a0`: 1 + the run of right neighbours with `b1 & 2`, 1 + the run
+/// of lower neighbours with `b1 & 4`; swapped for odd orientations) and shifted by the origin
+/// sub-tile times 250. The results are tile-level entries: cell = floor(world * 0.092), angle
+/// as [`turn_angle`], flip toggled for orientations 4..7, the orientation mask composed through
+/// `0x143512a00`. Not ported: the `alttiles` variant (`0x141d11c50`).
+fn subtile_objects(files: &dyn Files, tdt: &crate::tdt::Tdt, tgt: &str) -> Vec<TmdEntry> {
+    let segments: Vec<&str> = tgt.split(';').collect();
+    let (w, h) = (tdt.size.0 as usize, tdt.size.1 as usize);
+    let b1 = |x: usize, y: usize| tdt.subtiles.get(y * w + x).map_or(0, |s| s.b1);
+    let mut out = Vec::new();
+    for y in 0..h {
+        for x in 0..w {
+            let Some(st) = tdt.subtiles.get(y * w + x) else { continue };
+            if st.b1 & 0x0e != 0 {
+                continue;
+            }
+            let Some(parts) = st.parts else { continue };
+            let Some(path) = segments.get(parts[0] as usize).and_then(|t| tgt_tmd(t)) else { continue };
+            let entries = tmd_entries(files, &path);
+            if entries.is_empty() {
+                continue;
+            }
+            let o = parts[1] & 7;
+            let sw = 1 + (x + 1..w).take_while(|&i| b1(i, y) & 2 != 0).count() as i32;
+            let sh = 1 + (y + 1..h).take_while(|&j| b1(x, j) & 4 != 0).count() as i32;
+            let (sw, sh) = if o & 1 == 1 { (sh, sw) } else { (sw, sh) };
+            for e in entries {
+                let (tx, ty) = turn_world_f(e.wx, e.wy, sw, sh, o);
+                let (wx, wy) = (x as f32 * 250.0 + tx, y as f32 * 250.0 + ty);
+                out.push(TmdEntry {
+                    x: (wx * 0.092).floor() as i32,
+                    y: (wy * 0.092).floor() as i32,
+                    wx,
+                    wy,
+                    radians: turn_angle(e.radians, o),
+                    flip: e.flip ^ (o > 3),
+                    orientations: compose_mask(e.orientations, o),
+                    ..e
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The entries of a `.tmd` file (UTF-16 text or binary); empty when it is missing or not a `.tmd`.
 pub fn tmd_entries(files: &dyn Files, path: &str) -> Vec<TmdEntry> {
     let Ok(bytes) = files.read(&path.to_ascii_lowercase()) else { return Vec::new() };
     if let Some(v) = bytes.first().copied().filter(|&v| v == 5 || v == 6) {
@@ -648,11 +723,16 @@ fn parse_tmd_line(line: &str) -> Option<TmdEntry> {
 /// client places tile objects at this position, so an entry on the tile's edge lands one cell
 /// from where the cell formula ([`turn_cell`]) puts it.
 fn turn_world(wx: f32, wy: f32, w: i32, h: i32, o: u8) -> (i32, i32) {
+    let (x, y) = turn_world_f(wx, wy, w, h, o);
+    ((x * 0.092).floor() as i32, (y * 0.092).floor() as i32)
+}
+
+/// [`turn_world`] before the cell step: the turned world position (table `0x142f02118`).
+fn turn_world_f(wx: f32, wy: f32, w: i32, h: i32, o: u8) -> (f32, f32) {
     const T: [[usize; 3]; 9] = [[0, 1, 1], [1, 0, 1], [0, 0, 0], [1, 1, 0], [0, 0, 1], [1, 0, 0], [0, 1, 0], [1, 1, 1], [0, 1, 1]];
     let a = [w as f32 * 250.0 - wx, wx, h as f32 * 250.0 - wy, wy];
     let t = T[(o as usize).min(8)];
-    let (x, y) = (a[t[1] + t[0] * 2], a[t[2] + if t[0] == 0 { 2 } else { 0 }]);
-    ((x * 0.092).floor() as i32, (y * 0.092).floor() as i32)
+    (a[t[1] + t[0] * 2], a[t[2] + if t[0] == 0 { 2 } else { 0 }])
 }
 
 /// The tile-object pass (`0x141ff4030`, the generator's vtable `+0x28`, after the doodad pass):
@@ -675,11 +755,11 @@ pub fn tile_objects(gd: &poe_data::GameData, files: &dyn Files, rng: &mut Terrai
         for tx in 0..map.width {
             let Some(c) = map.get(tx, ty).filter(|c| c.offset == (0, 0)) else { continue };
             let Ok(tdt) = crate::generate::load_tdt(files, &c.path.to_ascii_lowercase()) else { continue };
-            let art = art_tmd(&tdt);
             let (w, h) = (tdt.size.0 as i32, tdt.size.1 as i32);
             let o = c.orientation;
-            for list in [art, tdt.tmd.clone()].into_iter().flatten() {
-                for e in tmd_entries(files, &list) {
+            let own = tdt.tmd.clone().unwrap_or_default();
+            for (list, entries) in [("art".to_string(), art_entries(files, &tdt)), (own.clone(), tmd_entries(files, &own))] {
+                for e in entries {
                     if e.ao.is_empty() || e.kind.is_empty() {
                         continue;
                     }

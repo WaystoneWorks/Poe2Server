@@ -74,6 +74,9 @@ pub struct SubTile {
     /// empty for value 0), else 529 codes, row-major.
     pub map: Option<Vec<u8>>,
     pub list: Vec<u8>,
+    /// The three bytes a tile with body flag 0x200 (tile data `+0x16d & 2`: one `.tgt` per
+    /// sub-tile) stores per sub-tile, in file order.
+    pub parts: Option<[u8; 3]>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -267,7 +270,7 @@ impl Tdt {
                     r.u8()?;
                 }
                 if has(1) && hi & 2 != 0 {
-                    r.bytes::<3>()?;
+                    st.parts = Some(r.bytes::<3>()?);
                 }
                 if !has(0x10) {
                     continue;

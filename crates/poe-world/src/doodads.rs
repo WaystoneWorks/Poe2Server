@@ -541,6 +541,20 @@ pub struct TmdEntry {
 }
 
 /// The entries of a `.tmd` file (UTF-16 text); empty when it is missing or not a `.tmd`.
+/// The tile's art object list (tile data `+0x178`, `0x141d082a0`): only when tile data `+0x16c`
+/// (the low byte of [`crate::tdt::Tdt::body_flags`]) lacks bit 8, the `.tgt` path with the
+/// extension swapped for `.tmd` (`0x141d083f0`). P3_1's `ambush_CenterHoleLarge_01.tdt` (flags
+/// `0x9a`) has none: its `.tmd` beside the `.tgt` repeats the `.tdt`'s own objects. With tile
+/// data `+0x16d & 2` the `.tgt` is a `;` list, one per sub-tile, and `0x141d07630` places each
+/// sub-tile's `.tmd` instead of this list (not ported: such tiles get no art objects).
+fn art_tmd(tdt: &crate::tdt::Tdt) -> Option<String> {
+    if tdt.body_flags & 8 != 0 || tdt.body_flags & 0x200 != 0 {
+        return None;
+    }
+    let tgt = tdt.tgt.as_deref().filter(|t| t.len() > 4)?;
+    Some(format!("{}.tmd", &tgt[..tgt.len() - 4]))
+}
+
 pub fn tmd_entries(files: &dyn Files, path: &str) -> Vec<TmdEntry> {
     let Ok(bytes) = files.read(&path.to_ascii_lowercase()) else { return Vec::new() };
     if let Some(v) = bytes.first().copied().filter(|&v| v == 5 || v == 6) {
@@ -661,7 +675,7 @@ pub fn tile_objects(gd: &poe_data::GameData, files: &dyn Files, rng: &mut Terrai
         for tx in 0..map.width {
             let Some(c) = map.get(tx, ty).filter(|c| c.offset == (0, 0)) else { continue };
             let Ok(tdt) = crate::generate::load_tdt(files, &c.path.to_ascii_lowercase()) else { continue };
-            let art = tdt.tgt.as_deref().filter(|t| t.len() > 4).map(|t| format!("{}.tmd", &t[..t.len() - 4]));
+            let art = art_tmd(&tdt);
             let (w, h) = (tdt.size.0 as i32, tdt.size.1 as i32);
             let o = c.orientation;
             for list in [art, tdt.tmd.clone()].into_iter().flatten() {

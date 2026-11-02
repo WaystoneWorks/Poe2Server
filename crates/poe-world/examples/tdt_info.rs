@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Some(m) if m.len() <= 1 => format!("uniform {:?}", m.first()),
                     Some(m) => format!("{} codes", m.len()),
                 };
-                println!("  sub {i}: flags {:#04x} b1 {} map {map} list {} bytes", st.flags, st.b1, st.list.len());
+                println!("  sub {i}: flags {:#04x} b1 {} map {map} list {} bytes parts {:02x?}", st.flags, st.b1, st.list.len(), st.parts);
                 if std::env::var("TDT_MAP").ok().and_then(|v| v.parse::<usize>().ok()) == Some(i) {
                     if let Some(m) = st.map.as_ref().filter(|m| m.len() == 529) {
                         for row in m.chunks(23) {

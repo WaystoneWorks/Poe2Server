@@ -88,6 +88,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let g = poe_world::area::generate_with_files(gd, files, area, &mut rng, Some(forced))?;
                     let grid = poe_world::collision::build(&g.map, files, g.doodads.iter().chain(&g.tile_objects), poe_world::doodads::Side::Client)?;
                     let layout = (th.is_none_or(|h| h == g.map.tile_hash()), dh.is_none_or(|h| h == g.doodad_hash()));
+                    // `POE_DBG_TILE_OBJECTS=DIR`: the tile-object pass's objects, one TSV per export
+                    // (`x y angle scale kind path leaf`), to compare with the export's `entities.tsv`.
+                    if let Some(d) = std::env::var_os("POE_DBG_TILE_OBJECTS") {
+                        let text: String = g.tile_objects.iter().map(|o| format!("{}\t{}\t{:.4}\t{:.4}\t{}\t{}\t{}\n", o.x, o.y, o.angle, o.scale, o.kind, o.path, o.leaf)).collect();
+                        let _ = std::fs::write(std::path::Path::new(&d).join(format!("{name}.tsv")), text);
+                    }
                     Ok::<_, poe_world::generate::GenError>((grid, g.map, [g.doodads, g.tile_objects].concat(), layout))
                 }));
                 let (line, ok) = match r {

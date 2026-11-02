@@ -273,7 +273,20 @@ pub fn build<'a>(map: &TileMap, files: &dyn Files, doodads: impl IntoIterator<It
         if anim_driven[&key] && std::env::var_os("POE_NO_ANIM_DRIVEN").is_none() {
             stamp_hull(&mut grid, &hulls[&key], (d.x, d.y), 0.0, d.scale, false);
         }
-        stamp_hull(&mut grid, &hulls[&key], (d.x, d.y), d.angle, d.scale, d.flip);
+        let (mut angle, mut flip, mut scale) = (d.angle, d.flip, d.scale);
+        // `POE_DBG_HULL_SET=x,y,angle,flip[,scale]`: stamp the object at cell (x, y) with these
+        // instead (angle and flip sweeps against the client grid); flip 2 leaves it out.
+        if let Ok(v) = std::env::var("POE_DBG_HULL_SET") {
+            let n: Vec<f32> = v.split(',').filter_map(|t| t.trim().parse().ok()).collect();
+            if n.len() >= 4 && n[0] as i32 == d.x && n[1] as i32 == d.y {
+                if n[3] == 2.0 {
+                    continue;
+                }
+                (angle, flip) = (n[2], n[3] != 0.0);
+                scale = n.get(4).copied().unwrap_or(scale);
+            }
+        }
+        stamp_hull(&mut grid, &hulls[&key], (d.x, d.y), angle, scale, flip);
         if let (Some((x, y, l)), Some(b)) = (watch, before) {
             if grid.get(l, x, y) != b {
                 eprintln!("CELL ({x},{y}) L{l} {b} -> {} by ({}, {}) {} kind {} leaf {}", grid.get(l, x, y), d.x, d.y, d.angle, d.kind, d.leaf);

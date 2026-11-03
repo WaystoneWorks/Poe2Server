@@ -104,7 +104,7 @@ const ROLL_FRAME: f32 = 0.033;
 /// the sum is 45.9, see docs/protocol/movement.md). The roll falls from 3.9 to 1.2 cells per
 /// frame, holds about 0.94 and tapers to zero at `t0 + 31`.
 pub const ROLL_STEPS: [f32; 30] = [
-    3.89, 3.74, 3.45, 3.27, 3.02, 2.72, 2.54, 2.30, 1.98, 1.76, 1.59, 1.35, 1.23, 1.16, 1.06, 0.99,
+    3.81, 3.59, 3.37, 3.16, 2.95, 2.73, 2.49, 2.27, 2.02, 1.79, 1.55, 1.32, 1.20, 1.12, 1.06, 0.99,
     0.97, 0.94, 0.94, 0.94, 0.94, 0.95, 0.93, 0.85, 0.74, 0.68, 0.49, 0.31, 0.16, 0.04,
 ];
 
@@ -566,6 +566,12 @@ impl Mover {
                 (start.1 as i64 + (dy as f32 * k + 0.5).floor() as i64) as i32,
             )
         };
+        // A line that starts standing runs from the centre of its start cell, wherever the
+        // position had got to: the client's phase restarts here, so the server's does too.
+        if moving.is_none() && !self.moved {
+            self.x = start.0 as f32 + 0.5;
+            self.y = start.1 as f32 + 0.5;
+        }
         let params = Params {
             moving,
             ..Params::default()

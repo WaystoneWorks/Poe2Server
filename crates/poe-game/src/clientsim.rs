@@ -24,6 +24,8 @@ const HALF_PI: f32 = 1.570_796_4;
 const SPRINT_TURN_RATE: f32 = 150.0;
 /// `DodgeRoll_StartSprint` `0x141aa92e0`: the optional line length of a roll that sprints.
 const ROLL_SPRINT_LINE: i32 = 300;
+/// The time of the animation event `0xb91f` in the roll's clip, seconds.
+const ROLL_EVENT_TIME: f32 = 0.5;
 /// `GP_sprinting_end_base_01`: the move event's end time, seconds of the clip.
 const SPRINT_END_MOVE_TIME: f32 = 0.75;
 /// `sprinting_end_*` entry speed (`0x141e56ae0`).
@@ -310,6 +312,8 @@ struct Roll {
     opt_len: Option<i32>,
     /// A sprint child was started (`act + 0x448`).
     sprints: bool,
+    /// The animation event `0xb91f` has fired.
+    event_done: bool,
 }
 
 /// Which animation refuses walks (`Actor + 0x380` in `0x36a`, `0x36b`).
@@ -595,7 +599,16 @@ impl ClientSim {
     /// the move event (`MoveEvent_Start` `0x141f5f650`).
     pub fn animated_tick(&mut self, dt: f32, t: &dyn Walkable) {
         if let Some(r) = &mut self.roll {
-            r.elapsed = (r.elapsed + dt * r.rate).min(r.length);
+            let new = (r.elapsed + dt * r.rate).min(r.length);
+            // `AnimPlayer_Advance`: the clock stands at the event's time while the event runs.
+            let event = !r.event_done && new >= ROLL_EVENT_TIME;
+            if event {
+                r.event_done = true;
+                r.elapsed = ROLL_EVENT_TIME;
+                self.roll_event();
+            }
+            let r = self.roll.as_mut().unwrap();
+            r.elapsed = new;
             // The end of the clip ends the action here, so the Actor tick of this frame can plan.
             if r.elapsed >= r.length {
                 self.roll_end(t);
@@ -610,6 +623,10 @@ impl ClientSim {
             a.left -= dt;
             if a.left <= 0.0 {
                 self.sprint_end = None;
+                // The move event ends with the clip: its line stops where it is.
+                self.stop_move();
+                self.line.acc = 0.0;
+                self.line.pending = 0.0;
             }
         }
     }
@@ -997,11 +1014,16 @@ impl ClientSim {
         self.must_sprint = v;
     }
 
-    /// `0x1d3` `is_sprinting`. Going on in a roll whose key is held is the animation event `0xb91f`
-    /// (`DodgeRoll_OnAnimationEvent` `0x141aa89d0`): the sprint child and the switch of curve.
+    /// `0x1d3` `is_sprinting`.
     pub fn on_is_sprinting(&mut self, v: bool) {
         self.is_sprinting = v;
-        if !v || !self.sprint_key {
+    }
+
+    /// The animation event `0xb91f`: `DodgeRoll_OnAnimationEvent` `0x141aa89d0`, with the key held
+    /// the sprint child (`DodgeRoll_StartSprint` `0x141aa92e0`) and the switch of curve
+    /// (`DodgeRollMove_SwitchAnimation` `0x141b8cd50`, `DodgeRollMove_ReloadCurve` `0x141b8d440`).
+    fn roll_event(&mut self) {
+        if !self.sprint_key {
             return;
         }
         if let (Some(r), Some(cs)) = (&mut self.roll, self.curves.clone()) {
@@ -1009,9 +1031,13 @@ impl ClientSim {
             r.opt_len = Some(ROLL_SPRINT_LINE);
             let curve = if r.backward { cs.roll_back_sprint.clone() } else { cs.roll_sprint.clone() };
             let (e, l) = (r.elapsed, r.length);
-            r.waiting = false;
             self.line.curve.load(curve, 0.0, l);
             self.line.curve.set_time(e, l);
+            // A backward roll that goes on sprinting turns around (`act + 0x461`: stance `Standing`).
+            if r.backward {
+                self.orient = 1;
+                self.facing = wrap(self.facing + PI);
+            }
         }
     }
 
@@ -1027,13 +1053,16 @@ impl ClientSim {
         if start != self.grid {
             self.snap(start);
         }
+        // `0x141e4ea40`: an action whose vfunc `+0x340` answers true faces its target before anything
+        // else, so a key-held roll away from the cursor is a backward roll.
+        if target != self.grid {
+            self.facing = angle((target.0 - self.grid.0) as f32, (target.1 - self.grid.1) as f32);
+        }
         self.end_move(true, t);
         let heading = if self.axes != (0, 0) {
             angle(from_world(self.axes.0 as f32) as f32, from_world(self.axes.1 as f32) as f32)
-        } else if target == self.grid {
-            self.facing
         } else {
-            angle((target.0 - self.grid.0) as f32, (target.1 - self.grid.1) as f32)
+            self.facing
         };
         let mut d = wrap(heading - self.facing);
         if d > PI {
@@ -1054,6 +1083,7 @@ impl ClientSim {
             axes_aimed: false,
             opt_len: None,
             sprints: false,
+            event_done: false,
         });
         self.line.curve.load(curve, 0.0, length);
         self.orient = if backward { 2 } else { 1 };
@@ -1239,6 +1269,9 @@ impl ClientSim {
         self.orient = 1;
         if r.sprints {
             self.sprint_start(t);
+        } else if r.backward {
+            // `DodgeRoll_OnEnd`, with `act + 0x461` (stance `Standing`).
+            self.facing = wrap(self.facing + PI);
         }
     }
 
@@ -1317,7 +1350,11 @@ impl ClientSim {
         let dist = ((d.0 * d.0 + d.1 * d.1) as f32).sqrt();
         let speed = dist / (SPRINT_END_MOVE_TIME / rate);
         let end = self.clip_to_walkable(target, t);
-        if end != self.grid {
+        // `0x141f63640`: fewer than 2 cells to go beyond the start cell is no move at all.
+        let e = (end.0 - self.grid.0, end.1 - self.grid.1);
+        if e.0.abs().max(e.1.abs()) >= 2 {
+            // `MoveEvent_Start`: `Positioned_SetMoveCurve` before `MoveEvent_MovePositioned`.
+            self.line.curve.load(cs.sprint_end.clone(), 0.0, SPRINT_END_MOVE_TIME);
             let orient = std::mem::replace(&mut self.orient, 0);
             self.move_to_waypoint(end, speed, false, t);
             self.orient = orient;

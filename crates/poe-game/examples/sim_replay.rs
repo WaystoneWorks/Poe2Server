@@ -132,7 +132,8 @@ fn main() {
                 _ => {}
             }
         }
-        if seen || sim.grid() != logged {
+        // The log skips some frames: only a logged grid counts.
+        if seen {
             if sim.grid() == logged {
                 same += 1;
             } else {

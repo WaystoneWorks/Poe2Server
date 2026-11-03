@@ -60,17 +60,6 @@ const STANCE_TOGGLE_FRAMES: u64 = 0;
 const STANCE_LERP_COMBAT: f32 = 0.05;
 /// `0x2a6` value sent with a change out of combat stance (all eight sessions).
 const STANCE_LERP_PEACEFUL: f32 = 0.2;
-/// How an attack slows walking, measured on the client's own steps (2026-10-20 capture, 4 attacks
-/// while walking; the client's ramp is `0x141e441ab`, `0x14197ea40`, `0x14197eb10`; the attack's
-/// stats come from the weapon, which the server does not model yet): the factor it slows to, its
-/// ramp per second, the frame after the attack's start at which it drops at once, and the frame
-/// from which it ramps back. NOT the client's code: skills are out of scope until the server
-/// sends them.
-const ATTACK_SLOW_FLOOR: f32 = 0.3;
-const ATTACK_SLOW_RAMP: f32 = 1.5;
-const ATTACK_SLOW_SNAP_FRAMES: u64 = 7;
-const ATTACK_SLOW_LOCK_FRAMES: u64 = 12;
-
 /// Places in the client's frame the official server uses (hub `docs/re/wasd-movement.md`).
 const AT_WALL: Drain = Drain::at(0, 4);
 const AT_BUFFS: Drain = Drain::at(3, 0);
@@ -352,8 +341,6 @@ pub struct Locomotion {
     /// The direction the entity last moved or aimed in: the client rolls along it when the
     /// roll has no target (cursor on the player) and no key is held.
     facing: Cell,
-    /// Start frame of the attack whose speed factor is still in effect ([`AttackSpeedConfig`]).
-    attack_slow: Option<u64>,
 }
 
 impl Locomotion {
@@ -405,7 +392,6 @@ impl Locomotion {
             roll_cursor: (0, 0),
             unscaled_dir: None,
             facing: (0, 0),
-            attack_slow: None,
         }
     }
 
@@ -512,7 +498,6 @@ impl Locomotion {
 
     pub fn tick(&mut self, ctx: &mut StepCtx) -> Vec<Keyed> {
         let mut out = Out::new();
-        self.update_speed_factor(ctx);
         // Order key 0: before the client's Positioned tick.
         let inbox = std::mem::take(&mut self.inbox);
         self.batch_release = inbox
@@ -574,7 +559,16 @@ impl Locomotion {
             self.ack_wanted = false;
             out.push(MoveEvent::Teleport { cell });
         }
-        self.move_ack(unscaled_ack, ctx, &mut out);
+        // The key's release and the zero vector in one batch: the sprint-off goes first, without
+        // a `0x64`, whose zero comes in the next frame (2026-11-03 f5253).
+        end_sprint |= std::mem::take(&mut self.release_due);
+        let zero_after_off = end_sprint && self.wasd == (0, 0) && self.ack_wanted && self.sprint().is_some();
+        if zero_after_off {
+            self.ack_wanted = false;
+            self.due.push((ctx.frame + 1, Due::UnscaledAck));
+        } else {
+            self.move_ack(unscaled_ack, ctx, &mut out);
+        }
         for (key, event) in std::mem::take(&mut self.deferred) {
             out.push_at(key, event);
         }
@@ -609,9 +603,8 @@ impl Locomotion {
                 out.push_at(key, event);
             }
         }
-        end_sprint |= std::mem::take(&mut self.release_due);
         if end_sprint {
-            self.end_sprint(ctx, &mut out);
+            self.end_sprint(zero_after_off, ctx, &mut out);
         }
         self.apply_up_to(AT_LAST_BEFORE_ACTOR, &mut out, ctx);
         self.sim.actor_tick(ctx.dt, ctx.terrain);
@@ -994,11 +987,6 @@ impl Locomotion {
         // vector, else the direction to the action's target, and the entity's facing when the
         // target is the player's own cell.
         self.roll_cursor = offset;
-        // The roll is the running action now: its own factor (1, no ramp) replaces an
-        // attack's. UNVERIFIED: the one attack a roll cut short (f4021) shows only the roll's
-        // own steps, and the walk after it was at full speed.
-        self.attack_slow = None;
-        self.sim.set_speed_factor(1.0);
         let wasd_driven = self.wasd != (0, 0);
         let heading = if wasd_driven {
             self.wasd
@@ -1155,33 +1143,6 @@ impl Locomotion {
         self.start_attack(req, target, true, ctx, out);
     }
 
-    /// The client's action speed factor for this frame's step: after an attack's `StartAction`
-    /// in frame `s` it ramps towards `floor` from frame `s + 1`, is `floor` from `s + snap`, and
-    /// ramps back to 1 from `s + lock + 1` ([`AttackSpeedConfig`]).
-    fn update_speed_factor(&mut self, ctx: &StepCtx) {
-        let Some(start) = self.attack_slow else {
-            return;
-        };
-        let n = ctx.frame.saturating_sub(start);
-        if n == 0 {
-            return;
-        }
-        let rate = ATTACK_SLOW_RAMP * ctx.dt;
-        let mut f = self.sim.speed_factor();
-        if n <= ATTACK_SLOW_LOCK_FRAMES {
-            f = if n >= ATTACK_SLOW_SNAP_FRAMES {
-                ATTACK_SLOW_FLOOR
-            } else {
-                (f - rate).max(ATTACK_SLOW_FLOOR)
-            };
-        } else {
-            f = (f + rate).min(1.0);
-            if f >= 1.0 {
-                self.attack_slow = None;
-            }
-        }
-        self.sim.set_speed_factor(f);
-    }
 
     /// Starts an attack now; `ack` is false for a queued one, whose ack went out when it was
     /// asked for.
@@ -1194,7 +1155,6 @@ impl Locomotion {
         out: &mut Out,
     ) {
         let cell = self.sim.grid();
-        self.attack_slow = Some(ctx.frame);
         out.push(MoveEvent::ActionStart {
             kind: ActionKind::Other,
             skill: req.skill,
@@ -1595,13 +1555,16 @@ impl Locomotion {
     /// The sprint key went up: sprint-off buffs and stats after this frame's `MoveAck`, then
     /// back to walking. The stream's last message was scaled and the next frame sends the
     /// unscaled direction.
-    fn end_sprint(&mut self, ctx: &mut StepCtx, out: &mut Out) {
+    ///
+    /// `first`: no `0x64` goes out in this frame, and the sprint-off has `(player, 9, 4)`.
+    fn end_sprint(&mut self, first: bool, ctx: &mut StepCtx, out: &mut Out) {
         let frame = ctx.frame;
         let Some(run) = self.sprint().copied() else {
             return;
         };
         self.release_pending = false;
-        out.key = AT_SPRINT_END;
+        let off_key = if first { AT_SPRINT_END_MOVE } else { AT_SPRINT_END };
+        out.key = off_key;
         let sprint_move = std::mem::take(&mut self.sprint_move);
         if sprint_move && matches!(self.state, MoveState::Sprinting(_)) {
             // The click's Move ran the sprint and the key went up (2026-10-20_21-51-49 f8952,
@@ -1611,7 +1574,7 @@ impl Locomotion {
             let dir = self.wasd;
             self.wasd = (0, 0);
             self.due.push((frame + 1, Due::UnscaledAck));
-            out.key = AT_SPRINT_END;
+            out.key = off_key;
             out.push(MoveEvent::BuffRemoved {
                 index: run.buff_base + 1,
             });

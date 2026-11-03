@@ -6,6 +6,7 @@
 //!
 //! `cargo run -p poe-game --example own_replay -- INPUTS.json SEG.tsv GRIDS OFFSET [--show N]`
 //! Always from the segment's start (the area's start).
+//! `--free`: no placing on the client's log inside skills. The two models must then agree in every frame.
 //! `OFFSET`: log frame minus capture frame of the segment, as the trace script prints it.
 
 use poe_game::clientsim::ClientSim;
@@ -124,6 +125,8 @@ fn main() {
     cfg.offset_scale = scale;
     cfg.sprint_clearance_level = 4;
     let resync = a.iter().any(|x| x == "--resync");
+    // `--free`: never place a model on the log, also in skills: server and client models must still agree.
+    let free = a.iter().any(|x| x == "--free");
     let mut rows: BTreeMap<i64, Vec<Vec<String>>> = BTreeMap::new();
     for l in std::fs::read_to_string(&a[2]).unwrap().lines() {
         let w: Vec<String> = l.split_whitespace().map(String::from).collect();
@@ -184,8 +187,21 @@ fn main() {
                     println!("f{f} OUR 0x64 SNAPS the client: client {m:?} message {o:?}");
                 }
             }
+            // The whole visible state: the first frames where it differs, with their messages.
+            if started && free {
+                let a = &*loco.sim_mut();
+                let st = |m: &ClientSim| (m.grid(), m.point(), m.facing(), m.speed_factor(), m.is_rolling(), m.is_coasting(), m.has_move(), m.line_end());
+                if st(a) != st(&client) && shown < show {
+                    shown += 1;
+                    println!("f{f} STATE\n  s {:?}\n  c {:?}\n  {:?}", st(a), st(&client), events.iter().map(|e| (e.key, format!("{:?}", e.event))).collect::<Vec<_>>());
+                }
+            }
             if started && client.grid() != loco.grid() {
                 *c.entry("model_vs_client").or_default() += 1;
+                if shown < show {
+                    shown += 1;
+                    println!("f{f} server model {:?} client model {:?} in_skill {}", loco.grid(), client.grid(), f < skill_until);
+                }
             }
             if !started {
                 if let Some(g) = logged_at(f) {
@@ -236,8 +252,10 @@ fn main() {
             }
             if let Some(g) = logged_at(f) {
                 if f < skill_until {
-                    client.place(g);
-                    loco.sim_mut().place(g);
+                    if !free {
+                        client.place(g);
+                        loco.sim_mut().place(g);
+                    }
                     *c.entry("grid_in_skill").or_default() += 1;
                 } else if client.grid() == g {
                     *c.entry("grid_same").or_default() += 1;

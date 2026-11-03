@@ -15,6 +15,14 @@ use crate::clientpath::{self, Params};
 use crate::motion_data::{Curve, MotionCurves};
 use crate::movement::{Cell, Walkable};
 
+/// An attack's speed factor, measured (2026-10-20 capture, 4 attacks while walking): the factor it
+/// falls to, its ramp per second, the frame after the start at which it drops at once (the
+/// animation's contact event), and the frame from which it ramps back (the lock).
+const ACTION_SLOW_FLOOR: f32 = 0.3;
+const ACTION_SLOW_RAMP: f32 = 1.5;
+const ACTION_SLOW_SNAP_FRAMES: u64 = 7;
+const ACTION_SLOW_LOCK_FRAMES: u64 = 12;
+
 const CELL: f32 = 10.869565;
 const TO_CELL: f32 = 0.092;
 const PI: f32 = std::f32::consts::PI;
@@ -360,6 +368,10 @@ pub struct ClientSim {
     permyriad: i32,
     /// `pf + 0x55c`.
     speed_factor: f32,
+    /// The frame a running attack's speed factor counts from.
+    action_slow: Option<u64>,
+    /// Frames ticked (ends with the Actor tick).
+    frames: u64,
     depth: u32,
     // Actor
     axes: (i32, i32),
@@ -413,6 +425,8 @@ impl ClientSim {
             base_speed: walk_speed,
             permyriad: 0,
             speed_factor: 1.0,
+            action_slow: None,
+            frames: 0,
             depth: 0,
             axes: (0, 0),
             axes_fresh: false,
@@ -500,11 +514,6 @@ impl ClientSim {
         self.speed_factor
     }
 
-    /// Sets `pf + 0x55c`: a running line takes it at the next plan.
-    pub fn set_speed_factor(&mut self, f: f32) {
-        self.speed_factor = f;
-    }
-
     /// The roll's clip reaches its `sprint_start` event in the Animated tick of this frame.
     pub fn roll_event_due(&self, dt: f32) -> bool {
         match (&self.roll, &self.curves) {
@@ -535,7 +544,35 @@ impl ClientSim {
 
     /// Component 0: the Positioned tick `0x141ddc950`.
     pub fn positioned_tick(&mut self, dt: f32, t: &dyn Walkable) {
+        self.action_slow_tick(dt);
         self.run_line(dt, t);
+    }
+
+    /// The action speed factor of a running attack (Actor `+0x444`, target `+0x448`, ramp
+    /// `0x141e441ab`, `0x14197ea40`, `0x14197eb10`). The client takes the target, ramp, contact
+    /// event and lock from the skill's stats and the animation; those are not modelled, so this
+    /// runs the values measured on the client's steps (hub `docs/protocol/movement.md`).
+    fn action_slow_tick(&mut self, dt: f32) {
+        let Some(start) = self.action_slow else {
+            return;
+        };
+        let n = self.frames - start;
+        if n == 0 {
+            return;
+        }
+        let rate = ACTION_SLOW_RAMP * dt;
+        if n <= ACTION_SLOW_LOCK_FRAMES {
+            self.speed_factor = if n >= ACTION_SLOW_SNAP_FRAMES {
+                ACTION_SLOW_FLOOR
+            } else {
+                (self.speed_factor - rate).max(ACTION_SLOW_FLOOR)
+            };
+        } else {
+            self.speed_factor = (self.speed_factor + rate).min(1.0);
+            if self.speed_factor >= 1.0 {
+                self.action_slow = None;
+            }
+        }
     }
 
     /// `Positioned_RunLine` `0x141ddc9d0`.
@@ -986,6 +1023,7 @@ impl ClientSim {
         self.roll_tick(dt, t);
         self.sprint_end_check(t);
         self.plan_timer = (self.plan_timer - dt).max(0.0);
+        self.frames += 1;
     }
 
     // ---- Messages ----
@@ -1033,6 +1071,7 @@ impl ClientSim {
         if start != self.grid {
             self.snap(start);
         }
+        self.action_slow = Some(self.frames);
         self.end_move(true, t);
         if self.roll.is_some() {
             self.roll = None;
@@ -1102,6 +1141,11 @@ impl ClientSim {
     /// `0x1c8` of a roll: `DodgeRoll_OnStart` `0x141aa8500`, `DodgeRoll_InitHeading` `0x141b8bda0`,
     /// `DodgeRollMove_Start` `0x141b8bfa0`.
     pub fn on_start_roll(&mut self, start: Cell, target: Cell, travel: f32, t: &dyn Walkable) {
+        // The roll is the running action now: its own factor (1, no ramp) replaces an attack's.
+        // Measured on one sample only: the attack a roll cut short (f4021) showed only the roll's
+        // own steps, and the walk after it was at full speed.
+        self.action_slow = None;
+        self.speed_factor = 1.0;
         let Some(cs) = self.curves.clone() else { return };
         // `Actor_InstallQueuedMove` `0x141e41c60` snaps, then `0x141e4ea40` ends a running Move with a
         // stop (`Actor_EndMoveAction(A, 1)`) before the action's start, so the path's end does not

@@ -386,6 +386,10 @@ fn problems(fx: &Value, name: &str, tol: Tol, max_err: Option<f64>, check_events
         for (f, cx, cy) in pts.iter().filter(|p| p.0 >= from.unwrap_or(1) && p.0 >= 1) {
             let (sx, sy) = positions[f];
             let e = ((sx + ox - cx).powi(2) + (sy + oy - cy).powi(2)).sqrt();
+            // `REPLAY_TRACK=1`: frame by frame.
+            if std::env::var_os("REPLAY_TRACK").is_some() {
+                println!("{f}: server ({:.1},{:.1}) client ({cx:.1},{cy:.1}) {e:.1}", sx + ox, sy + oy);
+            }
             if e > worst.0 {
                 worst = (e, *f);
             }

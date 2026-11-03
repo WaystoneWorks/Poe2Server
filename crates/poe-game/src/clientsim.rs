@@ -544,7 +544,6 @@ impl ClientSim {
 
     /// Component 0: the Positioned tick `0x141ddc950`.
     pub fn positioned_tick(&mut self, dt: f32, t: &dyn Walkable) {
-        self.action_slow_tick(dt);
         self.run_line(dt, t);
     }
 
@@ -552,15 +551,13 @@ impl ClientSim {
     /// `0x141e441ab`, `0x14197ea40`, `0x14197eb10`). The client takes the target, ramp, contact
     /// event and lock from the skill's stats and the animation; those are not modelled, so this
     /// runs the values measured on the client's steps (hub `docs/protocol/movement.md`).
-    fn action_slow_tick(&mut self, dt: f32) {
+    fn action_slow_tick(&mut self, dt: f32, t: &dyn Walkable) {
         let Some(start) = self.action_slow else {
             return;
         };
-        let n = self.frames - start;
-        if n == 0 {
-            return;
-        }
+        let n = self.frames + 1 - start;
         let rate = ACTION_SLOW_RAMP * dt;
+        let before = self.speed_factor;
         if n <= ACTION_SLOW_LOCK_FRAMES {
             self.speed_factor = if n >= ACTION_SLOW_SNAP_FRAMES {
                 ACTION_SLOW_FLOOR
@@ -572,6 +569,12 @@ impl ClientSim {
             if self.speed_factor >= 1.0 {
                 self.action_slow = None;
             }
+        }
+        // A change re-issues the step.
+        if self.speed_factor != before && self.following && self.line.thr != 0.0 && self.roll.is_none() {
+            let in_step = std::mem::replace(&mut self.in_step, true);
+            self.step_along(self.index, t);
+            self.in_step = in_step;
         }
     }
 
@@ -1026,6 +1029,7 @@ impl ClientSim {
         }
         self.roll_tick(dt, t);
         self.sprint_end_check(t);
+        self.action_slow_tick(dt, t);
         self.plan_timer = (self.plan_timer - dt).max(0.0);
         self.frames += 1;
     }
@@ -1075,8 +1079,8 @@ impl ClientSim {
         if start != self.grid {
             self.snap(start);
         }
-        self.action_slow = Some(self.frames);
-        self.end_move(true, t);
+        // Another attack asked for meanwhile waits for this one: the ramp goes on.
+        self.action_slow.get_or_insert(self.frames);
         if self.roll.is_some() {
             self.roll = None;
             self.stop_next_tick(t);

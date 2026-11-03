@@ -975,13 +975,22 @@ impl Locomotion {
         let cell = self.sim.grid();
         let offset = (target.0 - cell.0, target.1 - cell.1);
         let action = Self::alloc_action(ctx);
-        // A roll answering an input runs at order key 0, before this frame's Animated tick. Any other
-        // (queued, deferred) runs after it, so its clip and whole timeline start one frame later
-        // (2026-10-20 f3712, f4485; 2026-11-02 f8037, f8075).
+        // A roll answering an input runs at order key 0, before this frame's Animated tick; a
+        // queued one, or one held back by a release in its batch, at `(player, 5, 8)`, also before
+        // that tick (all captures: 21 of 21, its tail at `(5, 17)`, stun at `(5, 25)`). One held back
+        // by a click's Move runs after the tick at `(9, 1)`, so its clip and whole timeline start
+        // one frame later, stun at `(5, 6)` (8 of 8, 2026-10-20 f3712, f4485; 2026-11-02 f8037, f8075).
         self.roll_late = false;
-        let late = out.key != Drain::Start;
         let start_key = out.key;
-        let tail_key = if late { AT_SPRINT_END_LATE } else { Drain::Start };
+        let late = start_key == AT_RESTART;
+        let scheduled = start_key == AT_ROLL_END_MOVE;
+        let tail_key = if late {
+            AT_SPRINT_END_LATE
+        } else if scheduled {
+            Drain::at(5, 17)
+        } else {
+            Drain::Start
+        };
         // Verified (2026-10-20): a standing roll gets the same batch and ends in Idle with no
         // `MoveAck`. The client rolls along the WASD vector when a key is held, else towards
         // the cursor (`target`, steered every 2 frames); `target` is the cursor either way.
@@ -1031,6 +1040,8 @@ impl Locomotion {
         }
         if late {
             self.due.push((t0, Due::RollStunStats));
+        } else if scheduled {
+            out.push_at(Drain::at(5, 25), MoveEvent::Stats(stun_stats(ROLL_STUN_THRESHOLD)));
         } else {
             out.push_at(AT_ROLL_STUN, MoveEvent::Stats(stun_stats(ROLL_STUN_THRESHOLD)));
         }
@@ -1375,7 +1386,7 @@ impl Locomotion {
             self.resume_walking();
         }
         if let Some((req, target)) = self.queued_roll.take() {
-            out.key = AT_RESTART;
+            out.key = AT_ROLL_END_MOVE;
             self.start_roll(req, target, false, ctx, out);
         }
     }
@@ -1480,7 +1491,7 @@ impl Locomotion {
                     if self.is_rolling() {
                         self.queued_roll = Some((req, target));
                     } else {
-                        out.key = AT_RESTART;
+                        out.key = if self.roll_late { AT_RESTART } else { AT_ROLL_END_MOVE };
                         self.start_roll(req, target, false, ctx, out);
                     }
                 }

@@ -41,6 +41,12 @@ fn main() {
     let mut drift = 0;
     let mut starts = 0;
     let mut client_snaps = 0;
+    // A skill the port does not move (out of scope, the server sends none yet): while it and its
+    // recovery run (a Move then walks slowed, Actor `+0x430`), the replay takes the client's logged
+    // cell, until the server's next roll or 30 frames after the skill's start.
+    let mut in_skill = false;
+    let mut skill_start = -1_000_000_i64;
+    let mut skill_frames = 0;
     for f in first..=last {
         let f_ = f;
         sim.plan_hints.clear();
@@ -61,7 +67,7 @@ fn main() {
                         let (dir, cell) = ((n(&r[1]), n(&r[2])), (n(&r[3]), n(&r[4])));
                         if dir != (0, 0) {
                             acks += 1;
-                            if cell != sim.grid() {
+                            if cell != sim.grid() && !in_skill {
                                 // The client's line restarts on the integer cell when it snapped too.
                                 let both = frame.iter().map(|w| &w[2..]).any(|r| {
                                     r[0] == "L" && r[7].ends_with(".0000") && r[8].ends_with(".0000") && (n(&r[1]), n(&r[2])) == cell
@@ -88,9 +94,19 @@ fn main() {
                             }
                         }
                         match r[1].as_str() {
-                            "move" => sim.on_start_move(s, t, &grid),
-                            "roll" => sim.on_start_roll(s, t, 46.0, &grid),
-                            _ => sim.on_start_other(s),
+                            "move" => {
+                                in_skill = f - skill_start < 30;
+                                sim.on_start_move(s, t, &grid)
+                            }
+                            "roll" => {
+                                in_skill = false;
+                                sim.on_start_roll(s, t, 46.0, &grid)
+                            }
+                            _ => {
+                                in_skill = true;
+                                skill_start = f;
+                                sim.on_start_other(s, &grid)
+                            }
                         }
                     }
                     "S" => match r[1].as_str() {
@@ -117,6 +133,9 @@ fn main() {
         }
         let mut seen = false;
         for r in frame.iter().map(|w| &w[2..]) {
+            if in_skill && r[0] == "L" {
+                continue;
+            }
             match r[0].as_str() {
                 "G" => {
                     logged = (n(&r[1]), n(&r[2]));
@@ -148,6 +167,13 @@ fn main() {
                 _ => {}
             }
         }
+        if in_skill {
+            skill_frames += 1;
+            if seen {
+                sim.place(logged);
+            }
+            continue;
+        }
         // The log skips some frames: only a logged grid counts.
         if seen {
             if sim.grid() == logged {
@@ -162,7 +188,7 @@ fn main() {
         }
     }
     println!(
-        "frames {first}..{last}: grid same {same} differ {diff}; line ends same {} differ {} (float drift on {drift}); 0x64 {acks}, would snap {snaps} (client too {client_snaps}); action starts off {starts}",
+        "frames {first}..{last}: grid same {same} differ {diff}; line ends same {} differ {} (float drift on {drift}); 0x64 {acks}, would snap {snaps} (client too {client_snaps}); action starts off {starts}; frames in a skill (not compared) {skill_frames}",
         lines.0, lines.1
     );
 }

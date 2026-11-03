@@ -24,8 +24,6 @@ const HALF_PI: f32 = 1.570_796_4;
 const SPRINT_TURN_RATE: f32 = 150.0;
 /// `DodgeRoll_StartSprint` `0x141aa92e0`: the optional line length of a roll that sprints.
 const ROLL_SPRINT_LINE: i32 = 300;
-/// The time of the animation event `0xb91f` in the roll's clip, seconds.
-const ROLL_EVENT_TIME: f32 = 0.5;
 /// `GP_sprinting_end_base_01`: the move event's end time, seconds of the clip.
 const SPRINT_END_MOVE_TIME: f32 = 0.75;
 /// `sprinting_end_*` entry speed (`0x141e56ae0`).
@@ -314,6 +312,12 @@ struct Roll {
     sprints: bool,
     /// The animation event `0xb91f` has fired.
     event_done: bool,
+    /// `act + 0x240`: inside the timeline's `StartTargetUpdateEventType` window.
+    target_update: bool,
+    /// `act + 0x250` with `act + 0x258`: the wanted target relative to the grid.
+    pending_target: Option<Cell>,
+    /// `act + 0x150`.
+    target: Cell,
 }
 
 /// Which animation refuses walks (`Actor + 0x380` in `0x36a`, `0x36b`).
@@ -609,11 +613,20 @@ impl ClientSim {
     pub fn animated_tick(&mut self, dt: f32, t: &dyn Walkable) {
         if let Some(r) = &mut self.roll {
             let new = (r.elapsed + dt * r.rate).min(r.length);
+            let ev = self.curves.as_ref().map(|c| c.roll_events);
+            // `AnimationController` event type `0x1a` -> `0x141979b60`: the window opens.
+            if let Some(ev) = ev
+                && new >= ev.target_update.0
+            {
+                r.target_update = new < ev.target_update.1;
+            }
             // `AnimPlayer_Advance`: the clock stands at the event's time while the event runs.
-            let event = !r.event_done && new >= ROLL_EVENT_TIME;
-            if event {
+            if let Some(ev) = ev
+                && !r.event_done
+                && new >= ev.sprint_start
+            {
                 r.event_done = true;
-                r.elapsed = ROLL_EVENT_TIME;
+                r.elapsed = ev.sprint_start;
                 self.roll_event();
             }
             let r = self.roll.as_mut().unwrap();
@@ -1003,19 +1016,33 @@ impl ClientSim {
         self.plan_move(t);
     }
 
-    /// `0x1c8` of a skill that holds slot 0 and does not move the entity.
-    pub fn on_start_other(&mut self, start: Cell) {
+    /// `0x1c8` of a skill that holds slot 0 (an attack, an interaction): the new action replaces a
+    /// running roll and ends a running Move. The skills' own root motion is not ported: the server
+    /// sends no skills yet (the offline replay follows the client's log while one runs).
+    pub fn on_start_other(&mut self, start: Cell, t: &dyn Walkable) {
         if start != self.grid {
             self.snap(start);
         }
+        self.end_move(true, t);
+        if self.roll.is_some() {
+            self.roll = None;
+            self.stop_next_tick(t);
+            self.orient = 1;
+            self.line.curve.clear();
+        }
     }
 
-    /// `0x1af`: `Player_ApplyServerSkillTarget` `0x141dd4550` -> `0x141e5b250`: re-aims the running
-    /// roll from the current cell (`0x14197cf50`, vfunc `+0x130` `0x141b8c6a0`), unless the movement
-    /// vector took over.
+    /// `0x1af`: `Player_ApplyServerSkillTarget` `0x141dd4550` -> `0x141e5b250`. Before the target
+    /// window it only stores the action's target; inside it `0x14197cf50` keeps the target relative
+    /// to the grid for the action's update, unless the movement vector took over (`act + 0x24d`).
     pub fn on_skill_target(&mut self, target: Cell) {
-        if self.roll.as_ref().is_some_and(|r| !r.axes_aimed) {
-            self.roll_aim(target);
+        let g = self.grid;
+        if let Some(r) = &mut self.roll {
+            if !r.target_update {
+                r.target = target;
+            } else if !r.axes_aimed {
+                r.pending_target = Some((target.0 - g.0, target.1 - g.1));
+            }
         }
     }
 
@@ -1108,6 +1135,9 @@ impl ClientSim {
             opt_len: None,
             sprints: false,
             event_done: false,
+            target_update: false,
+            pending_target: None,
+            target,
         });
         self.line.curve.load(curve, 0.0, length);
         self.orient = if backward { 2 } else { 1 };
@@ -1120,15 +1150,39 @@ impl ClientSim {
         }
     }
 
-    /// `0x14197cf50`: vfunc `+0x130` `0x141b8c6a0` sets the heading, vfunc `+0x138` `0x141971b80` ->
-    /// `0x141ddc290` faces the target.
-    fn roll_aim(&mut self, target: Cell) {
-        if target == self.grid {
+    /// The target block of the action's update `0x141974090` (`0x141974a90`): the wanted target
+    /// `grid + act+0x250` is at most `dt * act+0x244` from the facing; vfunc `+0x130` `0x141b8c6a0`
+    /// aims the heading at the result. The roll's vfunc `+0x138` is false: the facing stays.
+    fn roll_turn_to_target(&mut self, dt: f32) {
+        let g = self.grid;
+        let rate = self.curves.as_ref().map_or(0.0, |c| c.roll_events.target_turn_rate);
+        let (moving, stop) = (self.line.thr != 0.0, self.stop_pending);
+        let sign = if self.orient == 2 { -1 } else { 1 };
+        let facing = self.facing;
+        let r = self.roll.as_mut().unwrap();
+        let Some(off) = r.pending_target else { return };
+        let mut e = (g.0 + off.0, g.1 + off.1);
+        if e == r.target && (!moving || stop) {
             return;
         }
-        let a = angle((target.0 - self.grid.0) as f32, (target.1 - self.grid.1) as f32);
-        self.roll.as_mut().unwrap().heading = a;
-        self.facing = a;
+        let want = angle((sign * off.0) as f32, (sign * off.1) as f32);
+        let mut d = (want - facing) % TAU;
+        if d < -PI {
+            d += TAU;
+        } else if d > PI {
+            d -= TAU;
+        }
+        let max = dt * rate;
+        if max < d.abs() {
+            let a = facing + d.clamp(-max, max);
+            let len = ((off.0 * off.0 + off.1 * off.1) as f32).sqrt();
+            let v = rot(0.0, -len, a);
+            e = (g.0 + sign * round(v.0), g.1 + sign * round(v.1));
+        }
+        r.target = e;
+        if e != g {
+            r.heading = angle((e.0 - g.0) as f32, (e.1 - g.1) as f32);
+        }
     }
 
     /// `DodgeRollMove_DistanceLeft` `0x141b8cf70`.
@@ -1220,12 +1274,18 @@ impl ClientSim {
     }
 
     /// `DodgeRollMove_Tick` `0x141b8c720`, and the end of the action.
-    fn roll_tick(&mut self, _dt: f32, t: &dyn Walkable) {
+    fn roll_tick(&mut self, dt: f32, t: &dyn Walkable) {
         // Action update (vfunc `+0x1c0` `0x141a3b010` -> `0x141974090` -> `0x14197d060`), with the stat
         // `dynamic_target_updating_prioritises_movement_vector`: the target follows the axes.
-        if self.axes != (0, 0) && self.roll.is_some() {
-            self.roll_aim(self.axes_goal());
-            self.roll.as_mut().unwrap().axes_aimed = true;
+        if self.roll.as_ref().is_some_and(|r| r.target_update) {
+            if self.axes != (0, 0) {
+                let goal = self.axes_goal();
+                let g = self.grid;
+                let r = self.roll.as_mut().unwrap();
+                r.pending_target = Some((goal.0 - g.0, goal.1 - g.1));
+                r.axes_aimed = true;
+            }
+            self.roll_turn_to_target(dt);
         }
         let Some(r) = &self.roll else { return };
         if r.waiting {
@@ -1304,6 +1364,11 @@ impl ClientSim {
         } else if r.backward {
             // `DodgeRoll_OnEnd`, with `act + 0x461` (stance `Standing`).
             self.facing = wrap(self.facing + PI);
+        }
+        // The end of the action in the Animated tick: a walk on the held axes starts at once (two
+        // plans in the frame of a sprint start, seen in `PATHPLAN`: each makes its sprint turn).
+        if self.axes != (0, 0) && self.mv.is_none() {
+            self.start_wasd_walk(t);
         }
     }
 
@@ -1386,7 +1451,15 @@ impl ClientSim {
         let e = (end.0 - self.grid.0, end.1 - self.grid.1);
         if e.0.abs().max(e.1.abs()) >= 2 {
             // `MoveEvent_Start`: `Positioned_SetMoveCurve` before `MoveEvent_MovePositioned`.
-            self.line.curve.load(cs.sprint_end.clone(), 0.0, SPRINT_END_MOVE_TIME);
+            // `0x141f62210`: a clipped end ends the curve where the clip has moved that distance
+            // (`0x141ecd760`, the inverse of the curve).
+            let e_time = if end == target {
+                SPRINT_END_MOVE_TIME
+            } else {
+                let moved = ((e.0 * e.0 + e.1 * e.1) as f32).sqrt() * CELL;
+                cs.sprint_end.time_of(moved + cs.sprint_end.value(0.0))
+            };
+            self.line.curve.load(cs.sprint_end.clone(), 0.0, e_time);
             let orient = std::mem::replace(&mut self.orient, 0);
             self.move_to_waypoint(end, speed, false, t);
             self.orient = orient;

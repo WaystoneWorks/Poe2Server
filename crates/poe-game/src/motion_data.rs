@@ -10,6 +10,10 @@ const HUB_CLASS: &str = "Metadata/Characters/Dex/DexFour";
 /// unarmed for now; the weapon variants follow the `dodge_*_01` pattern.
 const ROLL_AMD: &str = "art/models/charactersfour/animations/basedodgeroll/onerig.amd";
 const SPRINT_AMD: &str = "art/models/charactersfour/animations/basesprint/onerig.amd";
+/// The dodge roll's animation events (a JSON timeline, `Character.act`).
+const ROLL_ATL: &str = "metadata/characters/timelines/base_dodge_roll/base_dodge_roll.atl";
+/// The timeline animation whose gameplay events every unarmed roll clip inherits.
+const ROLL_ATL_ANIMATION: &str = "GP_dodge_roll_base_01";
 
 /// A movement curve of an animation (`.amd`: duration and one position per frame).
 #[derive(Debug, Clone, PartialEq)]
@@ -42,6 +46,22 @@ impl Curve {
         (positions.len() >= 2).then(|| Self::new(ms / 1000.0, positions))
     }
 
+    /// The time at which the curve reaches `v`, linear between positions (`0x141ecd760`), `length`
+    /// past its end.
+    pub fn time_of(&self, v: f32) -> f32 {
+        let n = self.positions.len();
+        let i = self.positions.partition_point(|p| *p <= v);
+        if i >= n {
+            return self.length;
+        }
+        if i == 0 {
+            return 0.0;
+        }
+        let (a, b) = (self.positions[i - 1], self.positions[i]);
+        let f = if a == b { 1.0 } else { (v - a) / (b - a) };
+        ((i - 1) as f32 + f) / (n - 1) as f32 * self.length
+    }
+
     /// The curve's position at `t` seconds; looping past the end adds the whole curve's
     /// travel per loop (`FUN_141ecccc0`).
     pub fn value(&self, t: f32) -> f32 {
@@ -69,17 +89,51 @@ pub struct MotionCurves {
     pub roll_sprint: Curve,
     pub roll_back_sprint: Curve,
     pub sprint_end: Curve,
+    pub roll_events: RollEvents,
+}
+
+/// The gameplay events of the dodge roll's timeline that move the character.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RollEvents {
+    /// `sprint_start` (seconds): the event `0xb91f` of `DodgeRoll_OnAnimationEvent`.
+    pub sprint_start: f32,
+    /// `StartTargetUpdateEventType`'s first value (the event's `+0x64`) in radians per second: how
+    /// fast a `0x1af` turns the running roll.
+    pub target_turn_rate: f32,
+    /// The same event's window (seconds): `act + 0x240` is set inside it.
+    pub target_update: (f32, f32),
+}
+
+impl RollEvents {
+    /// From the timeline's JSON text.
+    pub fn from_atl(text: &str) -> Option<Self> {
+        let v: serde_json::Value = serde_json::from_str(text).ok()?;
+        let events = v["animations"]
+            .as_array()?
+            .iter()
+            .find(|a| a["name"] == ROLL_ATL_ANIMATION)?["events"]
+            .as_array()?;
+        let sprint = events.iter().find(|e| e["name"] == "sprint_start")?;
+        let update = events.iter().find(|e| e["type"] == "StartTargetUpdateEventType")?;
+        let rate: f32 = update["data"].as_str()?.split_whitespace().next()?.parse().ok()?;
+        Some(Self {
+            sprint_start: sprint["time"].as_f64()? as f32,
+            target_turn_rate: rate * 0.017_453_292,
+            target_update: (update["time"].as_f64()? as f32, update["end_time"].as_f64()? as f32),
+        })
+    }
 }
 
 impl MotionCurves {
-    /// From the game's two `.amd` files (UTF-16 text).
-    pub fn from_amd(roll_text: &str, sprint_text: &str) -> Option<Self> {
+    /// From the game's two `.amd` files and the roll's timeline (UTF-16 text).
+    pub fn from_files(roll_text: &str, sprint_text: &str, roll_atl: &str) -> Option<Self> {
         Some(Self {
             roll: Curve::from_amd(roll_text, "dodge_unarmed_01")?,
             roll_back: Curve::from_amd(roll_text, "dodge_unarmed_bwd_01")?,
             roll_sprint: Curve::from_amd(roll_text, "dodge_unarmed_01_sprinting")?,
             roll_back_sprint: Curve::from_amd(roll_text, "dodge_unarmed_bwd_01_sprinting")?,
             sprint_end: Curve::from_amd(sprint_text, "sprint_end_unarmed_01")?,
+            roll_events: RollEvents::from_atl(roll_atl.trim_start_matches('\u{feff}'))?,
         })
     }
 
@@ -94,7 +148,7 @@ impl MotionCurves {
                 String::from_utf16_lossy(&words).replace('\r', "")
             })
         };
-        Ok(Self::from_amd(&text(ROLL_AMD)?, &text(SPRINT_AMD)?))
+        Ok(Self::from_files(&text(ROLL_AMD)?, &text(SPRINT_AMD)?, &text(ROLL_ATL)?))
     }
 }
 
@@ -173,5 +227,7 @@ mod tests {
         let (curves, scale) = hub_motion_or_panic();
         assert!(curves.roll.positions.len() >= 2 && curves.sprint_end.length > 0.0);
         assert!(scale > 0.0);
+        assert_eq!(curves.roll_events.sprint_start, 0.5);
+        assert!((curves.roll_events.target_turn_rate - 3000f32.to_radians()).abs() < 0.001);
     }
 }

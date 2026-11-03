@@ -187,3 +187,31 @@ fn sprint_end_values_are_read_from_the_game_data() {
     let (curves, _) = poe_game::motion_data::hub_motion_or_panic();
     assert_eq!((curves.sprint_end_move_time, curves.sprint_end_base_speed), (0.75, 600.0));
 }
+
+/// A sprint that meets a wall at an angle ends with the Bonk clip, whose MoveEvent coasts along
+/// the wall to the clip's end (game test `sprint-turn` case 4, 2026-11-03: the client coasted 6
+/// cells along the wall; the clipped coast of a head-on wall is shorter than 2 cells: no move).
+#[test]
+fn a_sprint_bonk_at_an_angle_coasts_along_the_wall() {
+    // Open for x 5..295, y 5..140; the start is 40 cells from the wall at y 140.
+    let rows: Vec<String> = (0..200)
+        .map(|y| (0..300).map(|x| if (5..295).contains(&x) && (5..140).contains(&y) { '.' } else { '#' }).collect())
+        .collect();
+    let rows: Vec<&str> = rows.iter().map(|r| r.as_str()).collect();
+    let (mut w, p) = world(Arc::new(VecGrid::from_rows(&rows)), (150, 100));
+    w.input(p, MoveInput::Direction { x: 127, y: 127 });
+    tick(&mut w);
+    w.input(p, MoveInput::SprintInput { held: true });
+    w.input(p, MoveInput::UseSkill(skill(ROLL, 0, 0)));
+    let mut cells = Vec::new();
+    for _ in 0..150 {
+        tick(&mut w);
+        cells.push(cell(&w, p));
+    }
+    // The sprint slides along the wall at y 139 to the corner, stops (Bonk) and coasts on to the
+    // clip's end at the last walkable cell.
+    let stop = cells.windows(2).position(|c| c[0] == c[1] && c[0].0 >= 280).expect("the sprint stops at the corner");
+    let (at, last) = (cells[stop], *cells.last().unwrap());
+    assert_eq!(last, (294, 139), "coasted to the clip's end");
+    assert!(last.0 - at.0 >= 2, "a coast after the Bonk at {at:?}");
+}

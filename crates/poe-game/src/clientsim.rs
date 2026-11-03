@@ -724,7 +724,9 @@ impl ClientSim {
         if let Some(a) = self.sprint_end {
             if a.coast_due {
                 self.sprint_end.as_mut().unwrap().coast_due = false;
-                self.start_coast(a.rate, t);
+                // The clip's rate when its MoveEvent fires (it follows the speed, below).
+                let rate = self.speed() * CELL / (self.sprint_end_base_speed() * self.offset_scale);
+                self.start_coast(rate, t);
             }
             // The clip's rate follows the speed: at a wall the sprint-off's stats come right after
             // the step that ended it (seg2 f800: walks are refused to f828, 30 frames at walking
@@ -1542,8 +1544,9 @@ impl ClientSim {
         }
     }
 
-    /// `SprintPart_End` `0x141b773a0` and the play of the clip `0x141e57b80`.
-    fn sprint_part_end(&mut self, bonk: bool, t: &dyn Walkable) {
+    /// `SprintPart_End` `0x141b773a0` and the play of the clip `0x141e57b80`. `bonk` picks the
+    /// Bonk clip, which moves like SprintEnd (same clip, same MoveEvent).
+    fn sprint_part_end(&mut self, _bonk: bool, t: &dyn Walkable) {
         self.sprint = false;
         self.end_move(false, t);
         self.stop_with_callbacks(t);
@@ -1559,7 +1562,11 @@ impl ClientSim {
             self.sprint_end = Some(SprintEndAnim {
                 left: self.sprint_end_move_time(),
                 rate,
-                coast_due: !bonk,
+                // The Bonk clip carries the same MoveEvent (`sprinting_end_*_01_bonk` views the
+                // `sprint_end_*` clip): its target is clipped to walkable, so a head-on wall leaves
+                // no move and a wall met at an angle a coast along it (game test sprint-turn case 4:
+                // the client coasted 6 cells along the wall to the clip's end).
+                coast_due: true,
             });
         }
     }

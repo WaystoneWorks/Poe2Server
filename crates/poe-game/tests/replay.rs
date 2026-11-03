@@ -145,7 +145,7 @@ fn to_json(e: &MoveEvent) -> Value {
             v
         }
         MoveEvent::OrientationLerp { value } => json!({"ev": "orientation_lerp", "value": value}),
-        MoveEvent::WeaponSet { set } => json!({"ev": "weapon_set", "set": set}),
+        MoveEvent::WeaponSet { set, .. } => json!({"ev": "weapon_set", "set": set}),
         MoveEvent::SprintState { held } => json!({"ev": "sprint", "held": held}),
         MoveEvent::BuffAdded { index, row, fade } => {
             let mut v = json!({"ev": "buff_added", "index": index, "row": row});
@@ -280,6 +280,14 @@ fn problems(fx: &Value, name: &str, tol: Tol, max_err: Option<f64>, check_events
             .unwrap()
             .movement
             .set_stance(combat);
+    }
+    // And the weapon set in use (another set's skill swaps it).
+    if let Some(set) = fx["weapon_set"].as_u64() {
+        world
+            .entity_mut(player)
+            .unwrap()
+            .movement
+            .set_weapon_set(set as u8);
     }
     let inputs = fx["inputs"].as_array().unwrap();
     let expect = fx["expect"].as_array().unwrap();

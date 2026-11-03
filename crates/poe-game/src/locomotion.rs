@@ -50,6 +50,15 @@ impl SkillIds {
     pub fn is_roll(&self, skill: u32) -> bool {
         skill == self.roll_skill || skill == self.roll_skill_other_set
     }
+
+    /// The weapon set a skill belongs to, from the official id layout: weapon skills
+    /// (`0x8000_0000` bit) end in the slot byte `0x40 + set` (`0x80400040` main attack of set
+    /// 0, `0x80410041` of set 1, rolls `0x80000040`/`0x80000041`). Other ids (basic actions,
+    /// our server's own skill ids): none.
+    pub fn weapon_set_of(skill: u32) -> Option<u8> {
+        let slot = (skill & 0xff) as u8;
+        (skill & 0x8000_0000 != 0 && (0x40..0x43).contains(&slot)).then(|| slot - 0x40)
+    }
 }
 
 /// Dodge roll tuning (official values as defaults).
@@ -415,9 +424,11 @@ pub enum MoveEvent {
     StanceChanged { combat: bool, request: Option<u8> },
     /// `0x2a6`: sent before every stance delta (0.05 to combat, 0.2 out of it).
     OrientationLerp { value: f32 },
-    /// Answer to [`MoveInput::WeaponSwap`] in the batch answering it: `0x1d5` SetWeaponSet
-    /// then the session message `0xff` WeaponSetSwapDone (2 of 2 official swaps, standing).
-    WeaponSet { set: u8 },
+    /// `0x1d5` SetWeaponSet. `requested`: the answer to [`MoveInput::WeaponSwap`] in the batch
+    /// answering it, followed by the session message `0xff` WeaponSetSwapDone (3 of 3 official
+    /// swaps, standing). Not requested: a skill of the other set was used, the server swaps
+    /// by itself (2026-11-02 capture, 2 of 2: no `0xff`, see [`SkillIds::weapon_set_of`]).
+    WeaponSet { set: u8, requested: bool },
     /// The entity was placed by the server (admin command, transfer). The client only snaps
     /// when the distance is 46 cells or more, and only for a `0x64` with a non-zero direction.
     Teleport { cell: Cell },
@@ -577,6 +588,11 @@ pub struct Locomotion {
     stance_entered: bool,
     /// Frame of an `AimMode(0)` before the entry stance (an area change sends 0 then 1).
     entry_mode0_frame: Option<u64>,
+    /// The active weapon set.
+    weapon_set: u8,
+    /// An attack with a weapon swap ends the sprint after this frame's `MoveAck` (still
+    /// scaled); `Some(streaming)`.
+    attack_ends_sprint_after_ack: Option<bool>,
     /// The value of the last `0x200` not yet answered.
     stance_request: Option<u8>,
     /// The last `AimMode` asked for combat stance (mode 1).
@@ -640,6 +656,8 @@ impl Locomotion {
             stance_scheduled: false,
             stance_entered: false,
             entry_mode0_frame: None,
+            weapon_set: 0,
+            attack_ends_sprint_after_ack: None,
             stance_request: None,
             aim_combat: true,
             teleport: None,
@@ -703,6 +721,11 @@ impl Locomotion {
     pub fn set_stance(&mut self, combat: bool) {
         self.combat_stance = combat;
         self.stance_entered = true;
+    }
+
+    /// Sets the active weapon set (restored state, tests).
+    pub fn set_weapon_set(&mut self, set: u8) {
+        self.weapon_set = set;
     }
 
     pub fn in_combat_stance(&self) -> bool {
@@ -793,6 +816,14 @@ impl Locomotion {
         // 4. MoveAck, then what follows it.
         self.move_ack(unscaled_ack, ctx, &mut out);
         out.append(&mut self.deferred);
+        if let Some(streaming) = self.attack_ends_sprint_after_ack.take() {
+            // Official f11798: `0x64 (0, 180)` unscaled at r+1.
+            if streaming && self.wasd != (0, 0) {
+                self.due.push((ctx.frame + 1, Due::UnscaledAck));
+                self.unscaled_dir = Some(self.wasd);
+            }
+            self.finish_sprint();
+        }
         if let Some((req, target)) = self.attack_after_ack.take() {
             self.start_attack(req, target, false, ctx, &mut out);
             out.append(&mut self.deferred);
@@ -871,7 +902,13 @@ impl Locomotion {
             // The client cannot use a skill or swap again until this answer (session +0x7a90,
             // cleared by 0xff), so every request is answered. Whether a swap during an action
             // or a walk changes it is not captured (gap #7).
-            MoveInput::WeaponSwap { set } => out.push(MoveEvent::WeaponSet { set }),
+            MoveInput::WeaponSwap { set } => {
+                self.weapon_set = set;
+                out.push(MoveEvent::WeaponSet {
+                    set,
+                    requested: true,
+                })
+            }
             MoveInput::AimMode { mode } => {
                 let combat = mode == 1;
                 self.aim_combat = combat;
@@ -1318,6 +1355,40 @@ impl Locomotion {
             entity: req.entity,
             unk: req.unk,
         });
+        // A skill of the other weapon set: the server swaps by itself (2026-11-02, f5464 and
+        // f11798): the ack at once, then after the frame's `MoveAck` the `0x1d5`, the sprint-off
+        // (the `MoveAck` was still scaled; the unscaled one follows at r+1) and the `0x1ca`.
+        if let Some(set) = SkillIds::weapon_set_of(req.skill).filter(|s| *s != self.weapon_set) {
+            self.weapon_set = set;
+            if ack {
+                out.push(Self::skill_ack(&req, target));
+            }
+            self.deferred.push(MoveEvent::WeaponSet {
+                set,
+                requested: false,
+            });
+            if let Some(run) = self.sprint().copied() {
+                if let Some(n) = self.must_sprint_off.take() {
+                    self.deferred.push(MoveEvent::BuffRemoved { index: n });
+                    self.deferred
+                        .push(MoveEvent::Stats(vec![(MoveStat::MustSprint, 0)]));
+                }
+                self.deferred.push(MoveEvent::BuffRemoved {
+                    index: run.buff_base + 1,
+                });
+                self.deferred.push(MoveEvent::Stats(sprint_off_stats()));
+                self.deferred.push(MoveEvent::ActionEvent);
+                self.deferred.push(MoveEvent::BuffRemoved {
+                    index: run.buff_base + 2,
+                });
+                self.deferred
+                    .push(MoveEvent::Stats(vec![(MoveStat::AllHitsStunYou, 0)]));
+                self.attack_ends_sprint_after_ack = Some(run.streaming);
+            } else {
+                self.deferred.push(MoveEvent::ActionEvent);
+            }
+            return;
+        }
         // Every action start but Move's has a `0x1ca` (all eight sessions: 0x80400040 147 of
         // 147, 0x2000c266 31 of 31, 0x85000040 47 of 47; skills with their own stats or buffs
         // send those first), then the ack.
@@ -2144,11 +2215,17 @@ mod tests {
         let mut r = Rig::new((50, 50));
         assert_eq!(
             r.tick(&[MoveInput::WeaponSwap { set: 1 }]),
-            vec![MoveEvent::WeaponSet { set: 1 }]
+            vec![MoveEvent::WeaponSet {
+                set: 1,
+                requested: true
+            }]
         );
         assert_eq!(
             r.tick(&[MoveInput::WeaponSwap { set: 0 }]),
-            vec![MoveEvent::WeaponSet { set: 0 }]
+            vec![MoveEvent::WeaponSet {
+                set: 0,
+                requested: true
+            }]
         );
         assert_eq!(r.tick(&[]), vec![]);
     }

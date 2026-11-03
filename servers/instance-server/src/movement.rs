@@ -371,9 +371,10 @@ impl Codec {
                 "out-orientation-lerp",
                 value.to_string(),
             )?),
-            // Stats component `0x1d5`, then the session message `0xff` that lets the client use
-            // skills and swap again (owner only: other clients never sent the request).
-            MoveEvent::WeaponSet { set } => {
+            // Stats component `0x1d5`, then, for a requested swap, the session message `0xff`
+            // that lets the client use skills and swap again (owner only: other clients never
+            // sent the request; a swap made by a skill of the other set has none).
+            MoveEvent::WeaponSet { set, requested } => {
                 out.push(self.pack(
                     &SetWeaponSet {
                         header: plain,
@@ -382,7 +383,7 @@ impl Codec {
                     "out-weapon-set",
                     set.to_string(),
                 )?);
-                if owner {
+                if owner && *requested {
                     out.push(self.pack(&WeaponSetSwapDone { unk: 1 }, "out-weapon-swap-done", String::new())?);
                 }
             }

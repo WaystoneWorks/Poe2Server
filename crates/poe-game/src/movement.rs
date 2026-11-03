@@ -35,6 +35,11 @@ pub trait Walkable {
         if self.walkable(x, y) { 5 } else { 0 }
     }
 
+    /// The client's cell value on a layer (`FUN_141d0df50`, the walk mode picks the layer).
+    fn layer(&self, _layer: usize, x: i32, y: i32) -> u8 {
+        self.nibble(x, y)
+    }
+
     /// Size of the terrain in cells, if it has one (cells outside are walls).
     fn bounds(&self) -> Option<(i32, i32)> {
         None

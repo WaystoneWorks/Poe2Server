@@ -199,6 +199,10 @@ impl Walkable for Grid {
         self.cell(0, x, y)
     }
 
+    fn layer(&self, layer: usize, x: i32, y: i32) -> u8 {
+        self.cell(layer, x, y)
+    }
+
     fn bounds(&self) -> Option<(i32, i32)> {
         Some((self.cells_x, self.cells_y))
     }

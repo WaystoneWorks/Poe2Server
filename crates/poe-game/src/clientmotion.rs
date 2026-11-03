@@ -161,6 +161,8 @@ struct Line {
     step_time: f32,
     /// `+0x98`.
     pending_scale: f32,
+    /// `+0x61`: the move ended (`0x64 (0, 0)`): the next line does not continue this one.
+    ended: bool,
 }
 
 impl Line {
@@ -200,7 +202,7 @@ impl Line {
     fn setup(&mut self, s: Cell, e: Cell, speed: f32, distance_mode: bool) {
         let sf = (s.0 as f32, s.1 as f32);
         let ef = (e.0 as f32, e.1 as f32);
-        let mut running = self.running() && self.cur() == s;
+        let mut running = !self.ended && self.running() && self.cur() == s;
         let mut p = sf;
         if running {
             let old = self.point();
@@ -262,6 +264,7 @@ impl Line {
             pending,
             step_time: t / d,
             pending_scale: 1.0,
+            ended: false,
         };
         self.set_cur(s);
     }
@@ -426,9 +429,14 @@ pub struct ClientMotion {
     sprint_on: bool,
     /// The buff `must_sprint`: key state does not end the sprint while it is on.
     pub must_sprint: bool,
-    /// The speed when the frame started: the stats of a frame do not reach the `SprintEnd` rate
-    /// of that frame (`LINE`: coast T after a batch with the sprint-off stats).
+    /// The speed when the frame started. A `SprintEnd` in a frame with a `0x64` plan runs at this
+    /// rate, one without at the speed after the frame's stats (`LINE`: coast T 0.671 and 1.007,
+    /// the reason is unread).
     frame_speed: f32,
+    /// A `0x64` planned in this frame.
+    planned: bool,
+    /// The server's echo of the sprint key's release came.
+    key_released: bool,
     /// Cells per second: base speed, attack factor and the sprint's stats.
     pub speed: f32,
     pub factor: f32,
@@ -437,6 +445,8 @@ pub struct ClientMotion {
     pub is_sprinting: bool,
     /// Stat `dodge_roll_sprint_turn_rate`, degrees per plan.
     pub turn_rate: f32,
+    /// The frame's Positioned tick made a step.
+    stepped: bool,
     /// Clearance level of the walk's searches.
     pub level: i32,
     /// Plans made so far, for tests and logs.
@@ -482,11 +492,14 @@ impl ClientMotion {
             sprint_on: false,
             must_sprint: false,
             frame_speed: speed,
+            planned: false,
+            key_released: false,
             speed,
             factor: 1.0,
             scale: 1.0,
             is_sprinting: false,
             turn_rate: 5.0,
+            stepped: false,
             level: 0,
             plans: 0,
         }
@@ -556,6 +569,7 @@ impl ClientMotion {
     /// The frame's components before the Actor: Positioned, then Animated.
     pub fn positioned_tick(&mut self, dt: f32, terrain: &dyn Walkable) {
         self.frame_speed = self.move_speed();
+        self.planned = false;
         self.step_line(dt, terrain);
         self.animated_tick(dt, terrain);
     }
@@ -579,12 +593,14 @@ impl ClientMotion {
 
     /// `FUN_141ddc9d0`: advances the line and makes its steps.
     fn step_line(&mut self, dt: f32, terrain: &dyn Walkable) {
+        self.stepped = false;
         if self.line.thr == 0.0 {
             return;
         }
         self.line.advance(dt, self.curve.as_mut());
         while self.line.wants_step() {
             let (cell, done) = self.line.step();
+            self.stepped = true;
             if !Self::free(terrain, cell) {
                 // Blocked: the cell is not applied; `FUN_141de5f50`, then the done delegates.
                 self.line.kill();
@@ -795,6 +811,7 @@ impl ClientMotion {
         if self.axes == (0, 0) {
             if self.walk == Walk::Axes {
                 self.ending = 2;
+                self.line.ended = true;
             }
             return;
         }
@@ -804,6 +821,7 @@ impl ClientMotion {
         self.ending = 0;
         self.walk = Walk::Axes;
         self.plan_now(terrain);
+        self.planned = true;
     }
 
     /// `FUN_141e42650`.
@@ -842,9 +860,10 @@ impl ClientMotion {
             // Clicks plan only when their line ends: the timer is not used for them.
         }
         // `0x141b76da0`, a part of this tick: after the re-aim, before the timer.
-        if self.sprint_on && !self.is_sprinting {
+        if self.sprint_on && (!self.is_sprinting || (self.key_released && !self.must_sprint)) {
             self.end_sprint();
         }
+        self.key_released = false;
         self.plan_timer = (self.plan_timer - dt).max(0.0);
     }
 
@@ -856,12 +875,9 @@ impl ClientMotion {
         }
     }
 
-    /// The server's echo of the sprint key's release: without `must_sprint` it ends the sprint at
-    /// once, so before the stats that follow it in the batch (sprint speed sets the coast's rate).
+    /// The server's echo of the sprint key's release (`0x141e5c1f0`), read by this frame's end check.
     pub fn sprint_key_released(&mut self) {
-        if self.sprint_on && !self.must_sprint {
-            self.end_sprint();
-        }
+        self.key_released = true;
     }
 
     /// `0x141b773a0`: ends Move, stops the entity, and with no action running plays `SprintEnd`.
@@ -875,7 +891,8 @@ impl ClientMotion {
         }
         if let Some(curve) = self.curves.as_ref().map(|c| &c.sprint_end) {
             // `0x141e56ae0`: movement speed in units over the animation's speed.
-            let rate = self.frame_speed * UNITS_PER_CELL
+            let speed = if self.planned { self.frame_speed } else { self.move_speed() };
+            let rate = speed * UNITS_PER_CELL
                 / (SPRINT_END_ANIM_SPEED * self.offset_scale);
             self.end_anim = curve.length / rate;
             self.coast_due = Some(rate);
@@ -893,6 +910,10 @@ impl ClientMotion {
         dt: f32,
         terrain: &dyn Walkable,
     ) {
+        // `LINE`: a roll into a line that made no step this frame has no first step of its own, and
+        // so is one step shorter (reason unread: two rolls in the `stuck` run, frame after a walk's
+        // first plan).
+        let first_step = !self.line.running() || self.stepped;
         if cell != self.grid {
             self.snap(cell);
         }
@@ -943,7 +964,19 @@ impl ClientMotion {
         // The action start: a plan from the cell and one step (the second plan is the frame's
         // Actor tick).
         self.roll_step(terrain);
-        self.positioned_tick(dt, terrain);
+        if first_step {
+            self.step_line(dt, terrain);
+        } else {
+            self.skip_first_step(dt);
+        }
+    }
+
+    /// Advances the curve as the first step would, without moving.
+    fn skip_first_step(&mut self, dt: f32) {
+        let rate = self.line.inv_t;
+        if let Some(run) = &mut self.curve {
+            run.advance(dt, rate);
+        }
     }
 
     /// A new target for the running roll (`0x1cc`, the cursor): it steers when no key is held.
@@ -1192,6 +1225,7 @@ impl ClientMotion {
             pending: l.pend,
             step_time: l.t / (l.e.0 as f32 - l.p.0).abs(),
             pending_scale: 1.0,
+            ended: false,
         };
     }
 

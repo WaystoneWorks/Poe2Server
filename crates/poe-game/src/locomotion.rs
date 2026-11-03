@@ -1157,6 +1157,8 @@ impl Locomotion {
         out: &mut Out,
     ) {
         let cell = self.sim.grid();
+        // The attack replaces whatever was waiting (seg1 f3746, a press only acked, then f3755).
+        self.queued_roll = None;
         out.push(MoveEvent::ActionStart {
             kind: ActionKind::Other,
             skill: req.skill,

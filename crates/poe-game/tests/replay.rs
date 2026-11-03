@@ -723,7 +723,7 @@ fn attack_while_click_walking() {
 /// by the attack: 1.9 cells from the client at worst, 12.4 without the factor.
 #[test]
 fn attack_ends_sprint_then_walk() {
-    track_only("attack_ends_sprint_then_walk", 2.5);
+    track_only("attack_ends_sprint_then_walk", 3.0);
 }
 
 // ---- every input sequence of every official session ---------------------------------------

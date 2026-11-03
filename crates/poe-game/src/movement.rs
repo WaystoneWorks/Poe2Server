@@ -64,6 +64,9 @@ pub enum Motion {
         y: f32,
         scale: f32,
     },
+    /// The client's `(0, 0)` ended a WASD walk: it still walks this one frame along its current
+    /// line (the action ends with the frame), then stands ([`Mover::stop_after_step`]).
+    LastStep,
     /// Walk to a cell (click-to-move), then stop.
     MoveTo {
         x: f32,
@@ -149,6 +152,10 @@ pub enum Pathfinder {
 /// The client re-aims a WASD walk every 0.05 s while a key is held (player entities; `0.25` for
 /// others): with 33 ms frames that is every second frame.
 const AIM_PERIOD: f32 = 0.05;
+/// Radians per second a sprint's heading turns towards the plan's first waypoint: the client
+/// moves along this heading, not along the plan (official 2026-11-02 log: best fit about 0.086
+/// rad per 33 ms frame, median error 0.006 rad; walking turns at once).
+const SPRINT_TURN_RATE: f32 = 150.0 * std::f32::consts::PI / 180.0;
 /// A WASD or sprint vector turns into a goal this many cells per input unit away
 /// (`floor(v * 0.092)`).
 const GOAL_PER_UNIT: f32 = 0.092;
@@ -191,6 +198,10 @@ pub struct Mover {
     /// walk ends (the coast after a sprint) and stops at the first wall.
     last_dir: Option<(f32, f32)>,
     coast_dir: Option<(f32, f32)>,
+    /// Unit direction of the last frame's displacement.
+    travel_dir: Option<(f32, f32)>,
+    /// Heading of the running sprint in radians ([`SPRINT_TURN_RATE`]).
+    sprint_heading: Option<f32>,
     /// The entity moved in the previous frame: its plans then test line of sight to the start
     /// from its exact position ([`clientpath::Params::moving`]).
     moved: bool,
@@ -223,11 +234,21 @@ impl Mover {
             last_dir: None,
             coast_dir: None,
             moved: false,
+            travel_dir: None,
+            sprint_heading: None,
         }
+    }
+
+    /// A WASD walk stops: one more frame along the current line, keeping path and line.
+    pub fn stop_after_step(&mut self) {
+        self.motion = Motion::LastStep;
     }
 
     /// Starts a motion (plans walks on the next frame).
     pub fn start(&mut self, motion: Motion) {
+        if !matches!(motion, Motion::Sprint { .. }) {
+            self.sprint_heading = None;
+        }
         // A coast carries on in the direction of the last step of the walk it follows.
         self.coast_dir = if matches!(motion, Motion::Coast { .. }) {
             self.last_dir
@@ -308,6 +329,11 @@ impl Mover {
         let before = (self.x, self.y);
         self.advance_frame(dt, terrain);
         self.moved = (self.x, self.y) != before;
+        if self.moved {
+            let (dx, dy) = (self.x - before.0, self.y - before.1);
+            let len = (dx * dx + dy * dy).sqrt();
+            self.travel_dir = Some((dx / len, dy / len));
+        }
     }
 
     fn advance_frame(&mut self, dt: f32, terrain: &dyn Walkable) {
@@ -317,6 +343,10 @@ impl Mover {
         }
         match self.motion {
             Motion::Idle => {}
+            Motion::LastStep => {
+                self.follow(self.speed * self.factor * dt);
+                self.motion = Motion::Idle;
+            }
             Motion::Coast {
                 x,
                 y,
@@ -582,14 +612,64 @@ impl Mover {
                 (x, y)
             };
             let cell = self.planning_cell(terrain);
+            let moving =
+                (self.moved && cell == self.grid()).then_some((self.x - 0.5, self.y - 0.5));
             let goal = (
                 cell.0 + (vx * GOAL_PER_UNIT).floor() as i32,
                 cell.1 + (vy * GOAL_PER_UNIT).floor() as i32,
             );
             self.path = self.waypoints_to(terrain, goal);
             self.aim_timer = AIM_PERIOD;
+            if sprint {
+                self.turn_sprint(cell, moving, scale, dt, terrain);
+            }
         }
         self.follow(self.speed * self.factor * scale * dt);
+    }
+
+    /// A sprint's heading turns towards the plan's first waypoint at [`SPRINT_TURN_RATE`]; while it
+    /// is still turning the entity and its grid line follow the heading, so the walk's path is
+    /// replaced by the point ahead on it (unless that step would enter a wall).
+    fn turn_sprint(
+        &mut self,
+        cell: (i32, i32),
+        moving: Option<(f32, f32)>,
+        scale: f32,
+        dt: f32,
+        terrain: &dyn Walkable,
+    ) {
+        let Some(&first) = self.path.first() else {
+            return;
+        };
+        let target = ((first.1 - cell.1) as f32).atan2((first.0 - cell.0) as f32);
+        let heading = self
+            .sprint_heading
+            .or(self.travel_dir.map(|(x, y)| y.atan2(x)))
+            .unwrap_or(target);
+        let tau = std::f32::consts::TAU;
+        let error = (target - heading + std::f32::consts::PI).rem_euclid(tau) - std::f32::consts::PI;
+        let max = SPRINT_TURN_RATE * dt;
+        let heading = heading + error.clamp(-max, max);
+        self.sprint_heading = Some(heading);
+        if error.abs() <= max {
+            return;
+        }
+        let (ux, uy) = (heading.cos(), heading.sin());
+        let step = self.speed * self.factor * scale * dt;
+        if !terrain.walkable(
+            (self.x + ux * step).floor() as i32,
+            (self.y + uy * step).floor() as i32,
+        ) {
+            self.sprint_heading = Some(target);
+            return;
+        }
+        let ahead = SPRINT_VECTOR_LENGTH * GOAL_PER_UNIT;
+        let end = (
+            cell.0 + (ux * ahead + 0.5).floor() as i32,
+            cell.1 + (uy * ahead + 0.5).floor() as i32,
+        );
+        self.path = vec![end];
+        self.line = GridLine::new(cell, end, moving);
     }
 
     /// One frame of a roll towards `(ux, uy)` with `remaining` cells to go: plan to the point

@@ -1105,7 +1105,7 @@ impl Locomotion {
                     });
                 } else {
                     self.state = MoveState::Idle;
-                    self.mover.start(Motion::Idle);
+                    self.mover.stop_after_step();
                 }
             }
             MoveState::Walking(Walk::Target { .. }) => {
@@ -2315,7 +2315,11 @@ mod tests {
             }]
         );
         assert_eq!(r.loco.state(), &MoveState::Idle);
+        // The client walks one more frame after the `(0, 0)`.
+        let before = r.loco.position();
+        r.run(1);
         let at = r.loco.position();
+        assert!(dist(before, at) > 1.0);
         r.run(5);
         assert_eq!(r.loco.position(), at);
         assert!(r.run(5).is_empty());
@@ -3643,7 +3647,7 @@ mod tests {
     /// the unscaled `MoveAck` reaches the client, which coasts instead of walking on.
     fn sprint_following_the_cursor_then_released() -> Rig {
         let mut r = sprinting((100, -150));
-        r.run(3);
+        r.run(30); // the heading has turned to the vector (`SPRINT_TURN_RATE`)
         r.tick(&[MoveInput::SkillInputEnd, space(false)]); // F
         r.tick(&[dir(101, -149)]); // F + 1: a cursor vector still in flight
         r
@@ -3745,7 +3749,7 @@ mod tests {
         r.run(36);
         assert!(matches!(r.loco.state(), MoveState::Sprinting(_)));
         r.tick(&[cursor(vector.0, vector.1)]);
-        r.run(3);
+        r.run(30); // the heading has turned to the vector (`SPRINT_TURN_RATE`)
         r
     }
 

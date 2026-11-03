@@ -184,10 +184,9 @@ pub struct Mover {
     pub level: i32,
     /// Seconds until a held WASD walk is aimed again.
     aim_timer: f32,
-    /// The cell the client's current line started from: the client's own cell (the one its plans
-    /// start from) steps along its line a whole cell behind the position, see
-    /// [`Mover::planning_cell`].
-    line_start: (i32, i32),
+    /// The client's current line: its own grid cell (the one its plans start from and the
+    /// `0x64` cell is compared with) steps along it, see [`GridLine`] and [`Mover::grid`].
+    line: GridLine,
     /// Direction of the last step along a plan: the client's entity carries on in it when its
     /// walk ends (the coast after a sprint) and stops at the first wall.
     last_dir: Option<(f32, f32)>,
@@ -220,7 +219,7 @@ impl Mover {
             pathfinder: Pathfinder::Client,
             level: 0,
             aim_timer: 0.0,
-            line_start: (x, y),
+            line: GridLine::at((x, y)),
             last_dir: None,
             coast_dir: None,
             moved: false,
@@ -235,6 +234,18 @@ impl Mover {
         } else {
             None
         };
+        // The coast is one Positioned move from the client's cell to the cell its root motion
+        // ends in (`0x141f5f650`): one line.
+        if let (Motion::Coast { step, decay, .. }, Some((ux, uy))) = (motion, self.coast_dir) {
+            let frames = if decay > 0.0 { (step / decay).ceil().max(0.0) } else { 0.0 };
+            let total = step * frames - decay * frames * (frames - 1.0) / 2.0;
+            let s = self.grid();
+            let e = (
+                (s.0 as f32 + ux * total + 0.5).floor() as i32,
+                (s.1 as f32 + uy * total + 0.5).floor() as i32,
+            );
+            self.line = GridLine::new(s, e, None);
+        }
         self.motion = motion;
         self.path.clear();
         self.replan_in = 0;
@@ -269,13 +280,23 @@ impl Mover {
     pub fn place(&mut self, (x, y): (i32, i32)) {
         self.x = x as f32 + 0.5;
         self.y = y as f32 + 0.5;
-        self.line_start = (x, y);
+        self.line = GridLine::at((x, y));
         self.start(Motion::Idle);
     }
 
-    /// The grid cell the entity stands in (what the client compares positions by).
+    /// The grid cell the position is in.
     pub fn cell(&self) -> (i32, i32) {
         (self.x.floor() as i32, self.y.floor() as i32)
+    }
+
+    /// The client's own grid cell (Positioned `+0x444/+0x448`): the cell the `0x64` must carry,
+    /// since the client snaps to any other. It steps along the current line ([`GridLine`]) and
+    /// is often not the cell of the position. Where the entity left its line (wall slides, the
+    /// approximate pathfinder) the cell of the position is used.
+    pub fn grid(&self) -> (i32, i32) {
+        let g = self.line.cell((self.x - 0.5, self.y - 0.5));
+        let off = (g.0 as f32 + 0.5 - self.x).abs().max((g.1 as f32 + 0.5 - self.y).abs());
+        if off > 2.0 { self.cell() } else { g }
     }
 
     pub fn is_moving(&self) -> bool {
@@ -473,14 +494,12 @@ impl Mover {
         self.follow(self.speed * self.factor * scale * dt);
     }
 
-    /// The cell the client plans from. The client moves its cell along a digital line that
-    /// starts in the cell it was in when it last planned and advances a whole cell once the
-    /// position is a whole cell away from the line's start (the entity trails the cell of its
-    /// position by up to half a cell in the direction it moves; 66 % of 643 logged plans start
-    /// in exactly this cell against 45 % for the cell of the position). Where that cell is a
-    /// wall, the cell of the position or its free neighbour is used.
+    /// The cell the client plans from: its own grid cell ([`Mover::grid`]; with the earlier
+    /// approximation `trunc(position - 0.5 - line start)`, 66 % of 643 logged plans started in
+    /// it against 45 % for the cell of the position). Where that cell is a wall, the cell of the
+    /// position or its free neighbour is used.
     fn planning_cell(&self, terrain: &dyn Walkable) -> (i32, i32) {
-        let lagging = self.line_cell();
+        let lagging = self.grid();
         let blocked = |c: (i32, i32)| terrain.nibble(c.0, c.1) == 0;
         if !blocked(lagging) {
             return lagging;
@@ -499,21 +518,13 @@ impl Mover {
             .unwrap_or(here)
     }
 
-    /// The cell the client's current line has reached (see [`Mover::planning_cell`]).
-    fn line_cell(&self) -> (i32, i32) {
-        let along = |p: f32, c0: i32| c0 + (p - 0.5 - c0 as f32).trunc() as i32;
-        (along(self.x, self.line_start.0), along(self.y, self.line_start.1))
-    }
-
     /// The client's plan from the entity's cell to `goal`.
     fn plan_client(&mut self, terrain: &dyn Walkable, goal: (i32, i32)) -> clientpath::Plan {
         let start = self.planning_cell(terrain);
         // Moving along a line whose cell is the start: line of sight to the start is tested
         // from the exact position (`FUN_141b87580`), in the client's cell-centred coordinates.
         let moving =
-            (self.moved && start == self.line_cell()).then_some((self.x - 0.5, self.y - 0.5));
-        // The next line starts from the cell of the position.
-        self.line_start = self.cell();
+            (self.moved && start == self.grid()).then_some((self.x - 0.5, self.y - 0.5));
         let (dx, dy) = (goal.0 as i64 - start.0 as i64, goal.1 as i64 - start.1 as i64);
         // A goal beyond the search window is pulled in to 126 cells along the same line.
         let goal = if dx * dx + dy * dy < GOAL_LIMIT_SQ as i64 {
@@ -529,7 +540,14 @@ impl Mover {
             moving,
             ..Params::default()
         };
-        clientpath::plan(terrain, start, goal, self.level, &params)
+        let plan = clientpath::plan(terrain, start, goal, self.level, &params);
+        // The walk's first line runs from the start cell to the first waypoint
+        // (`Positioned_MoveToWaypoint` -> `FUN_141ec86a0`).
+        self.line = match plan.waypoints().next() {
+            Some(first) => GridLine::new(start, first, moving),
+            None => GridLine::at(start),
+        };
+        plan
     }
 
     /// Waypoints of the client's plan from the entity's cell to `goal`, in walking order.
@@ -624,6 +642,11 @@ impl Mover {
                 self.y = ty;
                 len -= dist;
                 self.path.remove(0);
+                // The next line starts on the waypoint reached (the old one has ended there).
+                self.line = match self.path.first() {
+                    Some(&next) => GridLine::new((wx, wy), next, None),
+                    None => GridLine::at((wx, wy)),
+                };
             } else {
                 self.x += dx / dist * len;
                 self.y += dy / dist * len;
@@ -631,6 +654,116 @@ impl Mover {
             }
         }
         !self.path.is_empty()
+    }
+}
+
+/// The line the client's grid cell steps along while its entity walks one leg (Positioned
+/// `+0x208`, set up by `FUN_141ec86a0`, stepped by `FUN_141ec8cb0` from the Positioned tick
+/// `FUN_141ddc9d0`). In cell-centred coordinates (cell centre = integer):
+/// - The line runs from a point `p` to the end cell `e`. `p` is the start cell `s`, or, when the
+///   entity was moving along its previous line, still in `s`, and is less than 2 cells from it
+///   (`|s - p|^2 < 4`), the exact position; the start is then `q`, the projection of `s` onto
+///   the line, rounded.
+/// - The major axis is the one with the longer integer distance from `q` to `e` (x on a tie,
+///   or the longer float distance when starting from the position).
+/// - An accumulator starts at `|e - q| - |e - p|` (major axis, in cells) and grows with the
+///   distance walked; each whole cell steps the major coordinate one cell towards `e` (the
+///   first step first walks `s` to `q`) and the minor one to `floor(minor)`, where `minor`
+///   starts at `p_minor - slope * offset + c` (`slope = (e - p)_minor / |e - p|_major`,
+///   `c = 0.49` for a positive slope, else `0.5`) and grows by `slope` per step.
+///
+/// Closed form used here: `k = floor(|e - q| - |e - pos|)` (major axis) whole steps; the
+/// cell is `s` while `k = 0`, else `(q + k * sign, floor(minor + k * slope))`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct GridLine {
+    s: (i32, i32),
+    q: (i32, i32),
+    e: (i32, i32),
+    y_major: bool,
+    slope: f32,
+    minor0: f32,
+}
+
+impl GridLine {
+    /// No line: the grid stays on `cell`.
+    fn at(cell: (i32, i32)) -> Self {
+        Self {
+            s: cell,
+            q: cell,
+            e: cell,
+            y_major: false,
+            slope: 0.0,
+            minor0: 0.0,
+        }
+    }
+
+    /// A line from cell `s` to cell `e`; `pos` is the exact position (cell-centred) when the
+    /// entity moved along its previous line (the moving variant).
+    fn new(s: (i32, i32), e: (i32, i32), pos: Option<(f32, f32)>) -> Self {
+        let sf = (s.0 as f32, s.1 as f32);
+        let ef = (e.0 as f32, e.1 as f32);
+        let p = match pos {
+            Some(p) if p != ef && (sf.0 - p.0).powi(2) + (sf.1 - p.1).powi(2) < 4.0 => p,
+            _ => sf,
+        };
+        let d = (ef.0 - p.0, ef.1 - p.1);
+        let q = if p == sf {
+            s
+        } else {
+            let len2 = d.0 * d.0 + d.1 * d.1;
+            let t = if len2 > 0.0 {
+                ((sf.0 - p.0) * d.0 + (sf.1 - p.1) * d.1) / len2
+            } else {
+                0.0
+            };
+            (
+                (d.0 * t + p.0 + 0.5).floor() as i32,
+                (d.1 * t + p.1 + 0.5).floor() as i32,
+            )
+        };
+        let (ix, iy) = ((e.0 - q.0).abs(), (e.1 - q.1).abs());
+        let y_major = ix < iy || (p != sf && ix == iy && d.0.abs() < d.1.abs());
+        let (p_maj, p_min, e_min, q_maj, e_maj) = if y_major {
+            (p.1, p.0, ef.0, q.1, e.1)
+        } else {
+            (p.0, p.1, ef.1, q.0, e.0)
+        };
+        let df = (e_maj as f32 - p_maj).abs();
+        if df <= 0.0 {
+            return Self::at(e);
+        }
+        let slope = (e_min - p_min) / df;
+        let offset = (e_maj - q_maj).abs() as f32 - df;
+        let c = if slope > 0.0 { 0.49 } else { 0.5 };
+        Self {
+            s,
+            q,
+            e,
+            y_major,
+            slope,
+            minor0: p_min - slope * offset + c,
+        }
+    }
+
+    /// The grid cell for the position `pos` (cell-centred) along this line.
+    fn cell(&self, pos: (f32, f32)) -> (i32, i32) {
+        if self.q == self.e {
+            return if self.s == self.e { self.e } else { self.s };
+        }
+        let (pos_maj, q_maj, e_maj) = if self.y_major {
+            (pos.1, self.q.1, self.e.1)
+        } else {
+            (pos.0, self.q.0, self.e.0)
+        };
+        let total = (e_maj - q_maj).abs();
+        let rem = (e_maj as f32 - pos_maj).abs();
+        let k = ((total as f32 - rem + 1e-4).floor() as i32).clamp(0, total);
+        if k == 0 {
+            return self.s;
+        }
+        let maj = q_maj + k * (e_maj - q_maj).signum();
+        let min = (self.minor0 + k as f32 * self.slope).floor() as i32;
+        if self.y_major { (min, maj) } else { (maj, min) }
     }
 }
 
@@ -649,6 +782,23 @@ mod tests {
         fn walkable(&self, x: i32, _: i32) -> bool {
             x < 10
         }
+    }
+
+    #[test]
+    fn the_grid_steps_along_its_line_behind_the_position() {
+        // Official 2026-11-02 f503: plan from (282, 252) to (269, 281), y major.
+        let line = GridLine::new((282, 252), (269, 281), None);
+        // Less than a whole cell along: still the start cell (the position's cell is (281, 252)).
+        assert_eq!(line.cell((281.6, 252.9)), (282, 252));
+        // One whole cell: the minor axis follows the line (floor(282 - 13/29 + 0.5) = 282),
+        // not the position.
+        assert_eq!(line.cell((281.5, 253.2)), (282, 253));
+        assert_eq!(line.cell((269.0, 281.0)), (269, 281));
+        // A new line started from the exact position: the start cell until a whole cell is done.
+        let moving = GridLine::new((272, 282), (296, 291), Some((271.31, 281.87)));
+        assert_eq!(moving.cell((271.9, 282.1)), (272, 282));
+        // Idle: the cell itself.
+        assert_eq!(GridLine::at((5, 7)).cell((9.0, 9.0)), (5, 7));
     }
 
     #[test]

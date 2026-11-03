@@ -1847,7 +1847,10 @@ impl Locomotion {
     // ---- replies of the frame
 
     fn move_ack(&mut self, unscaled_due: bool, ctx: &StepCtx, out: &mut Vec<MoveEvent>) {
-        let cell = self.mover.cell();
+        // The client's own grid cell: it snaps to any other cell in a non-zero `0x64`
+        // (lockstep), which is the hitch at every WASD start and turn and every frame of a
+        // sprint stream when the cell of the position is sent instead.
+        let cell = self.mover.grid();
         let wasd = self.wasd;
         let scaled = scale_to(wasd, ctx.config.sprint.dir_length);
         let unscaled = self.unscaled_dir.take();

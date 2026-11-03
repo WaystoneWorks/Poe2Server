@@ -1541,18 +1541,7 @@ impl Locomotion {
         let cell = self.sim.grid();
         let wasd = self.wasd;
         let scaled = scale_to(wasd, SPRINT_DIR_LENGTH);
-        let unscaled = self.unscaled_dir.take();
-        if unscaled_due
-            && wasd == (0, 0)
-            && let Some(dir) = unscaled
-        {
-            // The client's zero vector arrived in the very frame the unscaled `MoveAck` of the
-            // sprint's end is due. That ack still goes out first, as in every official sprint
-            // (a `(0, 0)` in its place stopped the client's coast in game: 22 cells of drift);
-            // the zero's own ack follows in the next frame.
-            out.push(MoveEvent::MoveAck { dir, cell });
-            return;
-        }
+        self.unscaled_dir = None;
         match self.sprint() {
             Some(run) if run.streaming => out.push(MoveEvent::MoveAck { dir: scaled, cell }),
             _ if self.ack_wanted || unscaled_due => {

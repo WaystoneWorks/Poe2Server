@@ -257,6 +257,10 @@ fn main() {
             if theirs.iter().any(|t| t.1) || mine.iter().any(|t| t.1) {
                 skill_until = f + 30;
             }
+            // A roll replaces the skill: from here the models run by themselves.
+            if theirs.iter().any(|t| t.0) {
+                skill_until = -1;
+            }
             if let Some(g) = logged_at(f) {
                 if f < skill_until {
                     if !free {

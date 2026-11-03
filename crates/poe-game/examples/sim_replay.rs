@@ -82,6 +82,7 @@ fn main() {
                         _ => {}
                     },
                     "K" => sim.on_sprint_key(r[1] != "0"),
+                    "T" => sim.on_skill_target((n(&r[1]), n(&r[2]))),
                     _ => {}
                 }
             }
@@ -102,7 +103,15 @@ fn main() {
                 }
                 "L" => {
                     let e = (n(&r[5]), n(&r[6]));
-                    if sim.line_end() == Some(e) { lines.0 += 1 } else { lines.1 += 1 }
+                    if sim.line_end() == Some(e) {
+                        lines.0 += 1
+                    } else {
+                        lines.1 += 1;
+                        if shown < show {
+                            shown += 1;
+                            println!("f{f} line end model {:?} client {e:?} grid {:?}", sim.line_end(), sim.grid());
+                        }
+                    }
                 }
                 _ => {}
             }

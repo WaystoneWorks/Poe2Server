@@ -304,6 +304,8 @@ struct Roll {
     total: i32,
     /// `+0x3e`.
     waiting: bool,
+    /// The action's `+0x24d`: the movement vector took over, `0x1af` no longer aims it.
+    axes_aimed: bool,
     /// `+0x44`, `+0x48`.
     opt_len: Option<i32>,
     /// A sprint child was started (`act + 0x448`).
@@ -568,6 +570,10 @@ impl ClientSim {
     pub fn animated_tick(&mut self, dt: f32, t: &dyn Walkable) {
         if let Some(r) = &mut self.roll {
             r.elapsed = (r.elapsed + dt * r.rate).min(r.length);
+            // The end of the clip ends the action here, so the Actor tick of this frame can plan.
+            if r.elapsed >= r.length {
+                self.roll_end(t);
+            }
         }
         if let Some(a) = self.sprint_end {
             if a.coast_due {
@@ -941,6 +947,16 @@ impl ClientSim {
         }
     }
 
+    /// `0x1af`: `Player_ApplyServerSkillTarget` `0x141dd4550` -> `0x141e5b250`: re-aims the running
+    /// roll from the current cell (`0x14197cf50`, vfunc `+0x130` `0x141b8c6a0`), unless the movement
+    /// vector took over.
+    pub fn on_skill_target(&mut self, target: Cell) {
+        let grid = self.grid;
+        if let Some(r) = self.roll.as_mut().filter(|r| !r.axes_aimed) {
+            r.heading = angle((target.0 - grid.0) as f32, (target.1 - grid.1) as f32);
+        }
+    }
+
     /// `0x2e7`: the sprint key (`0x141e5c1f0`).
     pub fn on_sprint_key(&mut self, held: bool) {
         self.sprint_key = held;
@@ -979,10 +995,13 @@ impl ClientSim {
     /// `DodgeRollMove_Start` `0x141b8bfa0`.
     pub fn on_start_roll(&mut self, start: Cell, target: Cell, travel: f32, t: &dyn Walkable) {
         let Some(cs) = self.curves.clone() else { return };
-        self.end_move(false, t);
+        // `Actor_InstallQueuedMove` `0x141e41c60` snaps, then `0x141e4ea40` ends a running Move with a
+        // stop (`Actor_EndMoveAction(A, 1)`) before the action's start, so the path's end does not
+        // clear the roll's curve.
         if start != self.grid {
             self.snap(start);
         }
+        self.end_move(true, t);
         let heading = if self.axes != (0, 0) {
             angle(from_world(self.axes.0 as f32) as f32, from_world(self.axes.1 as f32) as f32)
         } else if target == self.grid {
@@ -1006,6 +1025,7 @@ impl ClientSim {
             backward,
             total: travel as i32,
             waiting: false,
+            axes_aimed: false,
             opt_len: None,
             sprints: false,
         });
@@ -1110,11 +1130,16 @@ impl ClientSim {
 
     /// `DodgeRollMove_Tick` `0x141b8c720`, and the end of the action.
     fn roll_tick(&mut self, _dt: f32, t: &dyn Walkable) {
-        let Some(r) = &self.roll else { return };
-        if r.elapsed >= r.length {
-            self.roll_end(t);
-            return;
+        // Action update (vfunc `+0x1c0` `0x141a3b010` -> `0x141974090` -> `0x14197d060`), with the stat
+        // `dynamic_target_updating_prioritises_movement_vector`: the target follows the axes.
+        if self.axes != (0, 0)
+            && let Some(r) = &mut self.roll
+        {
+            let c = (from_world(self.axes.0 as f32), from_world(self.axes.1 as f32));
+            r.heading = angle(c.0 as f32, c.1 as f32);
+            r.axes_aimed = true;
         }
+        let Some(r) = &self.roll else { return };
         if r.waiting {
             if self.line.thr != 0.0 {
                 return;

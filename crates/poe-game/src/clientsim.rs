@@ -537,6 +537,12 @@ impl ClientSim {
                 if !self.stop_pending {
                     self.end_path(false, t);
                 }
+                // Measured (official `0x1d3` keyed to component 0, no plan on the `0x64` that follows,
+                // no coast): a blocked step ends the sprint in the Positioned tick with the Bonk clip.
+                if self.sprint && self.roll.is_none() {
+                    self.bonked = true;
+                    self.sprint_part_end(true, t);
+                }
             } else {
                 self.grid = cell;
                 if !done {
@@ -1341,7 +1347,7 @@ impl ClientSim {
     }
 
     /// `SprintPart_End` `0x141b773a0` and the play of the clip `0x141e57b80`.
-    fn sprint_part_end(&mut self, _bonk: bool, t: &dyn Walkable) {
+    fn sprint_part_end(&mut self, bonk: bool, t: &dyn Walkable) {
         self.sprint = false;
         self.end_move(false, t);
         self.stop_with_callbacks(t);
@@ -1355,7 +1361,7 @@ impl ClientSim {
             self.sprint_end = Some(SprintEndAnim {
                 left: SPRINT_END_MOVE_TIME / rate,
                 rate,
-                coast_due: true,
+                coast_due: !bonk,
             });
         }
     }

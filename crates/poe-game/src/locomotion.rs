@@ -738,6 +738,11 @@ impl Locomotion {
         self.mover.cell()
     }
 
+    /// The client's own grid cell as the server models it ([`crate::movement::Mover::grid`]).
+    pub fn grid(&self) -> Cell {
+        self.mover.grid()
+    }
+
     /// Exact position in cells.
     pub fn position(&self) -> (f32, f32) {
         (self.mover.x, self.mover.y)

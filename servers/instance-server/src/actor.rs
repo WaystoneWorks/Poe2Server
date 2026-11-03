@@ -734,6 +734,20 @@ impl Actor {
                 }));
             }
         }
+        // The server's own position and the client grid cell it models, after this frame.
+        if self.init.trace {
+            for m in &self.members {
+                if let Some(e) = self.world.entity(m.entity) {
+                    let (x, y) = e.movement.position();
+                    let g = e.movement.grid();
+                    trace.push(TraceLine {
+                        entity: m.entity.0,
+                        kind: "pos",
+                        fields: format!("{x:.3}\t{y:.3}\t{}\t{}", g.0, g.1),
+                    });
+                }
+            }
+        }
         // What everyone but the owner gets, and the owner's own version where it differs.
         let mut shared = Vec::new();
         for (_, _, others) in &segments {

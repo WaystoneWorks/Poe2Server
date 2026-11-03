@@ -688,8 +688,12 @@ impl ClientSim {
                 self.sprint_end.as_mut().unwrap().coast_due = false;
                 self.start_coast(a.rate, t);
             }
+            // The clip's rate follows the speed: at a wall the sprint-off's stats come right after
+            // the step that ended it (seg2 f800: walks are refused to f828, 30 frames at walking
+            // speed, not the 20 of the sprint's).
+            let rate = self.speed() * CELL / (SPRINT_END_BASE_SPEED * self.offset_scale);
             let a = self.sprint_end.as_mut().unwrap();
-            a.left -= dt;
+            a.left -= dt * rate;
             if a.left <= 0.0 {
                 self.sprint_end = None;
                 // The move event ends with the clip: its line stops where it is.
@@ -1479,7 +1483,7 @@ impl ClientSim {
         let rate = v / (SPRINT_END_BASE_SPEED * self.offset_scale);
         if rate > 0.0 {
             self.sprint_end = Some(SprintEndAnim {
-                left: SPRINT_END_MOVE_TIME / rate,
+                left: SPRINT_END_MOVE_TIME,
                 rate,
                 coast_due: !bonk,
             });

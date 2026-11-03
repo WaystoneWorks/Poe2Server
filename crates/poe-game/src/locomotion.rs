@@ -245,6 +245,8 @@ enum Due {
     MustSprintOff,
     /// The reply of the frame after a sprint ended: the unscaled direction.
     UnscaledAck,
+    /// A `(0, 0)` `0x64` ends the direction of a sprint a click ran.
+    DirectionOver,
     /// The second half of a sprint-off that a wall caused ([`Locomotion::end_sprint_at_wall`]).
     WallStunOff {
         index: u16,
@@ -1347,6 +1349,11 @@ impl Locomotion {
             // A held click (unless a queued roll starts now: 2026-10-20 f3744): the walk resumes
             // with a `StartAction` towards the latest target.
             self.state = MoveState::Walking(Walk::Target { goal: h.goal });
+            // This start counts for the restart timer (seg1 f3429: none at f3430).
+            if let Some(m) = &mut self.move_hold {
+                m.last_start = ctx.frame;
+            }
+            self.due.push((ctx.frame + CLICK_RESTART_FRAMES, Due::MoveRestart { seq: h.seq }));
             let action = Self::alloc_action(ctx);
             out.push_at(
                 AT_ROLL_END_MOVE,
@@ -1477,6 +1484,10 @@ impl Locomotion {
                 }
             }
             Due::UnscaledAck => *unscaled = true,
+            Due::DirectionOver => {
+                self.wasd = (0, 0);
+                *unscaled = true;
+            }
             Due::WallStunOff { index } => {
                 out.key = AT_BUFFS;
                 out.push(MoveEvent::BuffRemoved { index });
@@ -1663,7 +1674,7 @@ impl Locomotion {
             return;
         };
         self.release_pending = false;
-        self.sprint_move = false;
+        let sprint_move = std::mem::take(&mut self.sprint_move);
         out.push(MoveEvent::BuffRemoved {
             index: run.buff_base + 1,
         });
@@ -1680,6 +1691,18 @@ impl Locomotion {
         self.state = MoveState::Idle;
         self.sprint_end = None;
         self.bonk = true;
+        if sprint_move {
+            // The click's Move ran the sprint: as at a release, the direction is over in the next
+            // frame and presses are only acked while the client plays `SprintEndBonk` (seg1 f3300).
+            self.due.push((ctx.frame + 1, Due::DirectionOver));
+            self.sprint_end = Some(SprintEnd {
+                frame: ctx.frame,
+                dir: (0, 0),
+                cursor: true,
+                coasting: false,
+                click: true,
+            });
+        }
     }
 
     /// The sprint ended by the key release: walks on, or coasts.

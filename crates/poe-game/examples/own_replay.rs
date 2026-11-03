@@ -127,6 +127,8 @@ fn main() {
     let resync = a.iter().any(|x| x == "--resync");
     // `--free`: never place a model on the log, also in skills: server and client models must still agree.
     let free = a.iter().any(|x| x == "--free");
+    // `--trace LO HI`: the client model's state in these frames.
+    let trace = a.iter().position(|x| x == "--trace").map(|i| (a[i + 1].parse::<i64>().unwrap(), a[i + 2].parse::<i64>().unwrap()));
     let mut rows: BTreeMap<i64, Vec<Vec<String>>> = BTreeMap::new();
     for l in std::fs::read_to_string(&a[2]).unwrap().lines() {
         let w: Vec<String> = l.split_whitespace().map(String::from).collect();
@@ -195,6 +197,11 @@ fn main() {
                     shown += 1;
                     println!("f{f} STATE\n  s {:?}\n  c {:?}\n  {:?}", st(a), st(&client), events.iter().map(|e| (e.key, format!("{:?}", e.event))).collect::<Vec<_>>());
                 }
+            }
+            if let Some((lo, hi)) = trace
+                && (lo..=hi).contains(&f)
+            {
+                println!("f{f} grid {:?} point {:?} coast {} move {} end {:?} speed {:.3} wasd {:?} {:?}", client.grid(), client.point(), client.is_coasting(), client.has_move(), client.line_end(), client.speed(), client.axes(), events.iter().map(|e| (e.key, format!("{:?}", e.event).chars().take(40).collect::<String>())).collect::<Vec<_>>());
             }
             if started && client.grid() != loco.grid() {
                 *c.entry("model_vs_client").or_default() += 1;

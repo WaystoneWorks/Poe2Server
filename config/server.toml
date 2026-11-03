@@ -70,14 +70,6 @@ first_entity_id = 12000
 # walking speed and roll distance come from game data; these are the values of the official captures.
 # BuffDefinitions rows of the three buffs a sprint adds.
 sprint_buff_rows = [2758, 2737, 2853]
-# After a sprint ends the client's walk is over and it coasts to a stop along its last direction
-# (docs/protocol/movement.md, "Coasting after a sprint"); official 2026-10-20 captures.
-# First coasting step as a multiple of the walking step of a client frame (1.309 cells against 1.233).
-sprint_coast_start_scale = 1.0614
-# Frames over which the coasting step falls linearly to zero (30 steps, about 20 cells).
-sprint_coast_frames = 29.5
-# Frames between the sprint-off batch and the first coasting step.
-sprint_coast_delay_frames = 1
 # Frames between the sprint-off batch and the end of the client's SprintEnd animation: no WASD walk
 # starts while it plays; at its end a held key walks on (first step one frame later).
 sprint_end_anim_frames = 31
@@ -85,7 +77,7 @@ sprint_end_anim_frames = 31
 sprint_wall_stun_off_frames = 7
 # The values above are the walking-speed case. SprintEnd plays at the movement speed seen by the client's
 # end check: a sprint ended by the release batch (Space up after must_sprint went off) sees the sprint speed
-# on the private client, so coast and animation last 1/1.5 as long over the same distance.
+# on the private client, so the animation lasts 1/1.5 as long.
 sprint_release_ends_at_sprint_speed = true
 # A zero direction within this many frames after a cursor sprint's end means the keys were already
 # up when the restart arrived (the client coasts instead of walking on); measured 1-5 frames.
@@ -103,9 +95,6 @@ attack_speed_ramp_per_second = 1.5
 attack_speed_snap_frames = 7
 # Frames after the attack's start from which the factor ramps back to 1.
 attack_speed_lock_frames = 12
-# Which search plans walks, rolls and sprints: "client" is a port of the client's own pathfinder
-# (docs/re/pathfinding.md), "approx" the older A* with wall sliding.
-pathfinder = "client"
 
 [dev]
 # Development and research tools; none are needed for normal play.

@@ -97,15 +97,7 @@ fn amd_curve(path: &str, name: &str) -> Curve {
     let raw = std::fs::read(path).expect("amd");
     let words: Vec<u16> = raw.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
     let text = String::from_utf16_lossy(&words).replace('\r', "");
-    let lines: Vec<&str> = text.lines().collect();
-    let i = lines.iter().position(|l| l.trim() == format!("\"{name}\"")).expect("curve");
-    let ms: f32 = lines[i + 2].trim().parse().unwrap();
-    let positions = lines[i + 4]
-        .split_whitespace()
-        .skip(1)
-        .map(|x| x.parse().unwrap())
-        .collect();
-    Curve::new(ms / 1000.0, positions)
+    Curve::from_amd(&text, name).expect("curve")
 }
 
 #[derive(Clone, Debug)]
@@ -262,7 +254,7 @@ fn main() {
                             m.level = if val != 0 { 4 } else { 0 };
                             if val != 0 {
                                 m.set_roll_sprinting();
-                                m.extend_roll(300.0);
+                                m.extend_roll(poe_game::clientmotion::ROLL_SPRINT_LINE);
                             }
                             notes += &format!(" sprinting={val}");
                         }

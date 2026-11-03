@@ -1392,6 +1392,14 @@ impl InstanceServer {
             sprint_bonus,
         );
         movement.sprint.clearance_level = sprint_clearance;
+        match poe_game::clientmotion::MotionCurves::load(&self.data) {
+            Ok(Some(curves)) => movement.curves = Arc::new(curves),
+            Ok(None) => tracing::warn!("no movement curves in the game data: using the stand-in"),
+            Err(e) => tracing::warn!(error = %e, "movement curves: using the stand-in"),
+        }
+        if let Some(scale) = poe_game::clientmotion::load_offset_scale(&self.data, &class.metadata_id) {
+            movement.offset_scale = scale;
+        }
         Ok(PlayerSetup { skills, speed, movement })
     }
 

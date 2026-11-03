@@ -65,9 +65,6 @@ pub fn sim_config(
         config.sprint_buff_rows,
     );
     cfg.walk_speed = speed;
-    cfg.sprint.coast_start_scale = config.sprint_coast_start_scale;
-    cfg.sprint.coast_frames = config.sprint_coast_frames;
-    cfg.sprint.coast_delay_frames = config.sprint_coast_delay_frames;
     cfg.sprint.end_anim_frames = config.sprint_end_anim_frames;
     cfg.sprint.wall_stun_off_frames = config.sprint_wall_stun_off_frames;
     cfg.sprint.release_ends_at_sprint_speed = config.sprint_release_ends_at_sprint_speed;
@@ -77,10 +74,6 @@ pub fn sim_config(
     cfg.attack_speed.ramp_per_second = config.attack_speed_ramp_per_second;
     cfg.attack_speed.snap_frames = config.attack_speed_snap_frames;
     cfg.attack_speed.lock_frames = config.attack_speed_lock_frames;
-    cfg.pathfinder = match config.pathfinder {
-        poe_config::Pathfinder::Client => poe_game::movement::Pathfinder::Client,
-        poe_config::Pathfinder::Approx => poe_game::movement::Pathfinder::Approx,
-    };
     cfg.roll.travel_distance = roll
         .and_then(|s| s.granted.constant_stat("dodge_roll_base_travel_distance"))
         .map_or(ROLL_DEFAULT_DISTANCE, |d| d as f32);

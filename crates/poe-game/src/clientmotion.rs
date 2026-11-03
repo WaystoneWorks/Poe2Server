@@ -28,6 +28,20 @@ const ROLL_STOP_DISTANCE: f32 = 1.6;
 const ROLL_MIN_LOOKAHEAD: f32 = 10.0;
 /// `SprintEnd` is `speed = 600` in `character.act` (`0x141e56ae0`).
 const SPRINT_END_ANIM_SPEED: f32 = 600.0;
+/// Pathfinding `+0x580` (`0x141dcc460`), measured 0.99 on the `LINE` log (2 boundary cells; 1.0
+/// misses them); writer `0x141dcce80` unread.
+const SPRINT_TURN_FACTOR: f32 = 0.99;
+/// The stat `dodge_roll_sprint_turn_rate` (key `0x5794`, 5 in the game data), degrees per plan.
+const SPRINT_TURN_RATE: f32 = 5.0;
+/// `FUN_141b8c7f0`: roll action `+0x44`, the optional length of a sprinting roll's lines, in
+/// cells. Measured (`LINE`: e = s + 300 along the heading); its writer is unread.
+pub const ROLL_SPRINT_LINE: f32 = 300.0;
+/// `offset_scale` of the class's `.ao` when the game data is not there.
+pub const STAND_IN_OFFSET_SCALE: f32 = 0.9;
+/// Where the character's dodge roll and sprint end curves are (`Character.act`). Characters are
+/// unarmed for now; the weapon variants follow the `dodge_*_01` pattern.
+const ROLL_AMD: &str = "art/models/charactersfour/animations/basedodgeroll/onerig.amd";
+const SPRINT_AMD: &str = "art/models/charactersfour/animations/basesprint/onerig.amd";
 
 /// A movement curve of an animation (`.amd`: duration and one position per frame).
 #[derive(Debug, Clone, PartialEq)]
@@ -43,6 +57,21 @@ impl Curve {
             length,
             positions: positions.into(),
         }
+    }
+
+    /// The curve `name` of an `.amd` file's text (per animation: `"name"`, `once` or `loop`,
+    /// duration in ms, a line, then `count v0 v1 ...`).
+    pub fn from_amd(text: &str, name: &str) -> Option<Self> {
+        let quoted = format!("\"{name}\"");
+        let mut lines = text.lines().skip_while(|l| l.trim() != quoted);
+        let ms: f32 = lines.nth(2)?.trim().parse().ok()?;
+        let positions = lines
+            .nth(1)?
+            .split_whitespace()
+            .skip(1)
+            .map(|v| v.parse().ok())
+            .collect::<Option<Vec<f32>>>()?;
+        (positions.len() >= 2).then(|| Self::new(ms / 1000.0, positions))
     }
 
     /// `FUN_141ecccc0`.
@@ -71,6 +100,103 @@ pub struct MotionCurves {
     pub roll_sprint: Curve,
     pub roll_back_sprint: Curve,
     pub sprint_end: Curve,
+}
+
+impl MotionCurves {
+    /// From the game's two `.amd` files (UTF-16 text).
+    pub fn from_amd(roll_text: &str, sprint_text: &str) -> Option<Self> {
+        Some(Self {
+            roll: Curve::from_amd(roll_text, "dodge_unarmed_01")?,
+            roll_back: Curve::from_amd(roll_text, "dodge_unarmed_bwd_01")?,
+            roll_sprint: Curve::from_amd(roll_text, "dodge_unarmed_01_sprinting")?,
+            roll_back_sprint: Curve::from_amd(roll_text, "dodge_unarmed_bwd_01_sprinting")?,
+            sprint_end: Curve::from_amd(sprint_text, "sprint_end_unarmed_01")?,
+        })
+    }
+
+    /// Reads the curves from the game data.
+    pub fn load(data: &poe_data::GameData) -> poe_data::Result<Option<Self>> {
+        let text = |path: &str| {
+            data.files().read(path).map(|bytes| {
+                let words: Vec<u16> = bytes
+                    .chunks_exact(2)
+                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .collect();
+                String::from_utf16_lossy(&words).replace('\r', "")
+            })
+        };
+        Ok(Self::from_amd(&text(ROLL_AMD)?, &text(SPRINT_AMD)?))
+    }
+
+    /// NOT game data: curves for running without game files (the unit and replay tests, a server
+    /// with no client data), rebuilt from the per-frame steps measured on the client's `LINE` log
+    /// (cells per 33 ms frame of a 46-cell roll; `sprint_end` from its total and a linear decay).
+    /// Close to [`MotionCurves::load`], not equal: a real server loads the real ones.
+    pub fn stand_in() -> Self {
+        const ROLL: [f32; 31] = [
+            3.7324, 3.5283, 3.3310, 3.1405, 2.9568, 2.7627, 2.5501, 2.3350, 2.1171, 1.8971, 1.6743,
+            1.4492, 1.2353, 1.1218, 1.0497, 0.9889, 0.9394, 0.9010, 0.8740, 0.8581, 0.8536, 0.8601,
+            0.8741, 0.8537, 0.7971, 0.7168, 0.60, 0.45, 0.30, 0.18, 0.0719,
+        ];
+        const SPRINT_TAIL: [f32; 15] = [
+            0.9175, 0.9501, 1.0087, 1.0703, 1.1262, 1.1701, 1.2210, 1.3018, 1.3852, 1.4565, 1.4771,
+            1.5311, 1.5200, 2.00, 2.37,
+        ];
+        const SPRINT_END_UNITS: f32 = 242.425;
+        const SPRINT_END_SECONDS: f32 = 0.75;
+        const UNITS_PER_ROLL_CELL: f32 = 500.0 / 46.0;
+        let curve = |steps: &[f32], sign: f32| {
+            let mut at = 0.0;
+            let mut positions = vec![0.0];
+            for step in steps {
+                at += step * UNITS_PER_ROLL_CELL * sign;
+                positions.push(at);
+            }
+            Curve::new(1.0, positions)
+        };
+        let sprinting: Vec<f32> = ROLL[..16].iter().chain(&SPRINT_TAIL).copied().collect();
+        let end = (0..46)
+            .map(|i| {
+                let left = 1.0 - i as f32 / 45.0;
+                SPRINT_END_UNITS * (1.0 - left * left)
+            })
+            .collect();
+        Self {
+            roll: curve(&ROLL, 1.0),
+            roll_back: curve(&ROLL, -1.0),
+            roll_sprint: curve(&sprinting, 1.0),
+            roll_back_sprint: curve(&sprinting, -1.0),
+            sprint_end: Curve::new(SPRINT_END_SECONDS, end),
+        }
+    }
+}
+
+/// `offset_scale` from the `.ao` of `metadata_id` (`Melee { offset_scale = 0.9 }`), the class's
+/// own file or the ones it extends.
+pub fn load_offset_scale(data: &poe_data::GameData, metadata_id: &str) -> Option<f32> {
+    let mut path = metadata_id.to_owned();
+    for _ in 0..16 {
+        let bytes = data.files().read(&format!("{path}.ao").to_lowercase()).ok()?;
+        let words: Vec<u16> = bytes
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        let text = String::from_utf16_lossy(&words);
+        let value = |key: &str| {
+            text.lines().find_map(|l| {
+                let (k, v) = l.split_once(|c: char| c == '=' || c.is_whitespace())?;
+                (k.trim() == key).then(|| v.trim().trim_matches(['=', ' ', '"']).to_owned())
+            })
+        };
+        if let Some(v) = value("offset_scale") {
+            return v.parse().ok();
+        }
+        path = value("extends")?;
+        if path == "nothing" {
+            return None;
+        }
+    }
+    None
 }
 
 /// A curve in use (Positioned `+0x2a8`, `L + 0xa0`).
@@ -429,6 +555,10 @@ pub struct ClientMotion {
     sprint_on: bool,
     /// The sprint's plan came back empty: this frame's end check ends it with the Bonk.
     bonk_due: bool,
+    /// The Bonk ran; the owner has not seen it yet ([`ClientMotion::take_bonked`]).
+    bonked: bool,
+    /// A slot-0 action (an attack) started in this frame: `0x141b773a0` plays no `SprintEnd`.
+    slot0_started: bool,
     /// The buff `must_sprint`: key state does not end the sprint while it is on.
     pub must_sprint: bool,
     /// The speed when the frame started. A `SprintEnd` in a frame with a `0x64` plan runs at this
@@ -437,6 +567,10 @@ pub struct ClientMotion {
     frame_speed: f32,
     /// A `0x64` planned in this frame.
     planned: bool,
+    /// [`Self::frame_speed`] applies. The official captures' client played every `SprintEnd` at
+    /// the speed after the stats (coasts 30 frames), the private client's plan frames do not (the
+    /// reason is unread), see `SprintConfig::release_ends_at_sprint_speed`.
+    pub plan_frame_keeps_speed: bool,
     /// The server's echo of the sprint key's release came.
     key_released: bool,
     /// Cells per second: base speed, attack factor and the sprint's stats.
@@ -483,7 +617,7 @@ impl ClientMotion {
             ending: 0,
             path: Vec::new(),
             next: 0,
-            turn_factor: 0.99,
+            turn_factor: SPRINT_TURN_FACTOR,
             roll: None,
             curve: None,
             coasting: false,
@@ -493,15 +627,18 @@ impl ClientMotion {
             coast_due: None,
             sprint_on: false,
             bonk_due: false,
+            bonked: false,
+            slot0_started: false,
             must_sprint: false,
             frame_speed: speed,
             planned: false,
+            plan_frame_keeps_speed: true,
             key_released: false,
             speed,
             factor: 1.0,
             scale: 1.0,
             is_sprinting: false,
-            turn_rate: 5.0,
+            turn_rate: SPRINT_TURN_RATE,
             stepped: false,
             level: 0,
             plans: 0,
@@ -546,6 +683,63 @@ impl ClientMotion {
     /// A line runs.
     pub fn is_moving(&self) -> bool {
         self.line.running()
+    }
+
+    /// `SprintEnd`'s root move runs or is about to start.
+    pub fn is_coasting(&self) -> bool {
+        self.coasting || self.coast_due.is_some()
+    }
+
+    /// The position in cells: cell corners on whole numbers, as `(cell + 0.5)` for a centre.
+    pub fn position(&self) -> (f32, f32) {
+        let (x, y) = self.point();
+        (x + 0.5, y + 0.5)
+    }
+
+    /// The waypoints left of a click's walk.
+    pub fn path(&self) -> &[Cell] {
+        self.path.get(self.next..).unwrap_or(&[])
+    }
+
+    /// Whether a sprint ended on a wall since the last call.
+    pub fn take_bonked(&mut self) -> bool {
+        std::mem::take(&mut self.bonked)
+    }
+
+    /// A slot-0 action starts (`0x141e4ea40`): it takes the place of a running roll.
+    pub fn action_started(&mut self) {
+        self.slot0_started = true;
+        self.roll = None;
+    }
+
+    /// A new speed factor: a running walk's line is issued again, same end (`0x141de5190`, from
+    /// the Actor tick's ramp, spec step 12).
+    pub fn set_factor(&mut self, factor: f32) {
+        if factor == self.factor {
+            return;
+        }
+        self.factor = factor;
+        if self.line.running() && self.roll.is_none() && !self.coasting {
+            let e = self.line.e;
+            let cur = self.line.cur();
+            self.line.setup(cur, e, self.move_speed(), false);
+        }
+    }
+
+    /// Places the entity (a teleport): every motion stops.
+    pub fn place(&mut self, cell: Cell) {
+        let curves = self.curves.take();
+        *self = Self {
+            curves,
+            offset_scale: self.offset_scale,
+            speed: self.speed,
+            scale: self.scale,
+            factor: self.factor,
+            level: self.level,
+            is_sprinting: self.is_sprinting,
+            must_sprint: self.must_sprint,
+            ..Self::at_cell(cell, self.speed)
+        };
     }
 
     fn move_speed(&self) -> f32 {
@@ -885,6 +1079,7 @@ impl ClientMotion {
             self.end_sprint();
         }
         self.key_released = false;
+        self.slot0_started = false;
         self.plan_timer = (self.plan_timer - dt).max(0.0);
     }
 
@@ -907,6 +1102,7 @@ impl ClientMotion {
         self.end_sprint();
         self.coast_due = None;
         self.bonk_due = false;
+        self.bonked = true;
     }
 
     /// Ended by a wall: the client plays the Bonk, not a coast.
@@ -920,12 +1116,16 @@ impl ClientMotion {
         self.end_path();
         self.ending = 0;
         self.line.kill();
-        if self.roll.is_some() {
+        if self.roll.is_some() || self.slot0_started {
             return;
         }
         if let Some(curve) = self.curves.as_ref().map(|c| &c.sprint_end) {
             // `0x141e56ae0`: movement speed in units over the animation's speed.
-            let speed = if self.planned { self.frame_speed } else { self.move_speed() };
+            let speed = if self.planned && self.plan_frame_keeps_speed {
+                self.frame_speed
+            } else {
+                self.move_speed()
+            };
             let rate = speed * UNITS_PER_CELL
                 / (SPRINT_END_ANIM_SPEED * self.offset_scale);
             self.end_anim = curve.length / rate;
@@ -1270,5 +1470,89 @@ impl ClientMotion {
             pending: self.line.pending,
             ..Line::default()
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const AMD: &str = "version 5\n2\n\"other\"\nonce\n500\nx\n2 0 1\ny\n\"dodge_unarmed_01\"\nonce\n1000\nmeta\n3 0 400 500\nsegments\n";
+
+    #[test]
+    fn a_curve_comes_from_its_amd_block() {
+        let c = Curve::from_amd(AMD, "dodge_unarmed_01").unwrap();
+        assert_eq!(c.length, 1.0);
+        assert_eq!(&*c.positions, &[0.0, 400.0, 500.0]);
+        assert_eq!(c.value(0.25), 200.0);
+        assert!(Curve::from_amd(AMD, "missing").is_none());
+    }
+
+    #[test]
+    fn the_stand_in_curves_have_the_measured_ends() {
+        let c = MotionCurves::stand_in();
+        assert!((c.roll.value(1.0) - 500.0).abs() < 10.0);
+        assert!((c.roll_back.value(1.0) + 500.0).abs() < 10.0);
+        assert!(c.roll_sprint.value(1.0) > c.roll.value(1.0));
+        assert!((c.sprint_end.value(0.75) - 242.425).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_blocked_sprint_step_bonks_once_with_no_coast() {
+        struct Wall;
+        impl Walkable for Wall {
+            fn walkable(&self, x: i32, _: i32) -> bool {
+                x < 60
+            }
+        }
+        let mut m = ClientMotion::at_cell((50, 50), 37.0);
+        m.curves = Some(Arc::new(MotionCurves::stand_in()));
+        m.offset_scale = STAND_IN_OFFSET_SCALE;
+        m.scale = 1.5;
+        m.set_sprinting(true);
+        let mut bonks = 0;
+        for _ in 0..30 {
+            m.positioned_tick(0.033, &Wall);
+            m.set_axes((550, 0), &Wall);
+            m.actor_tick(0.033, &Wall);
+            bonks += m.take_bonked() as u32;
+            if bonks > 0 {
+                break;
+            }
+        }
+        assert_eq!(bonks, 1);
+        assert_eq!(m.grid().0, 59);
+        assert!(m.is_bonking());
+        m.set_axes((550, 0), &Wall);
+        for _ in 0..10 {
+            m.positioned_tick(0.033, &Wall);
+            m.actor_tick(0.033, &Wall);
+            assert_eq!(m.grid().0, 59, "it stands during the Bonk");
+        }
+    }
+
+    #[test]
+    fn a_roll_runs_its_distance_and_a_walk_follows_the_keys() {
+        let open = crate::movement::Open;
+        let mut m = ClientMotion::at_cell((100, 100), 37.0);
+        m.curves = Some(Arc::new(MotionCurves::stand_in()));
+        m.start_roll((100, 100), (146, 100), 46, 0.033, &open);
+        for _ in 0..30 {
+            m.positioned_tick(0.033, &open);
+            m.actor_tick(0.033, &open);
+        }
+        let rolled = m.grid().0 - 100;
+        assert!((43..=47).contains(&rolled), "{rolled}");
+        m.end_roll();
+        m.positioned_tick(0.033, &open);
+        m.set_axes((0, 180), &open);
+        m.actor_tick(0.033, &open);
+        let at = m.grid();
+        for _ in 0..10 {
+            m.positioned_tick(0.033, &open);
+            m.actor_tick(0.033, &open);
+        }
+        assert_eq!(m.grid().0, at.0);
+        assert!(m.grid().1 > at.1);
     }
 }

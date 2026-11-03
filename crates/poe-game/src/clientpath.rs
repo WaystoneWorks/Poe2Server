@@ -839,7 +839,14 @@ mod tests {
         // Every leg keeps clear of the wall.
         let pts: Vec<_> = plan.path.iter().rev().copied().collect();
         for w in pts.windows(2) {
-            assert!(super::super::pathfinding::line_of_sight(&g, w[0], w[1]));
+            let (a, b) = (w[0], w[1]);
+            let steps = (b.0 - a.0).abs().max((b.1 - a.1).abs()) * 2;
+            for i in 0..=steps {
+                let t = i as f32 / steps.max(1) as f32;
+                let x = a.0 as f32 + 0.5 + (b.0 - a.0) as f32 * t;
+                let y = a.1 as f32 + 0.5 + (b.1 - a.1) as f32 * t;
+                assert!(g.walkable(x.floor() as i32, y.floor() as i32));
+            }
         }
     }
 

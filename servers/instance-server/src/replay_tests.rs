@@ -770,16 +770,13 @@ fn sim_config_comes_from_game_data_and_config() {
     assert_eq!(cfg.roll.travel_distance, 52.0);
     assert_eq!(cfg.walk_speed, 41.5);
     assert_eq!(cfg.sprint.buff_rows, [2758, 2737, 2853]);
-    // The coasting after a sprint comes from `[movement]` (capture values by default).
+    // The sprint end timing comes from `[movement]` (capture values by default).
     assert_eq!(
         (
-            cfg.sprint.coast_start_scale,
-            cfg.sprint.coast_frames,
-            cfg.sprint.coast_delay_frames,
             cfg.sprint.end_anim_frames,
             cfg.sprint.release_window_frames
         ),
-        (1.0614, 29.5, 1, 31, 6)
+        (31, 6)
     );
     assert_eq!(
         (

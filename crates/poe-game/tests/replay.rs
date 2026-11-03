@@ -466,9 +466,11 @@ fn sprint_hold_with_release() {
 fn sprint_ended_by_an_attack() {
     replay(
         "sprint_ended_by_attack",
+        // The official roll ran along a wall (its cell's y stays 905 with the cursor 13 cells
+        // down), the replay has no terrain: the sprint's 5 degree turn then starts elsewhere.
         Tol {
             walk: ANY,
-            start: 10,
+            start: 14,
             steer: ANY,
         },
     );

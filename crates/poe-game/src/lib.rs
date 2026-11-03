@@ -6,6 +6,5 @@ pub mod clientpath;
 pub mod grid;
 pub mod locomotion;
 pub mod movement;
-pub mod pathfinding;
 pub mod stats;
 pub mod world;

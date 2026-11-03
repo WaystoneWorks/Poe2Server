@@ -965,19 +965,6 @@ pub struct MovementConfig {
     /// 2853).
     #[serde(default = "default_sprint_buff_rows")]
     pub sprint_buff_rows: [u16; 3],
-    /// After a sprint ends the client's walk is over and it coasts to a stop along its last
-    /// direction. First step as a multiple of the walking step of a client frame (default 1.0614:
-    /// 1.309 cells against 1.233; measured on the official 2026-10-20 sprint ends and six sessions
-    /// of ours, docs/protocol/movement.md "Coasting after a sprint").
-    #[serde(default = "default_sprint_coast_start_scale")]
-    pub sprint_coast_start_scale: f32,
-    /// Frames over which the coasting step falls linearly to zero (default 29.5: 30 steps, about
-    /// 20 cells; same source).
-    #[serde(default = "default_sprint_coast_frames")]
-    pub sprint_coast_frames: f32,
-    /// Frames between the sprint-off batch and the first coasting step (default 1).
-    #[serde(default = "default_sprint_coast_delay_frames")]
-    pub sprint_coast_delay_frames: u32,
     /// Frames between the sprint-off batch and the end of the client's `SprintEnd` animation
     /// (default 31). While it plays the client starts no WASD walk (`Actor_StartWasdWalk`
     /// `0x141e4fb40` refuses on animation `0x36a`/`0x36b`), so the unscaled direction ack
@@ -1021,29 +1008,12 @@ pub struct MovementConfig {
     pub attack_speed_snap_frames: u32,
     #[serde(default = "default_attack_speed_lock_frames")]
     pub attack_speed_lock_frames: u32,
-    /// Which search plans walks, rolls and sprints: `"client"` (default), a port of the client's
-    /// own pathfinder that keeps the server's positions where the client's are near walls
-    /// (docs/re/pathfinding.md), or `"approx"`, the older A* with wall sliding.
-    #[serde(default)]
-    pub pathfinder: Pathfinder,
-}
-
-/// `[movement] pathfinder`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Pathfinder {
-    #[default]
-    Client,
-    Approx,
 }
 
 impl Default for MovementConfig {
     fn default() -> Self {
         Self {
             sprint_buff_rows: default_sprint_buff_rows(),
-            sprint_coast_start_scale: default_sprint_coast_start_scale(),
-            sprint_coast_frames: default_sprint_coast_frames(),
-            sprint_coast_delay_frames: default_sprint_coast_delay_frames(),
             sprint_end_anim_frames: default_sprint_end_anim_frames(),
             sprint_wall_stun_off_frames: default_sprint_wall_stun_off_frames(),
             sprint_release_ends_at_sprint_speed: true,
@@ -1053,25 +1023,12 @@ impl Default for MovementConfig {
             attack_speed_ramp_per_second: default_attack_speed_ramp_per_second(),
             attack_speed_snap_frames: default_attack_speed_snap_frames(),
             attack_speed_lock_frames: default_attack_speed_lock_frames(),
-            pathfinder: Pathfinder::default(),
         }
     }
 }
 
 fn default_sprint_buff_rows() -> [u16; 3] {
     [2758, 2737, 2853]
-}
-
-fn default_sprint_coast_start_scale() -> f32 {
-    1.0614
-}
-
-fn default_sprint_coast_frames() -> f32 {
-    29.5
-}
-
-fn default_sprint_coast_delay_frames() -> u32 {
-    1
 }
 
 fn default_sprint_wall_stun_off_frames() -> u32 {

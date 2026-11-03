@@ -571,7 +571,7 @@ fn entry(p: &Person, is_self: bool) -> SocialEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::replay_tests::protocol;
+    use crate::test_support::protocol;
     use poe_proto::Direction;
 
     fn hex(s: &str) -> Vec<u8> {

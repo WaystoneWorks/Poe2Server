@@ -10,7 +10,7 @@ use std::{sync::Arc, time::Duration};
 use poe_cluster::{
     InstanceDirectory, InstanceSpec, LoginSessions, MemoryInstances, MemorySessions,
 };
-use poe_game::locomotion::MovementConfig;
+use poe_game::movement::MovementConfig;
 use poe_net::Reader;
 use poe_proto::{
     Direction, Message, Protocol,
@@ -35,7 +35,7 @@ use crate::{
     live::Live,
     movement::{ActionEvent, Codec, client_input},
     player::Player,
-    replay_tests::{ROLL_SKILL, movement_config, protocol, roll_skill, stat_keys},
+    test_support::{ROLL_SKILL, ScriptedModel, movement_config, protocol, roll_skill, stat_keys},
 };
 
 /// One decoded server message.
@@ -178,6 +178,7 @@ pub(crate) fn actor_init(
         tick_ms: 33,
         first_entity_id: FIRST_ENTITY,
         movement: movement_config(&[roll_skill(None)]),
+        model: Arc::new(ScriptedModel),
         grid: None,
         codec: Codec::new(protocol.clone(), stat_keys()),
         directory: directory.clone(),
@@ -215,7 +216,6 @@ pub(crate) fn join_request(
             account: format!("acc-{name}"),
             admin: false,
             spawn: cell,
-            speed: 37.0,
             movement,
             grid: None,
             appearance: Appearance {
@@ -268,7 +268,7 @@ impl Fixture {
     }
 
     pub fn join(&mut self, name: &str, cell: (i32, i32), movement: MovementConfig) -> Fake {
-        self.join_with(name, cell, movement, 37.0)
+        self.join_with(name, cell, movement)
     }
 
     fn join_with(
@@ -276,12 +276,10 @@ impl Fixture {
         name: &str,
         cell: (i32, i32),
         movement: MovementConfig,
-        speed: f32,
     ) -> Fake {
         let session = self.next_session;
         self.next_session += 1;
-        let (mut request, rx) = join_request(session, name, cell, movement);
-        request.speed = speed;
+        let (request, rx) = join_request(session, name, cell, movement);
         let (reply, mut joined) = oneshot::channel();
         self.actor.handle(Cmd::Join {
             request: Box::new(request),
@@ -294,10 +292,6 @@ impl Fixture {
             joined: joined.try_recv().expect("the actor answered the join"),
         }
         .with_entity()
-    }
-
-    pub fn join_speed(&mut self, name: &str, cell: (i32, i32), speed: f32) -> Fake {
-        self.join_with(name, cell, movement_config(&[roll_skill(None)]), speed)
     }
 
     /// A character with the default test movement (a dodge roll skill).
@@ -423,10 +417,8 @@ fn the_entry_batch_lists_the_players_already_there_then_the_newcomer() {
     assert_eq!(entry[0].blob, b"local Alice");
     assert_eq!(a.joined.players, 1);
 
-    fx.walk(&a, 180, 0);
-    for _ in 0..10 {
-        fx.tick();
-    }
+    fx.teleport(&a, (112, 100));
+    fx.tick();
     let b = fx.join_default("Bob", (300, 300));
     let entry = b.entry(&fx.protocol);
     assert_eq!(entry.len(), 2);
@@ -436,7 +428,7 @@ fn the_entry_batch_lists_the_players_already_there_then_the_newcomer() {
     let blob = PlayerBlob::decode(&entry[0].blob).unwrap();
     assert_eq!(blob.player.name, "Alice");
     assert_eq!((blob.grid_x, blob.grid_y), fx.cell(&a));
-    assert!(blob.grid_x > 100, "Alice walked on: {}", blob.grid_x);
+    assert_eq!(blob.grid_x, 112, "Alice's current cell, not her spawn");
     assert_eq!(blob.flags, 2);
     assert_eq!(
         (entry[1].header.entity_id, entry[1].blob.as_slice()),
@@ -768,24 +760,11 @@ fn player_debug_state_is_in_the_frame_only_when_asked_for() {
     fx.tick();
     let frame = a.rx.try_recv().unwrap();
     let debug = frame.own.debug.expect("want_debug");
-    assert_eq!(debug.wasd, (180, 0));
-    assert!(debug.state.starts_with("Walking"), "{}", debug.state);
+    assert_eq!(
+        debug.fields,
+        [("state", "Scripted".to_string()), ("wasd", "180 0".to_string())]
+    );
     assert_eq!(frame.own.cell, fx.cell(&a));
-}
-
-#[test]
-fn each_character_keeps_its_own_speed_in_the_shared_world() {
-    let mut fx = Fixture::new();
-    let slow = fx.join_default("Alice", (100, 100));
-    let fast = fx.join_speed("Bob", (100, 300), 74.0);
-    fx.walk(&slow, 180, 0);
-    fx.walk(&fast, 180, 0);
-    for _ in 0..30 {
-        fx.tick();
-    }
-    let (a, b) = (fx.cell(&slow).0 - 100, fx.cell(&fast).0 - 100);
-    assert!(a > 20 && b > 40, "{a} {b}");
-    assert!((b as f32 / a as f32 - 2.0).abs() < 0.2, "{a} {b}");
 }
 
 // --- the real task, with paused time ----------------------------------------------------
@@ -884,7 +863,7 @@ async fn the_real_actor_serves_two_sessions_on_one_clock() {
     assert_eq!(b.joined.players, 2);
     // Alice's walk arrives at both on the shared clock.
     a.player
-        .input(poe_game::locomotion::MoveInput::Direction { x: 180, y: 0 });
+        .input(poe_game::movement::MoveInput::Direction { x: 180, y: 0 });
     let mut seen = [0usize; 2];
     for _ in 0..3 {
         for (i, s) in [&mut a, &mut b].into_iter().enumerate() {
@@ -1033,7 +1012,7 @@ async fn an_empty_actor_ends_after_the_idle_time_and_the_next_join_starts_a_new_
 /// remote roll batches carry two of the three stun threshold stats, the local one all three).
 #[test]
 fn a_remote_roll_batch_leaves_out_owner_only_stats() {
-    use crate::replay_tests::stat_keys;
+    use crate::test_support::stat_keys;
     let owner_only = "stun_threshold_+%_final_while_performing_action";
     let mut fx = Fixture::customised(FIRST_ENTITY, |mut init| {
         init.codec = Codec::new(init.codec.protocol.clone(), stat_keys())

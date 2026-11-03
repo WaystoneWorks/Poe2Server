@@ -1,10 +1,9 @@
 //! Game rules built on game data: a player character's default stats, and the instance
-//! simulation (world, terrain grids, server-authoritative movement).
+//! world (entities, terrain grids) with its movement seam.
 
-pub mod clientmotion;
-pub mod clientpath;
 pub mod grid;
-pub mod locomotion;
+pub mod motion_data;
 pub mod movement;
+pub mod standstill;
 pub mod stats;
 pub mod world;

@@ -5,17 +5,16 @@
 //! returned [`WorldEvent`]s are what the clients must be told, in order. The world never
 //! reads a clock: the server owns timing and calls `tick` every `tick_ms`.
 //!
-//! Entities are plain structs with their components as fields. Today the only component is
-//! [`Locomotion`] (server-authoritative movement); more (stats, skills, AI) get their own
-//! fields and event variants. The world is not tied to one player: every player entity of the
-//! instance is spawned into the same world and gets its own movement, which is what
-//! multiplayer reuses.
+//! Entities are plain structs with their components as fields. Today the only component is the
+//! entity's [`Mover`], made by the world's [`MovementModel`] (the movement seam,
+//! [`crate::movement`]); more (stats, skills, AI) get their own fields and event variants. Every
+//! player entity of the instance is spawned into the same world and gets its own mover.
 
 use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
     grid::GridSource,
-    locomotion::{Cell, Locomotion, MoveEvent, MoveInput, MovementConfig, StepCtx},
+    movement::{Cell, MoveEvent, MoveInput, Mover, MovementConfig, MovementModel, StepCtx},
 };
 
 /// An entity id, unique within a world (the protocol's `u32` entity id).
@@ -47,14 +46,13 @@ impl WorldConfig {
 }
 
 /// An entity and its components.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Entity {
     pub id: EntityId,
     /// Next free buff index of this entity (shared by all components that add buffs).
     pub next_buff: u16,
-    pub movement: Locomotion,
-    /// This entity's own movement configuration (a character class with other sprint values
-    /// than the world's default); `None`: the world's.
+    pub movement: Box<dyn Mover>,
+    /// This entity's own movement configuration (its class's game data); `None`: the world's.
     pub config: Option<MovementConfig>,
 }
 
@@ -83,6 +81,7 @@ impl WorldEvent {
 
 pub struct World {
     config: WorldConfig,
+    model: Arc<dyn MovementModel>,
     grid: Arc<dyn GridSource>,
     frame: u64,
     next_entity: u32,
@@ -92,8 +91,13 @@ pub struct World {
 }
 
 impl World {
-    pub fn new(config: WorldConfig, grid: Arc<dyn GridSource>) -> Self {
+    pub fn new(
+        config: WorldConfig,
+        model: Arc<dyn MovementModel>,
+        grid: Arc<dyn GridSource>,
+    ) -> Self {
         Self {
+            model,
             next_entity: config.first_entity_id,
             next_action: config.first_action_id,
             config,
@@ -117,6 +121,10 @@ impl World {
         &self.config
     }
 
+    pub fn model(&self) -> &Arc<dyn MovementModel> {
+        &self.model
+    }
+
     pub fn grid(&self) -> &Arc<dyn GridSource> {
         &self.grid
     }
@@ -126,8 +134,8 @@ impl World {
         self.grid = grid;
     }
 
-    /// While paused, frames still count but nothing moves and nothing is answered; inputs
-    /// wait (solo escape menu). Only the stance timer runs.
+    /// While paused, frames still count and movers get [`Mover::tick_paused`] (solo escape
+    /// menu).
     pub fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
     }
@@ -136,36 +144,30 @@ impl World {
         self.paused
     }
 
-    /// Adds a player entity standing on `cell`, walking at the configured speed.
+    /// Adds a player entity standing on `cell` with the world's movement configuration.
     pub fn spawn_player(&mut self, cell: Cell) -> EntityId {
-        let speed = self.config.movement.walk_speed;
-        self.spawn_player_with_speed(cell, speed)
+        self.spawn_player_with_config(cell, None)
     }
 
-    /// Like [`spawn_player`](Self::spawn_player) with an explicit speed (cells per second,
-    /// from the character's stats).
-    pub fn spawn_player_with_speed(&mut self, cell: Cell, speed: f32) -> EntityId {
-        self.spawn_player_with_config(cell, speed, None)
-    }
-
-    /// Like [`spawn_player_with_speed`](Self::spawn_player_with_speed) with the entity's own
-    /// movement configuration (`None`: the world's). Players of different classes share one
-    /// world, so the class-dependent values (sprint bonus, roll distance, walking speed) live
-    /// on the entity.
+    /// Like [`spawn_player`](Self::spawn_player) with the entity's own movement configuration
+    /// (`None`: the world's). Players of different classes share one world, so the
+    /// class-dependent values live on the entity.
     pub fn spawn_player_with_config(
         &mut self,
         cell: Cell,
-        speed: f32,
         config: Option<MovementConfig>,
     ) -> EntityId {
         let id = EntityId(self.next_entity);
         self.next_entity += 1;
+        let movement = self
+            .model
+            .spawn(cell, config.as_ref().unwrap_or(&self.config.movement));
         self.entities.insert(
             id,
             Entity {
                 id,
                 next_buff: 0,
-                movement: Locomotion::new(cell, speed),
+                movement,
                 config,
             },
         );
@@ -249,38 +251,77 @@ mod tests {
     use super::*;
     use crate::{
         grid::VecGrid,
-        locomotion::{SkillIds, UseSkill},
-        movement::Open,
+        movement::{Open, SkillIds},
+        standstill::StandStillModel,
     };
 
-    const ROLL: u32 = 0x8000_0040;
+    /// Records what the world hands its movers: one event per input, echoing the frame's action
+    /// and buff counters, so the tests see the world's bookkeeping.
+    #[derive(Debug)]
+    struct Probe {
+        cell: Cell,
+        inputs: Vec<MoveInput>,
+    }
 
-    fn world() -> World {
-        let mut cfg = MovementConfig::new(
+    impl Mover for Probe {
+        fn input(&mut self, input: MoveInput) {
+            self.inputs.push(input);
+        }
+        fn teleport(&mut self, cell: Cell) {
+            self.cell = cell;
+        }
+        fn tick(&mut self, ctx: &mut StepCtx) -> Vec<MoveEvent> {
+            let blocked = !ctx.terrain.walkable(self.cell.0, self.cell.1);
+            self.inputs
+                .drain(..)
+                .map(|_| {
+                    let action = *ctx.next_action;
+                    *ctx.next_action += 1;
+                    let index = *ctx.next_buff;
+                    *ctx.next_buff += 1;
+                    MoveEvent::BuffAdded {
+                        index,
+                        row: action,
+                        fade: blocked.then_some(ctx.dt),
+                    }
+                })
+                .collect()
+        }
+        fn cell(&self) -> Cell {
+            self.cell
+        }
+    }
+
+    struct ProbeModel;
+
+    impl MovementModel for ProbeModel {
+        fn name(&self) -> &'static str {
+            "probe"
+        }
+        fn spawn(&self, cell: Cell, _: &MovementConfig) -> Box<dyn Mover> {
+            Box::new(Probe {
+                cell,
+                inputs: Vec::new(),
+            })
+        }
+    }
+
+    fn config() -> WorldConfig {
+        WorldConfig::new(MovementConfig::new(
             SkillIds {
                 move_skill: 0x2000_2909,
-                roll_skill: ROLL,
+                roll_skill: 0x8000_0040,
                 roll_skill_other_set: u32::MAX,
             },
             [1, 2, 3],
-        );
-        let (curves, offset_scale) = crate::clientmotion::hub_motion_or_panic();
-        cfg.curves = Some(curves);
-        cfg.offset_scale = offset_scale;
-        World::new(WorldConfig::new(cfg), Arc::new(Open))
+        ))
     }
 
-    fn roll() -> MoveInput {
-        MoveInput::UseSkill(UseSkill {
-            skill: ROLL,
-            flags: 0x400,
-            unk: 0xff,
-            target_flags: 0,
-            entity: None,
-            x: 20,
-            y: 0,
-        })
+    fn world() -> World {
+        World::new(config(), Arc::new(ProbeModel), Arc::new(Open))
     }
+
+    const WALK: MoveInput = MoveInput::Direction { x: 180, y: 0 };
 
     #[test]
     fn entity_ids_are_unique_per_world_and_start_where_configured() {
@@ -293,155 +334,51 @@ mod tests {
         assert_eq!(w.spawn_player((1, 1)), EntityId(3));
         assert_eq!(w.entities().count(), 2);
         assert!(!w.input(a, MoveInput::SkillInputEnd));
-        let mut cfg = world().config.clone();
+        let mut cfg = config();
         cfg.first_entity_id = 100;
-        let mut other = World::new(cfg, Arc::new(Open));
+        let mut other = World::new(cfg, Arc::new(ProbeModel), Arc::new(Open));
         assert_eq!(other.spawn_player((0, 0)), EntityId(100));
     }
 
     #[test]
-    fn the_frame_clock_is_owned_by_the_caller() {
-        let mut w = world();
-        let p = w.spawn_player((10, 10));
-        assert_eq!(w.frame(), 0);
-        assert!(w.tick().is_empty());
-        assert_eq!(w.frame(), 1);
-        w.input(p, MoveInput::Direction { x: 180, y: 0 });
-        // Input is answered by the next tick, stamped with its frame.
-        let ev = w.tick();
-        assert_eq!(ev.len(), 1);
-        assert_eq!((ev[0].frame, ev[0].entity), (2, p));
-        assert!(matches!(
-            ev[0].movement(),
-            Some(MoveEvent::MoveAck {
-                dir: (180, 0),
-                cell: (10, 10)
-            })
-        ));
-        // `tick_ms` sets the step.
-        let x0 = w.entity(p).unwrap().movement.position().0;
-        w.tick();
-        let step = w.entity(p).unwrap().movement.position().0 - x0;
-        assert!((step - 37.0 * 0.033).abs() < 1e-3);
-    }
-
-    #[test]
-    fn tick_ms_is_configurable() {
-        let mut w = world();
-        w.config.tick_ms = 50;
-        let p = w.spawn_player((10, 10));
-        w.input(p, MoveInput::Direction { x: 180, y: 0 });
-        w.tick();
-        let x0 = w.entity(p).unwrap().movement.position().0;
-        w.tick();
-        let step = w.entity(p).unwrap().movement.position().0 - x0;
-        assert!((step - 37.0 * 0.05).abs() < 1e-3, "{step}");
-    }
-
-    #[test]
-    fn players_move_independently_and_events_name_their_entity() {
+    fn input_is_answered_by_the_next_tick_in_entity_order() {
         let mut w = world();
         let a = w.spawn_player((10, 10));
         let b = w.spawn_player((100, 100));
-        w.input(a, MoveInput::Direction { x: 0, y: 180 });
-        w.input(b, roll());
+        assert_eq!(w.frame(), 0);
+        assert!(w.tick().is_empty());
+        assert_eq!(w.frame(), 1);
+        w.input(b, WALK);
+        w.input(a, WALK);
         let ev = w.tick();
-        assert!(
-            ev.iter()
-                .any(|e| e.entity == a && matches!(e.movement(), Some(MoveEvent::MoveAck { .. })))
-        );
-        assert!(
-            ev.iter()
-                .any(|e| e.entity == b
-                    && matches!(e.movement(), Some(MoveEvent::ActionStart { .. })))
-        );
-        // Events come entity by entity.
-        let order: Vec<_> = ev.iter().map(|e| e.entity).collect();
-        assert!(order.windows(2).all(|p| p[0] <= p[1]));
-        for _ in 0..10 {
-            w.tick();
-        }
-        assert_eq!(w.entity(a).unwrap().movement.cell().0, 10);
-        assert!(w.entity(a).unwrap().movement.cell().1 > 14);
-        assert!(w.entity(b).unwrap().movement.cell().0 > 110);
-        assert_eq!(w.entity(b).unwrap().movement.cell().1, 100);
+        let who: Vec<_> = ev.iter().map(|e| (e.frame, e.entity)).collect();
+        assert_eq!(who, [(2, a), (2, b)]);
     }
 
     #[test]
-    fn action_ids_are_one_counter_for_the_world() {
+    fn action_ids_are_one_counter_for_the_world_and_buffs_count_per_entity() {
         let mut w = world();
         let a = w.spawn_player((0, 0));
         let b = w.spawn_player((50, 50));
-        w.input(a, roll());
-        w.input(b, roll());
-        let ids: Vec<u16> = w
+        for p in [a, b, a] {
+            w.input(p, WALK);
+        }
+        let got: Vec<_> = w
             .tick()
             .iter()
-            .filter_map(|e| match e.movement() {
-                Some(MoveEvent::ActionStart { action, .. }) => Some(*action),
-                _ => None,
+            .map(|e| match e.movement() {
+                Some(MoveEvent::BuffAdded { index, row, .. }) => (e.entity, *index, *row),
+                other => panic!("{other:?}"),
             })
             .collect();
-        assert_eq!(ids, [32768, 32769]);
+        assert_eq!(got, [(a, 0, 32768), (a, 1, 32769), (b, 0, 32770)]);
     }
 
     #[test]
-    fn an_entity_can_carry_its_own_movement_config() {
-        use crate::locomotion::ActionKind;
-        let mut w = world();
-        let a = w.spawn_player((0, 0));
-        // This entity does not know the roll skill: the same request is a generic action.
-        let mut other = w.config().movement.clone();
-        other.skills.roll_skill = 0x8000_0041;
-        let b = w.spawn_player_with_config((50, 50), 37.0, Some(other));
-        w.input(a, roll());
-        w.input(b, roll());
-        let kinds: Vec<(EntityId, ActionKind)> = w
-            .tick()
-            .iter()
-            .filter_map(|e| match e.movement() {
-                Some(MoveEvent::ActionStart { kind, .. }) => Some((e.entity, *kind)),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(kinds, [(a, ActionKind::Roll), (b, ActionKind::Other)]);
-    }
-
-    #[test]
-    fn each_player_has_own_buff_indices() {
-        let mut w = world();
-        let a = w.spawn_player((0, 0));
-        let b = w.spawn_player((50, 50));
-        for p in [a, b] {
-            w.input(p, MoveInput::SprintInput { held: true });
-            w.input(p, roll());
-        }
-        let mut rows = Vec::new();
-        for _ in 0..16 {
-            for e in w.tick() {
-                if let Some(MoveEvent::BuffAdded { index, row, .. }) = e.movement() {
-                    rows.push((e.entity, *index, *row));
-                }
-            }
-        }
-        assert_eq!(
-            rows,
-            [
-                (a, 0, 1),
-                (a, 1, 2),
-                (a, 2, 3),
-                (b, 0, 1),
-                (b, 1, 2),
-                (b, 2, 3)
-            ]
-        );
-    }
-
-    #[test]
-    fn pause_freezes_the_simulation_but_not_the_clock() {
+    fn pause_hands_movers_the_paused_tick() {
         let mut w = world();
         let p = w.spawn_player((10, 10));
-        w.input(p, MoveInput::Direction { x: 180, y: 0 });
+        w.input(p, WALK);
         w.set_paused(true);
         assert!(w.tick().is_empty());
         assert_eq!(w.frame(), 1);
@@ -450,25 +387,32 @@ mod tests {
     }
 
     #[test]
-    fn teleport_and_grid_swap() {
+    fn movers_see_the_swapped_grid_and_tick_ms() {
         let mut w = world();
+        w.config.tick_ms = 50;
+        let p = w.spawn_player((45, 10));
+        let mut grid = VecGrid::open(100, 100);
+        grid.set(45, 10, false);
+        w.set_grid(Arc::new(grid));
+        w.input(p, WALK);
+        assert!(matches!(
+            w.tick()[0].movement(),
+            Some(MoveEvent::BuffAdded { fade: Some(dt), .. }) if (*dt - 0.05).abs() < 1e-6
+        ));
+    }
+
+    #[test]
+    fn the_stub_model_stands_and_teleports() {
+        let mut w = World::new(config(), Arc::new(StandStillModel), Arc::new(Open));
         let p = w.spawn_player((10, 10));
+        w.input(p, WALK);
+        assert!(w.tick().is_empty());
         assert!(w.teleport(p, (40, 40)));
         let ev = w.tick();
-        assert!(matches!(
+        assert_eq!(
             ev[0].movement(),
-            Some(MoveEvent::Teleport { cell: (40, 40) })
-        ));
-        // A grid that arrives later blocks movement.
-        let mut grid = VecGrid::open(100, 100);
-        for y in 0..100 {
-            grid.set(45, y, false);
-        }
-        w.set_grid(Arc::new(grid));
-        w.input(p, MoveInput::Direction { x: 180, y: 0 });
-        for _ in 0..30 {
-            w.tick();
-        }
-        assert!(w.entity(p).unwrap().movement.cell().0 < 45);
+            Some(&MoveEvent::Teleport { cell: (40, 40) })
+        );
+        assert_eq!(w.entity(p).unwrap().movement.cell(), (40, 40));
     }
 }

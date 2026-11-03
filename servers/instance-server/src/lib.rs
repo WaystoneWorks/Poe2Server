@@ -37,7 +37,7 @@ mod actor_tests;
 #[cfg(test)]
 mod mod_tests;
 #[cfg(test)]
-mod replay_tests;
+mod test_support;
 use poe_data::{
     GameData,
     template::ObjectTemplate,
@@ -385,7 +385,6 @@ impl InstanceServer {
             account: account.clone(),
             admin: self.is_admin(&account),
             spawn: cell,
-            speed: setup.speed,
             movement: setup.movement.clone(),
             grid,
             appearance,
@@ -501,6 +500,7 @@ impl InstanceServer {
             tick_ms: self.config.instance.tick_ms.max(1) as u32,
             first_entity_id: self.config.instance.first_entity_id,
             movement: first.movement.clone(),
+            model: Arc::new(poe_game::standstill::StandStillModel),
             grid: first.grid.clone(),
             codec: {
                 let public = stats.clone();
@@ -1391,17 +1391,17 @@ impl InstanceServer {
             speed,
             sprint_bonus,
         );
-        movement.sprint.clearance_level = sprint_clearance;
+        movement.sprint_clearance_level = sprint_clearance;
         // Required: the client's roll and sprint end move by these curves.
         use anyhow::Context as _;
-        let curves = poe_game::clientmotion::MotionCurves::load(self.data.files())
+        let curves = poe_game::motion_data::MotionCurves::load(self.data.files())
             .context("reading the movement curves from the game data")?
             .context("no movement curves in the game data (basedodgeroll, basesprint onerig.amd)")?;
         movement.curves = Some(Arc::new(curves));
         movement.offset_scale =
-            poe_game::clientmotion::load_offset_scale(self.data.files(), &class.metadata_id)
+            poe_game::motion_data::load_offset_scale(self.data.files(), &class.metadata_id)
                 .with_context(|| format!("no offset_scale in {}.ao or its parents", class.metadata_id))?;
-        Ok(PlayerSetup { skills, speed, movement })
+        Ok(PlayerSetup { skills, movement })
     }
 
     /// After the client generated the area and the actor accepted the session: local player,
@@ -1570,9 +1570,8 @@ fn sweep_list(configured: &std::path::Path) -> Option<Vec<(String, u32)>> {
 /// What the session knows about its character before it joins the instance.
 struct PlayerSetup {
     skills: Vec<player::OwnedSkill>,
-    /// Walking speed, cells per second.
-    speed: f32,
-    movement: poe_game::locomotion::MovementConfig,
+    /// Includes the walking speed.
+    movement: poe_game::movement::MovementConfig,
 }
 
 /// The local player index the server gives the character (official servers use 1).

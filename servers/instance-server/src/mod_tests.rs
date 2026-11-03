@@ -19,7 +19,7 @@ use poe_mod_host::{EVENT_COMMAND, EVENT_PLAYER_JOIN, EVENT_PLAYER_LEAVE, EVENT_T
 use crate::{
     actor::Cmd,
     actor_tests::{Fake, Fixture},
-    replay_tests::{movement_config, roll_skill},
+    test_support::{movement_config, roll_skill},
     modlink::ModSink,
 };
 

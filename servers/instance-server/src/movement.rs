@@ -1,4 +1,4 @@
-//! Wire glue between a session and the `poe-game` movement simulation.
+//! Wire glue between a session and the movement seam (`poe_game::movement`).
 //!
 //! Two pure mappings and nothing else, since the `World` lives in the instance actor and serves
 //! every session of the instance:
@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use poe_game::locomotion::{MoveEvent, MoveInput, UseSkill as SimUseSkill};
+use poe_game::movement::{MoveEvent, MoveInput, UseSkill as SimUseSkill};
 use poe_net::{DecodeError, Reader, Writer};
 use poe_proto::{
     Direction, Message, Protocol,

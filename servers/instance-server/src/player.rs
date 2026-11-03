@@ -3,8 +3,9 @@
 //!
 //! Movement is not computed here. The client runs in lockstep (docs/protocol/movement.md): it
 //! starts a movement only when the server says so, and the server answers each input with the
-//! official messages. That logic is `poe_game::world::World` / `Locomotion`, owned by the
-//! instance's actor ([`crate::actor`]) together with every other player of the instance:
+//! official messages. That is the movement seam (`poe_game::movement`: a `Mover` per entity in
+//! `poe_game::world::World`), owned by the instance's actor ([`crate::actor`]) together with
+//! every other player of the instance:
 //!
 //! - client packet -> [`crate::movement::client_input`] -> [`Player::input`] -> actor
 //! - actor frame -> [`crate::actor::Frame`] -> the session writes it -> [`Player::apply`] keeps
@@ -14,7 +15,7 @@
 //! and tells the others); [`Player::leave`] does the same and returns the final cell.
 
 use poe_data::views::GrantedSkill;
-use poe_game::locomotion::{MoveInput, MovementConfig as SimConfig, SkillIds};
+use poe_game::movement::{MoveInput, MovementConfig as SimConfig, SkillIds};
 use poe_proto::entity::Skill;
 use tokio::sync::oneshot;
 
@@ -35,14 +36,14 @@ pub const BASIC_ACTION_SKILL: u32 = 0x2000_0000;
 /// Roll length when the skill does not list `dodge_roll_base_travel_distance`.
 const ROLL_DEFAULT_DISTANCE: f32 = 46.0;
 
-/// Builds the simulation's movement configuration from game data and `[movement]`:
+/// A character's movement facts from game data and `[movement]`:
 /// - `move_skill`: the Move basic action (`BASIC_ACTION_SKILL | ActionTypes key`);
-/// - the roll skill: the owned skill whose action type is `roll_action` (DodgeRoll), with its
-///   `dodge_roll_base_travel_distance`;
+/// - the roll skills: the owned skills whose action type is `roll_action` (DodgeRoll, one per
+///   weapon set), the first one's `dodge_roll_base_travel_distance`;
 /// - `speed`: the class's walking speed, `sprint_bonus` its `sprint_movement_speed_+%`.
 ///
-/// Skills that are missing get an id nothing sends (`u32::MAX`), so the component treats
-/// everything as a generic action.
+/// Skills that are missing get an id nothing sends (`u32::MAX`). The curves, `offset_scale` and
+/// clearance level are set by the caller (they come from the class's files).
 pub fn sim_config(
     config: &poe_config::MovementConfig,
     skills: &[OwnedSkill],
@@ -65,23 +66,10 @@ pub fn sim_config(
         config.sprint_buff_rows,
     );
     cfg.walk_speed = speed;
-    cfg.sprint.end_anim_frames = config.sprint_end_anim_frames;
-    cfg.sprint.wall_stun_off_frames = config.sprint_wall_stun_off_frames;
-    cfg.sprint.release_ends_at_sprint_speed = config.sprint_release_ends_at_sprint_speed;
-    cfg.sprint.release_window_frames = config.sprint_release_window_frames;
-    cfg.sprint.cursor_match_degrees = config.sprint_cursor_match_degrees;
-    cfg.attack_speed.floor = config.attack_speed_floor;
-    cfg.attack_speed.ramp_per_second = config.attack_speed_ramp_per_second;
-    cfg.attack_speed.snap_frames = config.attack_speed_snap_frames;
-    cfg.attack_speed.lock_frames = config.attack_speed_lock_frames;
-    cfg.roll.travel_distance = roll
+    cfg.roll_travel_distance = roll
         .and_then(|s| s.granted.constant_stat("dodge_roll_base_travel_distance"))
         .map_or(ROLL_DEFAULT_DISTANCE, |d| d as f32);
-    if let Some(bonus) = sprint_bonus {
-        cfg.sprint.speed_scale = 1.0 + bonus / 100.0;
-        cfg.sprint.move_speed_percent = bonus.round() as i32;
-        cfg.sprint.velocity_permyriad = (bonus * 100.0).round() as i32;
-    }
+    cfg.sprint_bonus_percent = sprint_bonus;
     cfg
 }
 
@@ -182,9 +170,13 @@ impl Player {
         self.own.position
     }
 
-    /// `Debug` of the movement state at the latest frame (empty without `want_debug`).
+    /// The mover's `state` debug field at the latest frame (empty without `want_debug`).
     pub fn state(&self) -> &str {
-        self.own.debug.as_ref().map_or("", |d| d.state.as_str())
+        self.own
+            .debug
+            .as_ref()
+            .and_then(|d| d.fields.iter().find(|(k, _)| *k == "state"))
+            .map_or("", |(_, v)| v.as_str())
     }
 
     /// Leaves the instance and returns the cell the entity was in (the latest frame's when the
@@ -215,9 +207,9 @@ impl Player {
         kv("frame", self.own.frame.to_string());
         kv("server_pos", format!("{x:.3} {y:.3}"));
         if let Some(d) = &self.own.debug {
-            kv("state", d.state.clone());
-            kv("wasd", format!("{} {}", d.wasd.0, d.wasd.1));
-            kv("sprint_held", d.sprint_held.to_string());
+            for (k, v) in &d.fields {
+                kv(k, v.clone());
+            }
             kv("combat_stance", d.combat_stance.to_string());
             kv("paused", d.paused.to_string());
         }

@@ -66,35 +66,10 @@ tick_ms = 33
 first_entity_id = 12000
 
 [movement]
-# Server-side movement simulation (crates/poe-game, docs/protocol/movement.md). Skill ids,
-# walking speed and roll distance come from game data; these are the values of the official captures.
+# Movement facts the server sends that the game data does not name directly (the movement itself is
+# the client's code behind the movement seam: docs/architecture/instance-world.md in the hub).
 # BuffDefinitions rows of the three buffs a sprint adds.
 sprint_buff_rows = [2758, 2737, 2853]
-# Frames between the sprint-off batch and the end of the client's SprintEnd animation: no WASD walk
-# starts while it plays; at its end a held key walks on (first step one frame later).
-sprint_end_anim_frames = 31
-# Frames from the sprint-off batch of a sprint that ran into a wall to its all_hits_stun_you off.
-sprint_wall_stun_off_frames = 7
-# The values above are the walking-speed case. SprintEnd plays at the movement speed seen by the client's
-# end check: a sprint ended by the release batch (Space up after must_sprint went off) sees the sprint speed
-# on the private client, so the animation lasts 1/1.5 as long.
-sprint_release_ends_at_sprint_speed = true
-# A zero direction within this many frames after a cursor sprint's end means the keys were already
-# up when the restart arrived (the client coasts instead of walking on); measured 1-5 frames.
-# In click-to-move mode (no keys) the sprint coasts at once; this is how long vectors in flight are ignored.
-sprint_release_window_frames = 6
-# A key-shaped direction (axis or exact diagonal) after a sprint is the cursor's when the roll key's cursor
-# offset points within this many degrees of it (an exactly diagonal cursor sends the same vector as W).
-sprint_cursor_match_degrees = 10
-# An attack slows walking (docs/protocol/movement.md, "Action speed factor"); measured on the client's
-# steps in the official 2026-10-20 capture. Factor the attack slows walking to.
-attack_speed_floor = 0.3
-# Ramp rate of the factor, per second (down from the attack's start, up after the lock).
-attack_speed_ramp_per_second = 1.5
-# Frames after the attack's start at which the factor drops to the floor at once.
-attack_speed_snap_frames = 7
-# Frames after the attack's start from which the factor ramps back to 1.
-attack_speed_lock_frames = 12
 
 [dev]
 # Development and research tools; none are needed for normal play.

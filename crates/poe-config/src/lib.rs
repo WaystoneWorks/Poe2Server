@@ -956,111 +956,25 @@ fn default_tick_ms() -> u64 {
     33
 }
 
-/// `[movement]`: tuning of the server-side movement simulation (`poe-game`'s `Locomotion`).
-/// Everything else (skill ids, walking speed, roll distance) comes from game data; the defaults
-/// here are the values of the official captures.
+/// `[movement]`: movement facts the server sends and the game data does not name directly.
 #[derive(Debug, Clone, Deserialize)]
 pub struct MovementConfig {
     /// `BuffDefinitions` rows of the three buffs a sprint adds (official captures: 2758, 2737,
     /// 2853).
     #[serde(default = "default_sprint_buff_rows")]
     pub sprint_buff_rows: [u16; 3],
-    /// Frames between the sprint-off batch and the end of the client's `SprintEnd` animation
-    /// (default 31). While it plays the client starts no WASD walk (`Actor_StartWasdWalk`
-    /// `0x141e4fb40` refuses on animation `0x36a`/`0x36b`), so the unscaled direction ack
-    /// restarts nothing; at its end a held key starts a Move by itself (first step one frame
-    /// later; batch + 31 measured in three runs of ours, docs/protocol/movement.md).
-    #[serde(default = "default_sprint_end_anim_frames")]
-    pub sprint_end_anim_frames: u32,
-    /// Frames from a wall's sprint-off batch to its `all_hits_stun_you` off (official 7 to 8).
-    #[serde(default = "default_sprint_wall_stun_off_frames")]
-    pub sprint_wall_stun_off_frames: u32,
-    /// The coast and `SprintEnd` values above are the walking-speed case. When true (default),
-    /// a sprint ended by the release batch (Space released after `must_sprint` went off) plays
-    /// `SprintEnd` at sprint speed, as the private client does: coast and animation last
-    /// 1/1.5 as long over the same distance (docs/protocol/movement.md, "Coasting after a
-    /// sprint"). The official client of the 2026-10-20 captures did not.
-    #[serde(default = "default_true")]
-    pub sprint_release_ends_at_sprint_speed: bool,
-    /// A zero direction this many frames after the sprint-off batch, after a sprint that
-    /// followed the cursor (Space only), means the keys were already up when the restart reached
-    /// the client, which coasts (default 6: the client sends the zero 1 to 2 frames after the
-    /// Space release with a free-angle cursor, official `f4584` -> `f4586`, and 4 to 5 with an
-    /// exactly diagonal one). In click-to-move mode (no keys) the sprint coasts at once and this
-    /// is how long cursor vectors still in flight are ignored.
-    #[serde(default = "default_sprint_release_window_frames")]
-    pub sprint_release_window_frames: u32,
-    /// A key-shaped direction (axis or exact diagonal) after a sprint counts as the cursor's when
-    /// the roll key's cursor offset points within this many degrees of it (default 10; the
-    /// client's cursor vector and the roll target differ by up to about 6 degrees). An exactly
-    /// diagonal cursor sends the same vector as W.
-    #[serde(default = "default_sprint_cursor_match_degrees")]
-    pub sprint_cursor_match_degrees: f32,
-    /// An attack slows walking (docs/protocol/movement.md, "Action speed factor"): the speed
-    /// factor ramps down at `attack_speed_ramp_per_second`, drops to `attack_speed_floor`
-    /// `attack_speed_snap_frames` after the attack's start and ramps back to 1 after
-    /// `attack_speed_lock_frames`. Measured on the official 2026-10-20 capture.
-    #[serde(default = "default_attack_speed_floor")]
-    pub attack_speed_floor: f32,
-    #[serde(default = "default_attack_speed_ramp_per_second")]
-    pub attack_speed_ramp_per_second: f32,
-    #[serde(default = "default_attack_speed_snap_frames")]
-    pub attack_speed_snap_frames: u32,
-    #[serde(default = "default_attack_speed_lock_frames")]
-    pub attack_speed_lock_frames: u32,
 }
 
 impl Default for MovementConfig {
     fn default() -> Self {
         Self {
             sprint_buff_rows: default_sprint_buff_rows(),
-            sprint_end_anim_frames: default_sprint_end_anim_frames(),
-            sprint_wall_stun_off_frames: default_sprint_wall_stun_off_frames(),
-            sprint_release_ends_at_sprint_speed: true,
-            sprint_release_window_frames: default_sprint_release_window_frames(),
-            sprint_cursor_match_degrees: default_sprint_cursor_match_degrees(),
-            attack_speed_floor: default_attack_speed_floor(),
-            attack_speed_ramp_per_second: default_attack_speed_ramp_per_second(),
-            attack_speed_snap_frames: default_attack_speed_snap_frames(),
-            attack_speed_lock_frames: default_attack_speed_lock_frames(),
         }
     }
 }
 
 fn default_sprint_buff_rows() -> [u16; 3] {
     [2758, 2737, 2853]
-}
-
-fn default_sprint_wall_stun_off_frames() -> u32 {
-    7
-}
-
-fn default_sprint_end_anim_frames() -> u32 {
-    31
-}
-
-fn default_sprint_release_window_frames() -> u32 {
-    6
-}
-
-fn default_sprint_cursor_match_degrees() -> f32 {
-    10.0
-}
-
-fn default_attack_speed_floor() -> f32 {
-    0.3
-}
-
-fn default_attack_speed_ramp_per_second() -> f32 {
-    1.5
-}
-
-fn default_attack_speed_snap_frames() -> u32 {
-    7
-}
-
-fn default_attack_speed_lock_frames() -> u32 {
-    12
 }
 
 /// `[dev]`: development and research tools. None of these are needed for normal play.

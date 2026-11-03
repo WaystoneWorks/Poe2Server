@@ -39,8 +39,7 @@ use std::{
 use poe_cluster::InstanceDirectory;
 use poe_game::{
     grid::GridSource,
-    locomotion::{MoveInput, MovementConfig},
-    movement::Open,
+    movement::{MoveInput, MovementConfig, MovementModel, Open},
     world::{EntityId, Event, World, WorldConfig},
 };
 use poe_proto::{
@@ -95,9 +94,8 @@ pub struct Own {
 /// [`crate::player::Player::debug_state`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct OwnDebug {
-    pub state: String,
-    pub wasd: (i32, i32),
-    pub sprint_held: bool,
+    /// The mover's own fields ([`poe_game::movement::Mover::debug_fields`]).
+    pub fields: Vec<(&'static str, String)>,
     pub combat_stance: bool,
     pub paused: bool,
 }
@@ -151,9 +149,7 @@ pub struct JoinRequest {
     /// The cell the character should start on; the actor moves it to a free cell nearby when
     /// another player stands there.
     pub spawn: (i32, i32),
-    /// Walking speed, cells per second.
-    pub speed: f32,
-    /// This character's movement configuration (class-dependent values).
+    /// This character's movement configuration (class-dependent values, its walking speed).
     pub movement: MovementConfig,
     /// The area's grid, if the session knows it (all sessions of one instance share the
     /// layout).
@@ -225,6 +221,8 @@ pub struct ActorInit {
     pub first_entity_id: u32,
     /// The world's default movement configuration (entities carry their own).
     pub movement: MovementConfig,
+    /// The movement implementation behind the seam (`poe_game::movement`).
+    pub model: Arc<dyn MovementModel>,
     pub grid: Option<Arc<dyn GridSource>>,
     pub codec: Codec,
     pub directory: Arc<dyn InstanceDirectory>,
@@ -278,7 +276,7 @@ impl Actor {
         let grid: Arc<dyn GridSource> = init.grid.clone().unwrap_or_else(|| Arc::new(Open));
         let tick_marker = init.codec.protocol.instance.encode(&SimulationTick)?;
         Ok(Self {
-            world: World::new(config, grid),
+            world: World::new(config, init.model.clone(), grid),
             open_grid,
             members: Vec::new(),
             paused_by: None,
@@ -356,9 +354,7 @@ impl Actor {
             cell: movement.map_or((0, 0), |l| l.cell()),
             position: movement.map_or((0.0, 0.0), |l| l.position()),
             debug: movement.filter(|_| m.want_debug).map(|l| OwnDebug {
-                state: format!("{:?}", l.state()),
-                wasd: l.wasd(),
-                sprint_held: l.sprint_held(),
+                fields: l.debug_fields(),
                 combat_stance: l.in_combat_stance(),
                 paused: self.world.paused(),
             }),
@@ -487,7 +483,7 @@ impl Actor {
         }
         let entity = self
             .world
-            .spawn_player_with_config(cell, req.speed, Some(req.movement));
+            .spawn_player_with_config(cell, Some(req.movement));
         let member = Member {
             session: req.session,
             entity,

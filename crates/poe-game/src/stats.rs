@@ -157,12 +157,44 @@ pub fn character_defaults(template: &ObjectTemplate, class: &CharacterClass, lev
     stats.set("intelligence", intelligence);
     stats.set("maximum_life", maximum_life);
     stats.set("maximum_mana", maximum_mana);
+    let speed = speed_stats(&stats);
+    if speed.permyriad(0) != 0 {
+        stats.set("movement_velocity_+permyriad", speed.permyriad(0));
+    }
     stats
+}
+
+/// The character's stats that change its speed.
+pub fn speed_stats(stats: &Stats) -> crate::movement::SpeedStats {
+    crate::movement::SpeedStats {
+        increased_percent: stats.get("base_movement_velocity_+%"),
+        final_percent: stats.get("combined_movement_velocity_+%_final"),
+        action_speed_percent: stats.get("virtual_action_speed_+%"),
+        velocity_cap: stats.get("movement_velocity_cap"),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every pair the official server sent (2026-10-20, 2026-11-02 captures).
+    #[test]
+    fn the_speed_stat_matches_the_official_values() {
+        let s = |increased_percent, final_percent| crate::movement::SpeedStats {
+            increased_percent,
+            final_percent,
+            ..Default::default()
+        };
+        for (stats, walk, sprint) in [
+            (s(0, 0), 0, 5000),
+            (s(0, -4), -400, 4400),
+            (s(0, -3), -300, 4600),
+            (s(10, -4), 600, 5400),
+        ] {
+            assert_eq!((stats.permyriad(0), stats.permyriad(50)), (walk, sprint));
+        }
+    }
 
     #[test]
     fn resting_state_adds_the_town_conditions() {

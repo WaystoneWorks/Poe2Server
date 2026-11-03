@@ -1394,6 +1394,17 @@ impl InstanceServer {
             sprint_bonus,
         );
         movement.sprint_clearance_level = sprint_clearance;
+        let template_stat = |key: &str| {
+            template.component("Stats").iter().find(|(k, _)| k == key).and_then(|(_, v)| v.parse::<f32>().ok())
+        };
+        if let Some(rate) = template_stat("dodge_roll_sprint_turn_rate") {
+            movement.sprint_turn_rate = rate;
+        }
+        movement.speed_stats = poe_game::stats::speed_stats(&poe_game::stats::character_defaults(
+            &template,
+            &class,
+            ticket.character.level,
+        ));
         // Required: the client's roll and sprint end move by these curves.
         use anyhow::Context as _;
         let curves = poe_game::motion_data::MotionCurves::load(self.data.files())

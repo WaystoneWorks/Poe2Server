@@ -19,6 +19,7 @@
 
 use crate::clientsim::ClientSim;
 use crate::movement::{
+    SpeedStats,
     ACTION_INPUT_FLAG, ActionKind, Cell, Drain, Keyed, MoveEvent, MoveInput, MoveStat, Mover,
     MovementConfig, MovementModel, SkillIds, StepCtx, UseSkill,
 };
@@ -343,6 +344,12 @@ pub struct Locomotion {
     /// The direction the entity last moved or aimed in: the client rolls along it when the
     /// roll has no target (cursor on the player) and no key is held.
     facing: Cell,
+    /// The character's speed stats.
+    speed_stats: SpeedStats,
+    /// Set by [`Mover::set_speed_stats`], applied by the next tick.
+    pending_speed_stats: Option<SpeedStats>,
+    /// The sprint bonus the stat holds now.
+    sprint_percent: i32,
 }
 
 impl Locomotion {
@@ -355,6 +362,8 @@ impl Locomotion {
             config.offset_scale,
         );
         sim.sprint_level = config.sprint_clearance_level;
+        sim.sprint_turn_rate = config.sprint_turn_rate;
+        sim.set_speed_stats(&config.speed_stats);
         Self {
             sim,
             was_coasting: false,
@@ -393,6 +402,9 @@ impl Locomotion {
             cursor_mode: false,
             roll_cursor: (0, 0),
             unscaled_dir: None,
+            speed_stats: config.speed_stats,
+            pending_speed_stats: None,
+            sprint_percent: 0,
             facing: (0, 0),
         }
     }
@@ -498,8 +510,32 @@ impl Locomotion {
         out.finish()
     }
 
+    /// New speed stats arrived: the clients get the results before their Positioned tick
+    /// (official `(0, 0, 0)`, 2026-11-02 f10902), the sprint's bonus included while it runs.
+    fn apply_speed_stats(&mut self, out: &mut Out) {
+        let Some(new) = self.pending_speed_stats.take() else {
+            return;
+        };
+        let old = std::mem::replace(&mut self.speed_stats, new);
+        let mut stats = Vec::new();
+        if new.permyriad(self.sprint_percent) != old.permyriad(self.sprint_percent) {
+            stats.push((MoveStat::MovementVelocityPermyriad, new.permyriad(self.sprint_percent)));
+        }
+        if new.action_speed_percent != old.action_speed_percent {
+            stats.push((MoveStat::VirtualActionSpeed, new.action_speed_percent));
+        }
+        if new.velocity_cap != old.velocity_cap {
+            stats.push((MoveStat::MovementVelocityCap, new.velocity_cap));
+        }
+        if !stats.is_empty() {
+            out.key = Drain::Start;
+            out.push(MoveEvent::Stats(stats));
+        }
+    }
+
     pub fn tick(&mut self, ctx: &mut StepCtx) -> Vec<Keyed> {
         let mut out = Out::new();
+        self.apply_speed_stats(&mut out);
         // Order key 0: before the client's Positioned tick.
         let inbox = std::mem::take(&mut self.inbox);
         self.batch_release = inbox
@@ -651,6 +687,8 @@ impl Locomotion {
                         MoveStat::IsSprinting => self.sim.on_is_sprinting(value != 0),
                         MoveStat::MustSprint => self.sim.on_must_sprint(value != 0),
                         MoveStat::MovementVelocityPermyriad => self.sim.on_permyriad(value),
+                        MoveStat::VirtualActionSpeed => self.sim.on_action_speed(value),
+                        MoveStat::MovementVelocityCap => self.sim.on_velocity_cap(value),
                         _ => {}
                     }
                 }
@@ -1206,7 +1244,8 @@ impl Locomotion {
                 self.deferred.push((off, MoveEvent::BuffRemoved {
                     index: run.buff_base + 1,
                 }));
-                self.deferred.push((off, MoveEvent::Stats(sprint_off_stats())));
+                let off_stats = self.sprint_off_stats();
+                self.deferred.push((off, MoveEvent::Stats(off_stats)));
                 self.deferred.push((ev, MoveEvent::ActionEvent));
                 self.deferred.push((tail, MoveEvent::BuffRemoved {
                     index: run.buff_base + 2,
@@ -1247,7 +1286,7 @@ impl Locomotion {
         out.push_at(off, MoveEvent::BuffRemoved {
             index: run.buff_base + 1,
         });
-        out.push_at(off, MoveEvent::Stats(sprint_off_stats()));
+        out.push_at(off, MoveEvent::Stats(self.sprint_off_stats()));
         out.push_at(ev, MoveEvent::ActionEvent);
         if ack {
             out.push_at(ev, Self::skill_ack(&req, target));
@@ -1336,10 +1375,13 @@ impl Locomotion {
         }
         if let Some(run) = r.sprint {
             let percent = cfg.sprint_bonus_percent.unwrap_or(0.0) as i32;
-            out.push(MoveEvent::Stats(vec![
-                (MoveStat::BaseMoveSpeedFromSprint, percent),
-                (MoveStat::MovementVelocityPermyriad, percent * 100),
-            ]));
+            self.sprint_percent = percent;
+            let speed = self.speed_stats;
+            let mut stats = vec![(MoveStat::MovementVelocityPermyriad, speed.permyriad(percent))];
+            if speed.is_plain() {
+                stats.insert(0, (MoveStat::BaseMoveSpeedFromSprint, percent));
+            }
+            out.push(MoveEvent::Stats(stats));
             out.push(MoveEvent::BuffAdded {
                 index: run.buff_base + 1,
                 row: cfg.sprint_buff_rows[1],
@@ -1591,7 +1633,7 @@ impl Locomotion {
             out.push(MoveEvent::BuffRemoved {
                 index: run.buff_base + 1,
             });
-            out.push(MoveEvent::Stats(sprint_off_stats()));
+            out.push(MoveEvent::Stats(self.sprint_off_stats()));
             out.push(MoveEvent::BuffRemoved {
                 index: run.buff_base + 2,
             });
@@ -1642,7 +1684,7 @@ impl Locomotion {
         out.push(MoveEvent::BuffRemoved {
             index: run.buff_base + 1,
         });
-        out.push(MoveEvent::Stats(sprint_off_stats()));
+        out.push(MoveEvent::Stats(self.sprint_off_stats()));
         out.push(MoveEvent::BuffRemoved {
             index: run.buff_base + 2,
         });
@@ -1660,6 +1702,23 @@ impl Locomotion {
             self.unscaled_dir = Some(self.wasd);
         }
         self.finish_sprint_by_release(ctx);
+    }
+
+    /// The speed goes back to the character's own; the official list is shorter when the speed
+    /// has other sources (2026-11-02 f11239: `(236, -400), (22325, 0), (22342, 0)`).
+    fn sprint_off_stats(&mut self) -> Vec<(MoveStat, i32)> {
+        self.sprint_percent = 0;
+        let speed = self.speed_stats;
+        let mut stats = vec![(MoveStat::MovementVelocityPermyriad, speed.permyriad(0))];
+        if speed.is_plain() {
+            stats.insert(0, (MoveStat::BaseMoveSpeedFromSprint, 0));
+        }
+        stats.push((MoveStat::SprintBlendTimeOverrideMs, 0));
+        stats.push((MoveStat::IsSprinting, 0));
+        if speed.is_plain() {
+            stats.push((MoveStat::VirtualSkillIgnoreNamelockingDynamically, 0));
+        }
+        stats
     }
 
     /// The sprint ran into a wall: the client's Move action ran out and it ended the sprint
@@ -1680,7 +1739,7 @@ impl Locomotion {
         out.push(MoveEvent::BuffRemoved {
             index: run.buff_base + 1,
         });
-        out.push(MoveEvent::Stats(sprint_off_stats()));
+        out.push(MoveEvent::Stats(self.sprint_off_stats()));
         self.due.push((
             ctx.frame + WALL_STUN_OFF_FRAMES,
             Due::WallStunOff {
@@ -1812,16 +1871,11 @@ fn roll_end_stats(out: &mut Out) {
     out.push(MoveEvent::Stats(stats));
 }
 
-fn sprint_off_stats() -> Vec<(MoveStat, i32)> {
-    vec![
-        (MoveStat::BaseMoveSpeedFromSprint, 0),
-        (MoveStat::MovementVelocityPermyriad, 0),
-        (MoveStat::SprintBlendTimeOverrideMs, 0),
-        (MoveStat::IsSprinting, 0),
-        (MoveStat::VirtualSkillIgnoreNamelockingDynamically, 0),
-    ]
-}
 impl Mover for Locomotion {
+    fn set_speed_stats(&mut self, stats: SpeedStats) {
+        self.pending_speed_stats = Some(stats);
+    }
+
     fn input(&mut self, input: MoveInput) {
         Locomotion::input(self, input);
     }

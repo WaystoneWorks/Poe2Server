@@ -70,6 +70,8 @@ fn apply(sim: &mut ClientSim, e: &MoveEvent, t: &dyn Walkable, skills: &SkillIds
                     MoveStat::IsSprinting => sim.on_is_sprinting(v != 0),
                     MoveStat::MustSprint => sim.on_must_sprint(v != 0),
                     MoveStat::MovementVelocityPermyriad => sim.on_permyriad(v),
+                    MoveStat::VirtualActionSpeed => sim.on_action_speed(v),
+                    MoveStat::MovementVelocityCap => sim.on_velocity_cap(v),
                     _ => {}
                 }
             }

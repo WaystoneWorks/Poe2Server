@@ -28,8 +28,6 @@ const TO_CELL: f32 = 0.092;
 const PI: f32 = std::f32::consts::PI;
 const TAU: f32 = 6.283_185_5;
 const HALF_PI: f32 = 1.570_796_4;
-/// `Metadata/Characters/Character.ot` `dodge_roll_sprint_turn_rate`, degrees per second.
-const SPRINT_TURN_RATE: f32 = 150.0;
 /// `DodgeRoll_StartSprint` `0x141aa92e0`: the optional line length of a roll that sprints.
 const ROLL_SPRINT_LINE: i32 = 300;
 /// `GP_sprinting_end_base_01`: the move event's end time, seconds of the clip.
@@ -326,6 +324,8 @@ struct Roll {
     pending_target: Option<Cell>,
     /// `act + 0x150`.
     target: Cell,
+    /// `part+0x38`: `movement_velocity_+permyriad` at the start.
+    permyriad: i32,
 }
 
 /// Which animation refuses walks (`Actor + 0x380` in `0x36a`, `0x36b`).
@@ -368,6 +368,12 @@ pub struct ClientSim {
     permyriad: i32,
     /// `pf + 0x55c`.
     speed_factor: f32,
+    /// `virtual_action_speed_+%`.
+    action_speed: i32,
+    /// `movement_velocity_cap`; 0: none.
+    velocity_cap: i32,
+    /// `dodge_roll_sprint_turn_rate`, degrees per second.
+    pub sprint_turn_rate: f32,
     /// The frame a running attack's speed factor counts from.
     action_slow: Option<u64>,
     /// Frames ticked (ends with the Actor tick).
@@ -425,6 +431,9 @@ impl ClientSim {
             base_speed: walk_speed,
             permyriad: 0,
             speed_factor: 1.0,
+            action_speed: 0,
+            velocity_cap: 0,
+            sprint_turn_rate: 150.0,
             action_slow: None,
             frames: 0,
             depth: 0,
@@ -529,10 +538,27 @@ impl ClientSim {
         self.roll.as_ref().is_some_and(|r| r.elapsed + dt * r.rate >= r.length)
     }
 
-    /// `Pathfinding_GetSpeed` `0x141dccfa0`.
+    /// `Pathfinding_GetSpeed` `0x141dccfa0`. `pf+0x554` (a fixed speed) and `pf+0x558` (its step and
+    /// push test) are not set by anything the player does here.
     pub fn speed(&self) -> f32 {
-        let f = self.permyriad.max(-10000) as f32 / 10000.0 + 1.0;
-        self.base_speed * f * self.speed_factor
+        let mut f = self.permyriad.max(-10000) as f32 / 10000.0 + 1.0;
+        if self.action_speed != 0 {
+            f *= self.action_speed.max(-100) as f32 / 100.0 + 1.0;
+        }
+        let v = self.base_speed * f * self.speed_factor;
+        if self.velocity_cap > 0 { v.min(self.velocity_cap as f32) } else { v }
+    }
+
+    /// The clip's rate from the Animation controller, `ac+0x178`: 1 + `virtual_action_speed_+%`.
+    fn controller_rate(&self) -> f32 {
+        self.action_speed.max(-100) as f32 / 100.0 + 1.0
+    }
+
+    /// The character's stats at setup, as the client has them from its spawn.
+    pub fn set_speed_stats(&mut self, s: &crate::movement::SpeedStats) {
+        self.permyriad = s.permyriad(0);
+        self.action_speed = s.action_speed_percent;
+        self.velocity_cap = s.velocity_cap;
     }
 
     /// Places the entity: server teleports and spawn.
@@ -909,7 +935,7 @@ impl ClientSim {
         if c > 0.99 {
             return w;
         }
-        let mut a = SPRINT_TURN_RATE * self.dt * 0.017_453_292;
+        let mut a = self.sprint_turn_rate * self.dt * 0.017_453_292;
         if c > -0.99 && c.acos().abs() < a {
             return w;
         }
@@ -1109,8 +1135,33 @@ impl ClientSim {
     }
 
     /// `0x1d3` `movement_velocity_+permyriad`. A running line takes a new speed at the next plan.
+    pub fn on_action_speed(&mut self, v: i32) {
+        self.action_speed = v;
+        self.roll_rate_update();
+    }
+
+    /// `0x1d3` `movement_velocity_cap`.
+    pub fn on_velocity_cap(&mut self, v: i32) {
+        self.velocity_cap = v;
+    }
+
+    /// The roll's stat listener `0x141b8d4f0` (`part+0x5f` is set): `ac+0x1b0` =
+    /// `(1 + stat) / (1 + stat at start) * (trunc((sqrt(1 + stat at start) - 1) * 100) / 100 + 1)`.
+    /// Its test of buff row `0xab2` and its new line with `part+0x3e` are not ported.
+    fn roll_rate_update(&mut self) {
+        let controller = self.controller_rate();
+        let permyriad = self.permyriad;
+        if let Some(r) = &mut self.roll {
+            let old = r.permyriad as f32 / 10000.0 + 1.0;
+            let new = permyriad as f32 / 10000.0 + 1.0;
+            let stepped = ((old.sqrt() - 1.0) * 100.0).trunc() / 100.0 + 1.0;
+            r.rate = controller * (new / old * stepped);
+        }
+    }
+
     pub fn on_permyriad(&mut self, v: i32) {
         self.permyriad = v;
+        self.roll_rate_update();
     }
 
     pub fn on_must_sprint(&mut self, v: bool) {
@@ -1194,7 +1245,7 @@ impl ClientSim {
         self.roll = Some(Roll {
             elapsed: 0.0,
             length,
-            rate: 1.0,
+            rate: self.controller_rate(),
             heading,
             backward,
             // `sqrt(1 + stat(0xec) / 10000) * stat(0x57fa)`.
@@ -1207,6 +1258,7 @@ impl ClientSim {
             target_update: false,
             pending_target: None,
             target,
+            permyriad: self.permyriad,
         });
         self.line.curve.load(curve, 0.0, length);
         self.orient = if backward { 2 } else { 1 };

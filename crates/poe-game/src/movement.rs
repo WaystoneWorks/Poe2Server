@@ -156,6 +156,8 @@ pub enum MoveStat {
     VirtualSkillIgnoreNamelockingDynamically,
     BaseMoveSpeedFromSprint,
     MovementVelocityPermyriad,
+    VirtualActionSpeed,
+    MovementVelocityCap,
 }
 
 impl MoveStat {
@@ -177,6 +179,8 @@ impl MoveStat {
             }
             Self::BaseMoveSpeedFromSprint => "base_move_speed_+%_from_sprint",
             Self::MovementVelocityPermyriad => "movement_velocity_+permyriad",
+            Self::VirtualActionSpeed => "virtual_action_speed_+%",
+            Self::MovementVelocityCap => "movement_velocity_cap",
         }
     }
 }
@@ -310,8 +314,12 @@ impl From<MoveEvent> for Keyed {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MovementConfig {
     pub skills: SkillIds,
-    /// Walking speed, cells per second (the class's stats).
+    /// Walking speed, cells per second (the class's `Pathfinding.base_speed`).
     pub walk_speed: f32,
+    /// The character's stats that change its speed.
+    pub speed_stats: SpeedStats,
+    /// The class's `dodge_roll_sprint_turn_rate`, degrees per second.
+    pub sprint_turn_rate: f32,
     /// The roll skill's `dodge_roll_base_travel_distance`, cells.
     pub roll_travel_distance: f32,
     /// The class's `sprint_movement_speed_+%` (`None`: not in its stats).
@@ -337,6 +345,8 @@ impl MovementConfig {
         Self {
             skills,
             walk_speed: 37.0,
+            speed_stats: SpeedStats::default(),
+            sprint_turn_rate: 150.0,
             roll_travel_distance: 46.0,
             sprint_bonus_percent: Some(50.0),
             sprint_clearance_level: 0,
@@ -346,6 +356,38 @@ impl MovementConfig {
             stance_delay_frames: 8,
             area_stance_delay_frames: 3,
         }
+    }
+}
+
+/// The character's stats that change its speed. The client reads only the results
+/// (`Pathfinding_GetSpeed` `0x141dccfa0`: `movement_velocity_+permyriad`, `virtual_action_speed_+%`,
+/// `movement_velocity_cap`), which the server computes and sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SpeedStats {
+    /// The sum of the increases (`base_movement_velocity_+%` and the like); adds to the sprint's.
+    pub increased_percent: i32,
+    /// `combined_movement_velocity_+%_final`.
+    pub final_percent: i32,
+    /// `virtual_action_speed_+%`.
+    pub action_speed_percent: i32,
+    /// `movement_velocity_cap`; 0: none.
+    pub velocity_cap: i32,
+}
+
+impl SpeedStats {
+    /// `movement_velocity_+permyriad` with this sprint bonus: the official server's whole percents,
+    /// `(1 + (increased + sprint) / 100) * (1 + final / 100) - 1`. All official values fit: final -4
+    /// walks at -400 and sprints at 4400, final -3 at -300 and 4600 (1.455), increased 10 with final
+    /// -4 at 600 and 5400. These cannot tell rounding from rounding up.
+    pub fn permyriad(&self, sprint_percent: i32) -> i32 {
+        let p = (100 + self.increased_percent + sprint_percent) * (100 + self.final_percent) - 10000;
+        (p + 50).div_euclid(100) * 100
+    }
+
+    /// Nothing changes the speed: the official sprint stats carry `base_move_speed_+%_from_sprint`
+    /// and the blend-time stat only then (64 of 64, and none of the 15 others).
+    pub fn is_plain(&self) -> bool {
+        self.increased_percent == 0 && self.final_percent == 0
     }
 }
 
@@ -374,6 +416,10 @@ pub trait Mover: Send + std::fmt::Debug {
 
     /// One frame: what the clients must be told, in send order for equal keys.
     fn tick(&mut self, ctx: &mut StepCtx) -> Vec<Keyed>;
+
+    /// The character's speed stats changed (gear, a buff, an admin command): the next tick sends the
+    /// results to the clients and moves by them.
+    fn set_speed_stats(&mut self, _stats: SpeedStats) {}
 
     /// One frame while the world is paused (solo escape menu): nothing moves, inputs wait.
     fn tick_paused(&mut self, _ctx: &mut StepCtx) -> Vec<Keyed> {

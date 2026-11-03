@@ -985,6 +985,9 @@ pub struct MovementConfig {
     /// later; batch + 31 measured in three runs of ours, docs/protocol/movement.md).
     #[serde(default = "default_sprint_end_anim_frames")]
     pub sprint_end_anim_frames: u32,
+    /// Frames from a wall's sprint-off batch to its `all_hits_stun_you` off (official 7 to 8).
+    #[serde(default = "default_sprint_wall_stun_off_frames")]
+    pub sprint_wall_stun_off_frames: u32,
     /// The coast and `SprintEnd` values above are the walking-speed case. When true (default),
     /// a sprint ended by the release batch (Space released after `must_sprint` went off) plays
     /// `SprintEnd` at sprint speed, as the private client does: coast and animation last
@@ -1042,6 +1045,7 @@ impl Default for MovementConfig {
             sprint_coast_frames: default_sprint_coast_frames(),
             sprint_coast_delay_frames: default_sprint_coast_delay_frames(),
             sprint_end_anim_frames: default_sprint_end_anim_frames(),
+            sprint_wall_stun_off_frames: default_sprint_wall_stun_off_frames(),
             sprint_release_ends_at_sprint_speed: true,
             sprint_release_window_frames: default_sprint_release_window_frames(),
             sprint_cursor_match_degrees: default_sprint_cursor_match_degrees(),
@@ -1068,6 +1072,10 @@ fn default_sprint_coast_frames() -> f32 {
 
 fn default_sprint_coast_delay_frames() -> u32 {
     1
+}
+
+fn default_sprint_wall_stun_off_frames() -> u32 {
+    7
 }
 
 fn default_sprint_end_anim_frames() -> u32 {

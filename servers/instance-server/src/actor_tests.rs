@@ -599,11 +599,10 @@ fn the_trace_lines_name_the_entity_they_belong_to() {
     fx.walk(&b, 0, 180);
     fx.tick();
     let frame = a.rx.try_recv().unwrap();
-    assert_eq!(frame.trace.len(), 1);
-    assert_eq!(
-        (frame.trace[0].entity, frame.trace[0].kind),
-        (b.entity, "out-dir")
-    );
+    // Besides the `pos` line every player gets per tick.
+    let trace: Vec<_> = frame.trace.iter().filter(|t| t.kind != "pos").collect();
+    assert_eq!(trace.len(), 1);
+    assert_eq!((trace[0].entity, trace[0].kind), (b.entity, "out-dir"));
 }
 
 #[test]

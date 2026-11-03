@@ -117,6 +117,25 @@ pub const ROLL_SPRINT_STEPS: [f32; 15] = [
     0.91, 0.96, 1.02, 1.08, 1.09, 1.11, 1.20, 1.34, 1.36, 1.46, 1.49, 1.52, 1.54, 1.70, 2.40,
 ];
 
+/// The vector a roll along the input `dir` runs: to the goal cell `distance` cells away along the
+/// input's plan vector `floor(dir * 0.092)` (so `(-127, 127)` is `(-12, 11)`: 46 cells make
+/// `(-34, 31)`, not a true diagonal). The client's plans in the roll keep this goal and its steps
+/// keep this ratio (private 2026-11-02 f1641: goal `(702, 767)` from `(736, 736)`; official log,
+/// same ratios).
+pub fn roll_vector(dir: (i32, i32), distance: f32) -> (f32, f32) {
+    let (fx, fy) = (
+        (dir.0 as f32 * GOAL_PER_UNIT).floor(),
+        (dir.1 as f32 * GOAL_PER_UNIT).floor(),
+    );
+    match unit(fx, fy) {
+        Some((ux, uy)) => (
+            (ux * distance + 0.5).floor(),
+            (uy * distance + 0.5).floor(),
+        ),
+        None => (dir.0 as f32, dir.1 as f32),
+    }
+}
+
 /// Index into [`ROLL_STEPS`] of the frame `t` seconds into the roll.
 fn roll_frame(t: f32) -> usize {
     ((t / ROLL_FRAME) + 1e-3).floor().max(0.0) as usize
@@ -237,6 +256,15 @@ impl Mover {
             travel_dir: None,
             sprint_heading: None,
         }
+    }
+
+    /// An action's `0x1c8` places the client on its start cell (the grid it was sent) and the
+    /// line starts anew there: the server's position follows.
+    pub fn stand_on_grid(&mut self) {
+        let cell = self.grid();
+        self.x = cell.0 as f32 + 0.5;
+        self.y = cell.1 as f32 + 0.5;
+        self.line = GridLine::at(cell);
     }
 
     /// A WASD walk stops: one more frame along the current line, keeping path and line.
@@ -548,24 +576,67 @@ impl Mover {
             .unwrap_or(here)
     }
 
+    /// Moving along a line whose cell is `start`: line of sight to the start is tested from the
+    /// exact position (`FUN_141b87580`), in the client's cell-centred coordinates.
+    fn moving_from(&self, start: (i32, i32)) -> Option<(f32, f32)> {
+        (self.moved && start == self.grid()).then_some((self.x - 0.5, self.y - 0.5))
+    }
+
+    /// The goal of a plan from `start`: one beyond the search window is pulled in to 126 cells
+    /// along the same line.
+    fn clamp_goal(start: (i32, i32), goal: (i32, i32)) -> (i32, i32) {
+        let (dx, dy) = (goal.0 as i64 - start.0 as i64, goal.1 as i64 - start.1 as i64);
+        if dx * dx + dy * dy < GOAL_LIMIT_SQ as i64 {
+            return goal;
+        }
+        let k = GOAL_CLAMP / ((dx * dx + dy * dy) as f32).sqrt();
+        (
+            (start.0 as i64 + (dx as f32 * k + 0.5).floor() as i64) as i32,
+            (start.1 as i64 + (dy as f32 * k + 0.5).floor() as i64) as i32,
+        )
+    }
+
+    /// The direction a sprint plans along: the stream's vector of length 550, truncated toward
+    /// zero.
+    fn sprint_vector(x: f32, y: f32) -> (f32, f32) {
+        let len = ((x as f64).powi(2) + (y as f64).powi(2)).sqrt();
+        let k = SPRINT_VECTOR_LENGTH as f64 / len;
+        ((x as f64 * k) as i32 as f32, (y as f64 * k) as i32 as f32)
+    }
+
+    /// The running sprint has nowhere to go from here: the client's next plan is empty, so its
+    /// Move action ends this frame and it ends the sprint itself (`0x141b76da0`: no action left
+    /// -> `SprintEndBonk`). Changes nothing.
+    pub fn sprint_blocked(&self, terrain: &dyn Walkable) -> bool {
+        let Motion::Sprint { x, y, .. } = self.motion else {
+            return false;
+        };
+        if self.pathfinder != Pathfinder::Client || self.delay > 0 || (x == 0.0 && y == 0.0) {
+            return false;
+        }
+        let (vx, vy) = Self::sprint_vector(x, y);
+        let start = self.planning_cell(terrain);
+        let goal = Self::clamp_goal(
+            start,
+            (
+                start.0 + (vx * GOAL_PER_UNIT).floor() as i32,
+                start.1 + (vy * GOAL_PER_UNIT).floor() as i32,
+            ),
+        );
+        let params = Params {
+            moving: self.moving_from(start),
+            ..Params::default()
+        };
+        clientpath::plan(terrain, start, goal, self.level, &params)
+            .waypoints()
+            .all(|w| w == start)
+    }
+
     /// The client's plan from the entity's cell to `goal`.
     fn plan_client(&mut self, terrain: &dyn Walkable, goal: (i32, i32)) -> clientpath::Plan {
         let start = self.planning_cell(terrain);
-        // Moving along a line whose cell is the start: line of sight to the start is tested
-        // from the exact position (`FUN_141b87580`), in the client's cell-centred coordinates.
-        let moving =
-            (self.moved && start == self.grid()).then_some((self.x - 0.5, self.y - 0.5));
-        let (dx, dy) = (goal.0 as i64 - start.0 as i64, goal.1 as i64 - start.1 as i64);
-        // A goal beyond the search window is pulled in to 126 cells along the same line.
-        let goal = if dx * dx + dy * dy < GOAL_LIMIT_SQ as i64 {
-            goal
-        } else {
-            let k = GOAL_CLAMP / ((dx * dx + dy * dy) as f32).sqrt();
-            (
-                (start.0 as i64 + (dx as f32 * k + 0.5).floor() as i64) as i32,
-                (start.1 as i64 + (dy as f32 * k + 0.5).floor() as i64) as i32,
-            )
-        };
+        let moving = self.moving_from(start);
+        let goal = Self::clamp_goal(start, goal);
         // A line that starts standing runs from the centre of its start cell, wherever the
         // position had got to: the client's phase restarts here, so the server's does too.
         if moving.is_none() && !self.moved {
@@ -609,17 +680,9 @@ impl Mover {
         }
         self.aim_timer -= dt;
         if sprint || self.path.is_empty() || self.aim_timer <= 0.0 {
-            // The stream's direction has length 550, truncated toward zero.
-            let (vx, vy) = if sprint {
-                let len = ((x as f64).powi(2) + (y as f64).powi(2)).sqrt();
-                let k = SPRINT_VECTOR_LENGTH as f64 / len;
-                ((x as f64 * k) as i32 as f32, (y as f64 * k) as i32 as f32)
-            } else {
-                (x, y)
-            };
+            let (vx, vy) = if sprint { Self::sprint_vector(x, y) } else { (x, y) };
             let cell = self.planning_cell(terrain);
-            let moving =
-                (self.moved && cell == self.grid()).then_some((self.x - 0.5, self.y - 0.5));
+            let moving = self.moving_from(cell);
             let goal = (
                 cell.0 + (vx * GOAL_PER_UNIT).floor() as i32,
                 cell.1 + (vy * GOAL_PER_UNIT).floor() as i32,

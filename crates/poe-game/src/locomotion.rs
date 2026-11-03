@@ -22,7 +22,7 @@
 //! 4. the `MoveAck` for a direction change or the sprint stream (one per frame),
 //! 5. the sprint end, if the key was released.
 
-use crate::movement::{Motion, Mover, Pathfinder, Walkable};
+use crate::movement::{Motion, Mover, Pathfinder, Walkable, roll_vector};
 
 pub type Cell = (i32, i32);
 
@@ -137,6 +137,8 @@ pub struct SprintConfig {
     /// animation's end walks on at once: Move at batch + 31, first step one frame later (three
     /// runs of ours with W held since before the roll; 21 once with a stream, not explained).
     pub end_anim_frames: u32,
+    /// Frames from a wall's sprint-off batch to its `all_hits_stun_you` off (official 7 to 8).
+    pub wall_stun_off_frames: u32,
     /// The values above are the walking-speed case. A sprint ended by the release batch (the
     /// `SprintState` echo with the sprint-off stats) plays `SprintEnd` at sprint speed on the
     /// private client (`speed_scale` times faster: coast and animation 1/`speed_scale` as long,
@@ -250,6 +252,7 @@ impl MovementConfig {
                 coast_frames: 29.5,
                 coast_delay_frames: 1,
                 end_anim_frames: 31,
+                wall_stun_off_frames: 7,
                 release_ends_at_sprint_speed: true,
                 release_window_frames: 6,
                 cursor_match_degrees: 10.0,
@@ -558,6 +561,10 @@ enum Due {
     MustSprintOff,
     /// The reply of the frame after a sprint ended: the unscaled direction.
     UnscaledAck,
+    /// The second half of a sprint-off that a wall caused ([`Locomotion::end_sprint_at_wall`]).
+    WallStunOff {
+        index: u16,
+    },
     Stance(bool),
     /// Starts [`Locomotion::deferred_roll`].
     StartDeferredRoll,
@@ -655,6 +662,8 @@ pub struct Locomotion {
     /// The client's `SprintEnd` animation runs until this frame: no WASD walk starts before it
     /// (see [`SprintConfig::end_anim_frames`]).
     sprint_anim_until: Option<u64>,
+    /// The animation of [`Locomotion::sprint_anim_until`] is a wall's `SprintEndBonk`.
+    bonk: bool,
     /// Play rate of the client's `SprintEnd` relative to the walking-speed case (see
     /// [`Locomotion::sprint_end_rate`]): scales the coast and the animation's length.
     sprint_end_rate: f32,
@@ -710,6 +719,7 @@ impl Locomotion {
             release_due: false,
             sprint_end: None,
             sprint_anim_until: None,
+            bonk: false,
             sprint_end_rate: 1.0,
             cursor_mode: false,
             roll_cursor: (0, 0),
@@ -826,6 +836,10 @@ impl Locomotion {
         };
         self.update_speed_factor(ctx);
         self.mover.advance(ctx.dt, ctx.terrain);
+        // With the direction the client knows this frame: a new vector reaches it only with the
+        // `MoveAck` below.
+        let blocked = matches!(self.state, MoveState::Sprinting(_))
+            && self.mover.sprint_blocked(ctx.terrain);
         if matches!(self.state, MoveState::Walking(Walk::Target { .. })) && !self.mover.is_moving()
         {
             self.state = MoveState::Idle;
@@ -872,7 +886,7 @@ impl Locomotion {
                 skill: ctx.config.skills.move_skill,
                 flags: ACTION_INPUT_FLAG,
                 action: Self::alloc_action(ctx),
-                cell: self.mover.cell(),
+                cell: self.mover.grid(),
                 target,
                 entity: None,
                 unk: 0xff,
@@ -888,6 +902,9 @@ impl Locomotion {
         if end_sprint {
             self.sprint_end_rate = Self::sprint_end_rate(in_release_batch, ctx);
             self.end_sprint(ctx, &mut out);
+        }
+        if blocked && matches!(self.state, MoveState::Sprinting(_)) {
+            self.end_sprint_at_wall(ctx, &mut out);
         }
         out
     }
@@ -906,7 +923,7 @@ impl Locomotion {
             MoveInput::CursorDirection { x, y } => self.on_direction((x, y), true, ctx),
             MoveInput::UseSkill(req) => self.on_use_skill(req, ctx, out),
             MoveInput::UpdateSkillTarget { x, y, skill } => {
-                let (cx, cy) = self.mover.cell();
+                let (cx, cy) = self.mover.grid();
                 let abs = (cx + x, cy + y);
                 self.steer(skill, (x, y), abs, ctx);
                 out.push(MoveEvent::TargetAck {
@@ -1018,7 +1035,7 @@ impl Locomotion {
         self.cursor_mode = cursor;
         self.ack_wanted = true;
         let moving = dir != (0, 0);
-        if !cursor
+        if (!cursor || self.bonk)
             && self
                 .sprint_anim_until
                 .is_some_and(|until| ctx.frame < until)
@@ -1081,10 +1098,11 @@ impl Locomotion {
             MoveState::Rolling(r) => {
                 if r.wasd_driven
                     && moving
-                    && let Motion::Roll { x, y, .. } = &mut self.mover.motion
+                    && let Motion::Roll { x, y, remaining, .. } = &mut self.mover.motion
                 {
-                    *x = dir.0 as f32;
-                    *y = dir.1 as f32;
+                    // The client plans a new goal from here: the distance left along the keys.
+                    let left = remaining.min(ctx.config.roll.travel_distance).max(1.0);
+                    (*x, *y) = roll_vector(dir, left);
                 }
             }
             MoveState::Sprinting(_) => self.mover.start(if moving {
@@ -1124,7 +1142,7 @@ impl Locomotion {
     fn target_of(&self, req: &UseSkill) -> Cell {
         match req.entity {
             Some(_) => (req.x, req.y),
-            None => (self.mover.cell().0 + req.x, self.mover.cell().1 + req.y),
+            None => (self.mover.grid().0 + req.x, self.mover.grid().1 + req.y),
         }
     }
 
@@ -1200,7 +1218,7 @@ impl Locomotion {
                         skill: req.skill,
                         flags: req.flags | ACTION_INPUT_FLAG,
                         action: Self::alloc_action(ctx),
-                        cell: self.mover.cell(),
+                        cell: self.mover.grid(),
                         target,
                         entity: req.entity,
                         unk: req.unk,
@@ -1235,7 +1253,7 @@ impl Locomotion {
         ctx: &mut StepCtx,
         out: &mut Vec<MoveEvent>,
     ) {
-        let cell = self.mover.cell();
+        let cell = self.mover.grid();
         let offset = (target.0 - cell.0, target.1 - cell.1);
         let action = Self::alloc_action(ctx);
         let late = std::mem::take(&mut self.roll_late);
@@ -1266,12 +1284,19 @@ impl Locomotion {
         self.sprint_move = false;
         self.sprint_end = None;
         self.sprint_anim_until = None;
+        self.bonk = false;
+        self.mover.stand_on_grid();
+        let (hx, hy) = if wasd_driven {
+            roll_vector(heading, cfg.roll.travel_distance)
+        } else {
+            (heading.0 as f32, heading.1 as f32)
+        };
         self.mover.start(if heading == (0, 0) {
             Motion::Idle
         } else {
             Motion::Roll {
-                x: heading.0 as f32,
-                y: heading.1 as f32,
+                x: hx,
+                y: hy,
                 remaining: cfg.roll.travel_distance,
                 elapsed: 0.0,
                 sprint: false,
@@ -1327,12 +1352,13 @@ impl Locomotion {
         ctx: &mut StepCtx,
         out: &mut Vec<MoveEvent>,
     ) {
-        let cell = self.mover.cell();
+        let cell = self.mover.grid();
         if target != cell {
             self.facing = (target.0 - cell.0, target.1 - cell.1);
         }
         self.sprint_end = None;
         self.sprint_anim_until = None;
+        self.bonk = false;
         self.state = MoveState::Walking(Walk::Target { goal: target });
         self.mover.start(Motion::MoveTo {
             x: target.0 as f32 + 0.5,
@@ -1466,7 +1492,7 @@ impl Locomotion {
         ctx: &mut StepCtx,
         out: &mut Vec<MoveEvent>,
     ) {
-        let cell = self.mover.cell();
+        let cell = self.mover.grid();
         self.attack_slow = Some(ctx.frame);
         out.push(MoveEvent::ActionStart {
             kind: ActionKind::Other,
@@ -1679,7 +1705,7 @@ impl Locomotion {
                         skill: cfg.skills.move_skill,
                         flags: h.flags & !ACTION_INPUT_FLAG,
                         action: Self::alloc_action(ctx),
-                        cell: self.mover.cell(),
+                        cell: self.mover.grid(),
                         target: h.goal,
                         entity: None,
                         unk: 0xff,
@@ -1760,7 +1786,7 @@ impl Locomotion {
                         skill: cfg.skills.move_skill,
                         flags: h.flags & !ACTION_INPUT_FLAG,
                         action: Self::alloc_action(ctx),
-                        cell: self.mover.cell(),
+                        cell: self.mover.grid(),
                         target: h.goal,
                         entity: None,
                         unk: 0xff,
@@ -1780,6 +1806,10 @@ impl Locomotion {
                 }
             }
             Due::UnscaledAck => *unscaled = true,
+            Due::WallStunOff { index } => {
+                out.push(MoveEvent::BuffRemoved { index });
+                out.push(MoveEvent::Stats(vec![(MoveStat::AllHitsStunYou, 0)]));
+            }
             Due::RollStunStats => {
                 out.push(MoveEvent::Stats(stun_stats(cfg.roll.stun_threshold)));
             }
@@ -1788,9 +1818,14 @@ impl Locomotion {
                     return;
                 }
                 self.sprint_anim_until = None;
+        self.bonk = false;
                 // The Actor tick's `Actor_StartWasdWalk` call finds the key down (WASD mode
-                // only: click-to-move mode has no keys).
-                if self.wasd != (0, 0) && !self.cursor_mode && matches!(self.state, MoveState::Idle)
+                // only: click-to-move mode has no keys; after a bonk the vector the client
+                // stored walks on either way).
+                let bonk = std::mem::take(&mut self.bonk);
+                if self.wasd != (0, 0)
+                    && (!self.cursor_mode || bonk)
+                    && matches!(self.state, MoveState::Idle)
                 {
                     self.sprint_end = None;
                     self.resume_walking();
@@ -1940,7 +1975,7 @@ impl Locomotion {
                 skill: ctx.config.skills.move_skill,
                 flags: h.flags & !ACTION_INPUT_FLAG,
                 action: Self::alloc_action(ctx),
-                cell: self.mover.cell(),
+                cell: self.mover.grid(),
                 target: goal,
                 entity: None,
                 unk: 0xff,
@@ -1977,6 +2012,47 @@ impl Locomotion {
             self.unscaled_dir = Some(self.wasd);
         }
         self.finish_sprint_by_release(ctx);
+    }
+
+    /// The sprint ran into a wall: the client's Move action ran out and it ended the sprint
+    /// itself (`0x141b76da0`, no action left -> `SprintEndBonk`, whatever the keys do). Official
+    /// (3 of 3): the sprint-off in the batch where the server's own cell stops advancing, the
+    /// unscaled `0x64` one frame later when a stream ran, `all_hits_stun_you` off 7 to 8 frames
+    /// later; no restart while the key stays down.
+    ///
+    /// `SprintEndBonk` plays the clip of `SprintEnd` (0.75 s, `base_sprint.atl`) at the rate of
+    /// the speed in effect when the check fired, the sprint's. The client does not move during
+    /// it (official f1243, f2873; in game 2026-11-02): no coast.
+    fn end_sprint_at_wall(&mut self, ctx: &mut StepCtx, out: &mut Vec<MoveEvent>) {
+        let Some(run) = self.sprint().copied() else {
+            return;
+        };
+        let cfg = &ctx.config.sprint;
+        self.release_pending = false;
+        self.sprint_move = false;
+        out.push(MoveEvent::BuffRemoved {
+            index: run.buff_base + 1,
+        });
+        out.push(MoveEvent::Stats(sprint_off_stats()));
+        self.due.push((
+            ctx.frame + cfg.wall_stun_off_frames as u64,
+            Due::WallStunOff {
+                index: run.buff_base + 2,
+            },
+        ));
+        if self.wasd != (0, 0) && run.streaming {
+            self.due.push((ctx.frame + 1, Due::UnscaledAck));
+            self.unscaled_dir = Some(self.wasd);
+        }
+        self.state = MoveState::Idle;
+        self.mover.start(Motion::Idle);
+        self.sprint_end = None;
+        self.sprint_end_rate = cfg.speed_scale;
+        self.bonk = true;
+        let until = ctx.frame + self.end_anim_frames(ctx) as u64;
+        self.sprint_anim_until = Some(until);
+        self.due
+            .push((until, Due::SprintEndAnimOver { end: ctx.frame }));
     }
 
     /// The sprint ended by the key release: walks on, or coasts.
@@ -2937,8 +3013,8 @@ mod tests {
             y: 30,
             skill: ROLL,
         }]);
-        // Relative to the server's cell at the time.
-        let cell = r.loco.cell();
+        // Relative to the client's grid cell at the time.
+        let cell = r.loco.grid();
         assert_eq!(
             ev,
             vec![MoveEvent::TargetAck {
@@ -3119,6 +3195,74 @@ mod tests {
             [MoveEvent::MoveAck { dir: (0, -180), .. }]
         ));
         assert!(r.run(5).is_empty());
+    }
+
+    /// Cells with x >= 80 are walls.
+    struct EastWall;
+    impl Walkable for EastWall {
+        fn walkable(&self, x: i32, _: i32) -> bool {
+            x < 80
+        }
+    }
+
+    /// Sprints east along the keys until the wall of [`EastWall`] stops it; returns the events
+    /// of the end frame.
+    fn sprint_into_the_wall(r: &mut Rig) -> Vec<MoveEvent> {
+        r.tick(&[space(true), dir(180, 0), roll(10, 0)]);
+        r.run(36);
+        assert!(matches!(r.loco.state(), MoveState::Sprinting(_)));
+        r.tick(&[dir(180, 0)]);
+        for _ in 0..200 {
+            let ev = r.tick(&[]);
+            if !matches!(r.loco.state(), MoveState::Sprinting(_)) {
+                return ev;
+            }
+        }
+        panic!("the sprint never ended at {:?}", r.loco.position());
+    }
+
+    #[test]
+    fn a_wall_ends_the_sprint_and_a_walk_waits_for_the_bonk() {
+        let mut r = Rig::on((0, 50), Box::new(EastWall));
+        let ev = sprint_into_the_wall(&mut r);
+        let frame = r.frame;
+        // The stream's scaled `0x64`, then the first half of the sprint-off.
+        assert!(matches!(ev[0], MoveEvent::MoveAck { dir: (550, 0), .. }), "{ev:?}");
+        assert!(ev.iter().any(|e| matches!(e, MoveEvent::BuffRemoved { .. })));
+        assert!(ev.iter().any(|e| matches!(e, MoveEvent::Stats(_))));
+        // r + 1: the unscaled `0x64`; the entity stands (no coast) on the same cell.
+        let at = r.loco.position();
+        let ev = r.tick(&[]);
+        assert!(matches!(ev[..], [MoveEvent::MoveAck { dir: (180, 0), .. }]), "{ev:?}");
+        // The second half 7 frames after the first.
+        let later = r.run(6);
+        assert_eq!(r.frame, frame + 7);
+        assert_eq!(later.len(), 2, "{later:?}");
+        assert!(later.iter().all(|(f, _)| *f == frame + 7));
+        assert_eq!(r.loco.position(), at);
+        // A key during the bonk is answered and starts nothing; it walks at the bonk's end.
+        let ev = r.tick(&[dir(0, 180)]);
+        assert!(matches!(ev[..], [MoveEvent::MoveAck { dir: (0, 180), .. }]), "{ev:?}");
+        while r.frame < frame + 20 {
+            r.tick(&[]);
+            assert_eq!(r.loco.position(), at, "frame {}", r.frame);
+        }
+        r.tick(&[]);
+        assert!(matches!(r.loco.state(), MoveState::Walking(_)));
+        r.tick(&[]);
+        assert!(r.loco.position().1 > at.1, "walks on after the bonk");
+    }
+
+    #[test]
+    fn the_sprint_does_not_restart_and_the_release_is_only_echoed_after_a_wall() {
+        let mut r = Rig::on((0, 50), Box::new(EastWall));
+        sprint_into_the_wall(&mut r);
+        r.run(40);
+        let ev = r.tick(&[MoveInput::SkillInputEnd, space(false), dir(0, 0)]);
+        assert!(!ev.iter().any(|e| matches!(e, MoveEvent::Stats(_) | MoveEvent::BuffRemoved { .. })), "{ev:?}");
+        assert!(ev.iter().any(|e| matches!(e, MoveEvent::SprintState { held: false })));
+        assert!(ev.iter().any(|e| matches!(e, MoveEvent::MoveAck { dir: (0, 0), .. })));
+        assert_eq!(r.loco.state(), &MoveState::Idle);
     }
 
     #[test]

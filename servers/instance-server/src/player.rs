@@ -69,6 +69,7 @@ pub fn sim_config(
     cfg.sprint.coast_frames = config.sprint_coast_frames;
     cfg.sprint.coast_delay_frames = config.sprint_coast_delay_frames;
     cfg.sprint.end_anim_frames = config.sprint_end_anim_frames;
+    cfg.sprint.wall_stun_off_frames = config.sprint_wall_stun_off_frames;
     cfg.sprint.release_ends_at_sprint_speed = config.sprint_release_ends_at_sprint_speed;
     cfg.sprint.release_window_frames = config.sprint_release_window_frames;
     cfg.sprint.cursor_match_degrees = config.sprint_cursor_match_degrees;

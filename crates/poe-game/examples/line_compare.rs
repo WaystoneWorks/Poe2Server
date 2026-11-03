@@ -157,6 +157,9 @@ fn main() {
     let (trace, log, port) = (&args[1], &args[2], &args[3]);
     let opt = |k: &str| args.iter().position(|a| a == k).map(|i| args[i + 1].parse::<u64>().unwrap());
     let show = opt("--show").unwrap_or(30);
+    // `--free`: never reload the client's state (logs without `LINE`): only the replayed snaps
+    // correct the model, so one error runs on until the next snap.
+    let free = args.iter().any(|a| a == "--free");
     let (from, to) = (opt("--from").unwrap_or(0), opt("--to").unwrap_or(u64::MAX));
     let amd = std::env::var("ROLL_AMD").expect("ROLL_AMD = path of basedodgeroll/onerig.amd");
     let sprint_amd = std::env::var("SPRINT_AMD").expect("SPRINT_AMD = path of basesprint/onerig.amd");
@@ -308,7 +311,7 @@ fn main() {
                 f.line.map(|l| (l.p, l.el, l.acc, l.len, l.t)),
             );
         }
-        if !same || !end_same {
+        if (!same || !end_same) && !free {
             // Carry on from the client's state: each error counts once.
             match f.line {
                 Some(l) => m.load_line(l),

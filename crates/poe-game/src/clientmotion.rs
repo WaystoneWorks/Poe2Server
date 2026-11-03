@@ -427,6 +427,8 @@ pub struct ClientMotion {
     coast_due: Option<f32>,
     /// The sprint part is on (`0x141b77110` ran, `0x141b773a0` not yet).
     sprint_on: bool,
+    /// The sprint's plan came back empty: this frame's end check ends it with the Bonk.
+    bonk_due: bool,
     /// The buff `must_sprint`: key state does not end the sprint while it is on.
     pub must_sprint: bool,
     /// The speed when the frame started. A `SprintEnd` in a frame with a `0x64` plan runs at this
@@ -490,6 +492,7 @@ impl ClientMotion {
             end_anim: 0.0,
             coast_due: None,
             sprint_on: false,
+            bonk_due: false,
             must_sprint: false,
             frame_speed: speed,
             planned: false,
@@ -602,9 +605,13 @@ impl ClientMotion {
             let (cell, done) = self.line.step();
             self.stepped = true;
             if !Self::free(terrain, cell) {
-                // Blocked: the cell is not applied; `FUN_141de5f50`, then the done delegates.
+                // Blocked: the cell is not applied; `FUN_141de5f50`, and no replan: the path ends
+                // (`LINE`-less wall run: 21 still frames at both walls, a sprint's Bonk). A walk's
+                // next Actor tick starts again from the keys.
                 self.line.kill();
-                self.line_done(terrain);
+                if self.roll.is_none() {
+                    self.path_failed();
+                }
                 return;
             }
             self.grid = cell;
@@ -688,7 +695,7 @@ impl ClientMotion {
         let plan = clientpath::plan(terrain, self.grid, goal, self.level, &params);
         self.path = plan.waypoints().collect();
         if self.path.is_empty() {
-            self.end_path();
+            self.path_failed();
             return;
         }
         self.next = 1;
@@ -781,7 +788,17 @@ impl ClientMotion {
             self.next += 1;
             self.step_along(i, terrain);
         } else {
-            self.end_path();
+            self.path_failed();
+        }
+    }
+
+    /// `0x141dccac0(pf, 0)`: no way on. `FUN_141de4de0` stops the line; a sprint's end check then
+    /// finds no Move and plays the Bonk.
+    fn path_failed(&mut self) {
+        self.end_path();
+        self.line.kill();
+        if self.sprint_on {
+            self.bonk_due = true;
         }
     }
 
@@ -860,7 +877,11 @@ impl ClientMotion {
             // Clicks plan only when their line ends: the timer is not used for them.
         }
         // `0x141b76da0`, a part of this tick: after the re-aim, before the timer.
-        if self.sprint_on && (!self.is_sprinting || (self.key_released && !self.must_sprint)) {
+        if self.bonk_due && self.roll.is_none() {
+            self.bonk();
+        } else if self.sprint_on
+            && (!self.is_sprinting || (self.key_released && !self.must_sprint))
+        {
             self.end_sprint();
         }
         self.key_released = false;
@@ -878,6 +899,19 @@ impl ClientMotion {
     /// The server's echo of the sprint key's release (`0x141e5c1f0`), read by this frame's end check.
     pub fn sprint_key_released(&mut self) {
         self.key_released = true;
+    }
+
+    /// `0x141b773a0` with Bonk: `sprinting_end_*_bonk` views the `SprintEnd` clip at the same rate,
+    /// without a move event: the entity stands until it ends.
+    fn bonk(&mut self) {
+        self.end_sprint();
+        self.coast_due = None;
+        self.bonk_due = false;
+    }
+
+    /// Ended by a wall: the client plays the Bonk, not a coast.
+    pub fn is_bonking(&self) -> bool {
+        self.end_anim > 0.0 && !self.coasting && self.coast_due.is_none()
     }
 
     /// `0x141b773a0`: ends Move, stops the entity, and with no action running plays `SprintEnd`.

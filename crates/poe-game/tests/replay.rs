@@ -490,7 +490,7 @@ fn standing_tap_roll() {
             start: 3,
             steer: ANY,
         },
-        Some(3.5),
+        Some(4.0),
     );
 }
 

@@ -99,22 +99,22 @@ pub enum Motion {
 /// Seconds per frame of the roll table (the official 33 ms frames).
 const ROLL_FRAME: f32 = 0.033;
 
-/// Cells the client moves in each frame of a dodge roll (`t0 + 1` to `t0 + 30`), mean of the 6
-/// standing rolls on open ground of the 2026-10-20 capture (`dodge_roll_travel_distance` 46:
-/// the sum is 45.9, see docs/protocol/movement.md). The roll falls from 3.9 to 1.2 cells per
-/// frame, holds about 0.94 and tapers to zero at `t0 + 31`.
-pub const ROLL_STEPS: [f32; 30] = [
-    3.81, 3.59, 3.37, 3.16, 2.95, 2.73, 2.49, 2.27, 2.02, 1.79, 1.55, 1.32, 1.20, 1.12, 1.06, 0.99,
-    0.97, 0.94, 0.94, 0.94, 0.94, 0.95, 0.93, 0.85, 0.74, 0.68, 0.49, 0.31, 0.16, 0.04,
+/// Cells the client's line point moves in each frame of a dodge roll, index 0 being the step the
+/// `0x1c8` itself makes (tick `t0`), measured on the private client's line state (`LINE` log,
+/// 2026-11-02; `dodge_roll_travel_distance` 46). The last five values spread the 1.60 cells the
+/// client walks without logging a new line.
+pub const ROLL_STEPS: [f32; 31] = [
+    3.7324, 3.5283, 3.3310, 3.1405, 2.9568, 2.7627, 2.5501, 2.3350, 2.1171, 1.8971, 1.6743, 1.4492,
+    1.2353, 1.1218, 1.0497, 0.9889, 0.9394, 0.9010, 0.8740, 0.8581, 0.8536, 0.8601, 0.8741, 0.8537,
+    0.7971, 0.7168, 0.60, 0.45, 0.30, 0.18, 0.0719,
 ];
 
-/// The steps of frames `t0 + 16` to `t0 + 30` of a roll that became a sprint (the key was still
-/// down at `t0 + 15`), mean of the 7 sprint rolls of the 2026-10-20 capture: the client blends
-/// into the sprint, so it speeds up from 0.9 to 1.7 cells per frame instead of tapering off, and
-/// takes a catch-up step of about 2.4 in the last frame (median of 7: 2.0 to 3.4). From
-/// `t0 + 31` on it sprints at 1.86 (the sprint motion).
+/// The steps of ticks `t0 + 16` to `t0 + 30` of a roll that became a sprint (the key was down from
+/// the press to `t0 + 15`), from the same log: the client blends into the sprint. The last two
+/// together are 4.2 to 4.5 cells over two frames. After that it sprints at `speed * 1.5 * dt`.
 pub const ROLL_SPRINT_STEPS: [f32; 15] = [
-    0.91, 0.96, 1.02, 1.08, 1.09, 1.11, 1.20, 1.34, 1.36, 1.46, 1.49, 1.52, 1.54, 1.70, 2.40,
+    0.9175, 0.9501, 1.0087, 1.0703, 1.1262, 1.1701, 1.2210, 1.3018, 1.3852, 1.4565, 1.4771, 1.5311,
+    1.5200, 2.00, 2.37,
 ];
 
 /// The vector a roll along the input `dir` runs: to the goal cell `distance` cells away along the
@@ -143,8 +143,8 @@ fn roll_frame(t: f32) -> usize {
 
 /// Cells per frame of frame `frame` (0 based) of a roll.
 fn roll_step(frame: usize, sprint: bool) -> f32 {
-    if sprint && frame >= 15 {
-        ROLL_SPRINT_STEPS.get(frame - 15)
+    if sprint && frame >= 16 {
+        ROLL_SPRINT_STEPS.get(frame - 16)
     } else {
         ROLL_STEPS.get(frame)
     }
@@ -171,10 +171,12 @@ pub enum Pathfinder {
 /// The client re-aims a WASD walk every 0.05 s while a key is held (player entities; `0.25` for
 /// others): with 33 ms frames that is every second frame.
 const AIM_PERIOD: f32 = 0.05;
-/// Radians per second a sprint's heading turns towards the plan's first waypoint: the client
-/// moves along this heading, not along the plan (official 2026-11-02 log: best fit about 0.086
-/// rad per 33 ms frame, median error 0.006 rad; walking turns at once).
-const SPRINT_TURN_RATE: f32 = 150.0 * std::f32::consts::PI / 180.0;
+/// Radians a sprint's heading turns per plan towards the plan's first waypoint: while it is off
+/// by more, the client's line runs along the heading, not along the plan (private `LINE` log,
+/// 2026-11-02: 5 degrees per plan, line end about 180 cells ahead; walking turns at once).
+const SPRINT_TURN_STEP: f32 = 5.0 * std::f32::consts::PI / 180.0;
+/// How far ahead the end of a line along a turning sprint's heading lies.
+const SPRINT_TURN_AHEAD: f32 = 180.0;
 /// A WASD or sprint vector turns into a goal this many cells per input unit away
 /// (`floor(v * 0.092)`).
 const GOAL_PER_UNIT: f32 = 0.092;
@@ -219,8 +221,11 @@ pub struct Mover {
     coast_dir: Option<(f32, f32)>,
     /// Unit direction of the last frame's displacement.
     travel_dir: Option<(f32, f32)>,
-    /// Heading of the running sprint in radians ([`SPRINT_TURN_RATE`]).
+    /// Heading of the running sprint in radians ([`SPRINT_TURN_STEP`]).
     sprint_heading: Option<f32>,
+    /// A sprint's `0x64` stream runs: each `0x64` makes the client plan, so it plans every frame
+    /// instead of every [`AIM_PERIOD`].
+    pub streaming: bool,
     /// The entity moved in the previous frame: its plans then test line of sight to the start
     /// from its exact position ([`clientpath::Params::moving`]).
     moved: bool,
@@ -255,6 +260,7 @@ impl Mover {
             moved: false,
             travel_dir: None,
             sprint_heading: None,
+            streaming: false,
         }
     }
 
@@ -637,6 +643,16 @@ impl Mover {
         let start = self.planning_cell(terrain);
         let moving = self.moving_from(start);
         let goal = Self::clamp_goal(start, goal);
+        // Two cells or more from the start cell the new line runs from the cell itself
+        // (`FUN_141ec86a0`): the entity is back on the cell's centre. Only a roll's steps are long
+        // enough for that on the client; elsewhere such a gap is an error of this model.
+        if let Some(p) = moving
+            && matches!(self.motion, Motion::Roll { .. })
+            && (start.0 as f32 - p.0).powi(2) + (start.1 as f32 - p.1).powi(2) >= 4.0
+        {
+            self.x = start.0 as f32 + 0.5;
+            self.y = start.1 as f32 + 0.5;
+        }
         // A line that starts standing runs from the centre of its start cell, wherever the
         // position had got to: the client's phase restarts here, so the server's does too.
         if moving.is_none() && !self.moved {
@@ -665,6 +681,7 @@ impl Mover {
     /// WASD and sprint like the client: the goal is the cell plus `floor(vector * 0.092)`, planned
     /// again every [`AIM_PERIOD`] (every frame while a sprint's `0x64` stream runs, and whenever
     /// the walk has ended), and the entity walks the first legs of the plan.
+    /// A sprint without a stream plans every second frame too (private `LINE` log).
     fn walk_aimed(
         &mut self,
         x: f32,
@@ -679,7 +696,7 @@ impl Mover {
             return;
         }
         self.aim_timer -= dt;
-        if sprint || self.path.is_empty() || self.aim_timer <= 0.0 {
+        if (sprint && self.streaming) || self.path.is_empty() || self.aim_timer <= 0.0 {
             let (vx, vy) = if sprint { Self::sprint_vector(x, y) } else { (x, y) };
             let cell = self.planning_cell(terrain);
             let moving = self.moving_from(cell);
@@ -696,9 +713,9 @@ impl Mover {
         self.follow(self.speed * self.factor * scale * dt);
     }
 
-    /// A sprint's heading turns towards the plan's first waypoint at [`SPRINT_TURN_RATE`]; while it
-    /// is still turning the entity and its grid line follow the heading, so the walk's path is
-    /// replaced by the point ahead on it (unless that step would enter a wall).
+    /// A sprint's heading turns towards the plan's first waypoint by [`SPRINT_TURN_STEP`] per plan;
+    /// while it is still turning the entity and its grid line follow the heading, so the walk's
+    /// path is replaced by the point ahead on it (unless that step would enter a wall).
     fn turn_sprint(
         &mut self,
         cell: (i32, i32),
@@ -717,7 +734,7 @@ impl Mover {
             .unwrap_or(target);
         let tau = std::f32::consts::TAU;
         let error = (target - heading + std::f32::consts::PI).rem_euclid(tau) - std::f32::consts::PI;
-        let max = SPRINT_TURN_RATE * dt;
+        let max = SPRINT_TURN_STEP;
         let heading = heading + error.clamp(-max, max);
         self.sprint_heading = Some(heading);
         if error.abs() <= max {
@@ -732,7 +749,7 @@ impl Mover {
             self.sprint_heading = Some(target);
             return;
         }
-        let ahead = SPRINT_VECTOR_LENGTH * GOAL_PER_UNIT;
+        let ahead = SPRINT_TURN_AHEAD;
         let end = (
             cell.0 + (ux * ahead + 0.5).floor() as i32,
             cell.1 + (uy * ahead + 0.5).floor() as i32,
@@ -752,16 +769,20 @@ impl Mover {
         terrain: &dyn Walkable,
     ) -> f32 {
         let cell = self.planning_cell(terrain);
-        let ahead = remaining.min(GOAL_CLAMP);
+        // The roll's goal (`0x141b8d1f0`): the line point plus the distance left along the heading,
+        // at least 10 cells, rounded.
+        let ahead = remaining.clamp(10.0, GOAL_CLAMP);
+        let p = (self.x - 0.5, self.y - 0.5);
         let goal = (
-            cell.0 + (ux * ahead + 0.5).floor() as i32,
-            cell.1 + (uy * ahead + 0.5).floor() as i32,
+            (p.0 + ux * ahead + 0.5).floor() as i32,
+            (p.1 + uy * ahead + 0.5).floor() as i32,
         );
         let plan = self.plan_client(terrain, goal);
-        // Open ground: one straight leg to the goal (or the goal is this very cell). The roll
-        // then keeps its exact heading and distance (the goal cell's centre is up to half a cell
-        // off the ideal point).
+        // Open ground: one straight line to the goal (or the goal is this very cell). The client
+        // walks along the line from its point to the goal cell, not along the exact heading.
         if goal == cell || plan.reached && plan.path.len() == 2 {
+            let p = (self.x - 0.5, self.y - 0.5);
+            let (ux, uy) = unit(goal.0 as f32 - p.0, goal.1 as f32 - p.1).unwrap_or((ux, uy));
             self.x += ux * step;
             self.y += uy * step;
             return step;
@@ -822,7 +843,8 @@ impl Mover {
 ///   `c = 0.49` for a positive slope, else `0.5`) and grows by `slope` per step.
 ///
 /// Closed form used here: `k = floor(|e - q| - |e - pos|)` (major axis) whole steps; the
-/// cell is `s` while `k = 0`, else `(q + k * sign, floor(minor + k * slope))`.
+/// cell is `s` until the first positive progress, `q` while `k = 0`, else
+/// `(q + k * sign, floor(minor + k * slope))`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct GridLine {
     s: (i32, i32),
@@ -906,9 +928,12 @@ impl GridLine {
         };
         let total = (e_maj - q_maj).abs();
         let rem = (e_maj as f32 - pos_maj).abs();
-        let k = ((total as f32 - rem + 1e-4).floor() as i32).clamp(0, total);
+        let progress = total as f32 - rem;
+        let k = ((progress + 1e-4).floor() as i32).clamp(0, total);
         if k == 0 {
-            return self.s;
+            // `FUN_141ec8cb0`: as soon as the accumulator is positive the first steps walk `s` to
+            // `q` in one go, whatever time is left over.
+            return if progress > 1e-6 { self.q } else { self.s };
         }
         let maj = q_maj + k * (e_maj - q_maj).signum();
         let min = (self.minor0 + k as f32 * self.slope).floor() as i32;
@@ -998,13 +1023,13 @@ mod tests {
             m.advance(0.033, &Open);
             frames += 1;
         }
-        // The official profile covers 45.9 of the 46 cells in 30 frames.
+        // The profile covers the 46 cells in 31 frames (the first is the `0x1c8`'s own).
         assert!(
             (m.y - (0.5 + ROLL_STEPS.iter().sum::<f32>())).abs() < 0.05,
             "{}",
             m.y
         );
-        assert_eq!(frames, 30);
+        assert_eq!(frames, 31);
     }
 
     #[test]
@@ -1018,22 +1043,22 @@ mod tests {
             sprint: false,
         });
         let mut last = m.x;
-        for i in 0..30 {
-            if i == 15 {
+        for i in 0..31 {
+            if i == 16 {
                 m.sprint_roll();
             }
             m.advance(0.033, &Open);
-            let expect = if i < 15 {
+            let expect = if i < 16 {
                 ROLL_STEPS[i]
             } else {
-                ROLL_SPRINT_STEPS[i - 15]
+                ROLL_SPRINT_STEPS[i - 16]
             };
             assert!((m.x - last - expect).abs() < 1e-3, "frame {}", i + 1);
             last = m.x;
         }
         assert!(!m.is_moving());
-        // About 55 cells in the 30 frames, against 46 for a tap roll.
-        assert!(m.x > 0.5 + 54.0 && m.x < 0.5 + 56.0, "{}", m.x);
+        // About 56 cells in the 31 frames, against 46 for a tap roll.
+        assert!(m.x > 0.5 + 55.0 && m.x < 0.5 + 57.0, "{}", m.x);
     }
 
     #[test]

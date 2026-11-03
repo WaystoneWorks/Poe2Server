@@ -514,6 +514,8 @@ pub struct Rolling {
     pub sprint: Option<SprintRun>,
     /// A sprint was started during this roll (even if it has ended again).
     pub sprinted: bool,
+    /// The roll key went up since the press: the roll stays on the tap curve.
+    pub released: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -835,6 +837,7 @@ impl Locomotion {
             0
         };
         self.update_speed_factor(ctx);
+        self.mover.streaming = self.sprint().is_some_and(|run| run.streaming);
         self.mover.advance(ctx.dt, ctx.terrain);
         // With the direction the client knows this frame: a new vector reaches it only with the
         // `MoveAck` below.
@@ -948,6 +951,9 @@ impl Locomotion {
                 self.held = held;
                 if let MoveState::Rolling(r) = &mut self.state {
                     r.held = held;
+                    // Once released the client's roll keeps the tap curve even if the key comes
+                    // back before `t0 + 15` (private f1065: released, pressed again at +6).
+                    r.released |= !held;
                 }
                 out.push(MoveEvent::SprintState { held });
                 if !held && let Some(run) = self.sprint().copied() {
@@ -1311,6 +1317,7 @@ impl Locomotion {
             action,
             sprint: None,
             sprinted: false,
+            released: !self.held,
         });
         out.push(MoveEvent::ActionStart {
             kind: ActionKind::Roll,
@@ -1339,6 +1346,11 @@ impl Locomotion {
             .push((at(cfg.roll.tap_end_frames), Due::RollEndTap { roll: t0 }));
         self.due
             .push((at(cfg.roll.action_frames), Due::RollEnd { roll: t0 }));
+        // The client's action start steps the roll once at once (`LINE` log: its first line has
+        // one frame on it when that frame's update begins), so its grid leads by that step.
+        if !late {
+            self.mover.advance(ctx.dt, ctx.terrain);
+        }
     }
 
     /// Click-to-move, verified on 2026-10-20 (6 single clicks, 4 holds): the press is answered
@@ -1623,7 +1635,9 @@ impl Locomotion {
                     streaming,
                 });
                 r.sprinted = true;
-                self.mover.sprint_roll();
+                if !r.released {
+                    self.mover.sprint_roll();
+                }
                 for (i, row) in cfg.sprint.buff_rows.iter().enumerate() {
                     out.push(MoveEvent::BuffAdded {
                         index: n + i as u16,
@@ -1690,6 +1704,11 @@ impl Locomotion {
                     });
                     self.state = MoveState::Sprinting(run);
                     self.start_sprint_motion(ctx);
+                    // A press during a roll that became a sprint starts nothing: the client's
+                    // Move runs on (private f1071: DodgeRoll ends at f1095, Move runs to f2560),
+                    // and a new roll here would drop the sprint without its sprint-off stats,
+                    // leaving the client sprinting for good.
+                    self.queued_roll = None;
                 } else if let Some(h) = self.live_hold(ctx.frame)
                     && self.queued_roll.is_none()
                 {
@@ -3760,6 +3779,31 @@ mod tests {
         r.tick(&[]); // F + 31: Move
         let walk = r.cfg.walk_speed * 0.033;
         assert!((step(&mut r, &[]) - walk).abs() < 1e-3);
+    }
+
+    /// Private 2026-11-02 f1065-f1095: a second press during the roll, held on. The client's Move
+    /// runs on as a sprint, so the server's sprint must too, and releasing ends it with the
+    /// sprint-off stats (a queued roll here left the client sprinting for good).
+    #[test]
+    fn a_second_press_during_a_roll_that_sprints_starts_no_roll() {
+        let mut t = Rig::new((100, 100));
+        t.tick(&[space(true), roll(10, 0)]);
+        t.run(3);
+        t.tick(&[space(false)]);
+        t.tick(&[]);
+        t.tick(&[space(true), roll(10, 0)]);
+        let events = t.run(40);
+        let rolls = events
+            .iter()
+            .filter(|(_, e)| matches!(e, MoveEvent::ActionStart { kind: ActionKind::Roll, .. }))
+            .count();
+        assert_eq!(rolls, 0, "the press starts nothing");
+        assert!(matches!(t.loco.state(), MoveState::Sprinting(_)));
+        let end = t.tick(&[space(false)]);
+        assert!(
+            end.iter().any(|e| matches!(e, MoveEvent::Stats(s) if s.contains(&(MoveStat::IsSprinting, 0)))),
+            "the release sends the sprint-off stats"
+        );
     }
 
     #[test]

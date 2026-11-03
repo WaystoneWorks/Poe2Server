@@ -39,6 +39,8 @@ fn main() {
         (x.parse::<i32>().unwrap(), y.parse::<i32>().unwrap())
     };
     let mut drift = 0;
+    let mut starts = 0;
+    let mut client_snaps = 0;
     for f in first..=last {
         let f_ = f;
         sim.plan_hints.clear();
@@ -60,10 +62,17 @@ fn main() {
                         if dir != (0, 0) {
                             acks += 1;
                             if cell != sim.grid() {
+                                // The client's line restarts on the integer cell when it snapped too.
+                                let both = frame.iter().map(|w| &w[2..]).any(|r| {
+                                    r[0] == "L" && r[7].ends_with(".0000") && r[8].ends_with(".0000") && (n(&r[1]), n(&r[2])) == cell
+                                });
                                 snaps += 1;
+                                if both {
+                                    client_snaps += 1;
+                                }
                                 if shown < show {
                                     shown += 1;
-                                    println!("f{f} SNAP model {:?} 0x64 {:?} dir {:?}", sim.grid(), cell, dir);
+                                    println!("f{f} SNAP model {:?} 0x64 {:?} dir {:?} client also {both}", sim.grid(), cell, dir);
                                 }
                             }
                         }
@@ -71,6 +80,13 @@ fn main() {
                     }
                     "A" => {
                         let (s, t) = ((n(&r[2]), n(&r[3])), (n(&r[4]), n(&r[5])));
+                        // The server's own position: what its model must hold when it starts an action.
+                        if s != sim.grid() {
+                            starts += 1;
+                            if a.iter().any(|x| x == "--starts") {
+                                println!("f{f} A {} server start {s:?} model {:?} |{:.1}|", r[1], sim.grid(), (((s.0 - sim.grid().0).pow(2) + (s.1 - sim.grid().1).pow(2)) as f32).sqrt());
+                            }
+                        }
                         match r[1].as_str() {
                             "move" => sim.on_start_move(s, t, &grid),
                             "roll" => sim.on_start_roll(s, t, 46.0, &grid),
@@ -146,7 +162,7 @@ fn main() {
         }
     }
     println!(
-        "frames {first}..{last}: grid same {same} differ {diff}; line ends same {} differ {} (float drift on {drift}); 0x64 {acks}, would snap {snaps}",
+        "frames {first}..{last}: grid same {same} differ {diff}; line ends same {} differ {} (float drift on {drift}); 0x64 {acks}, would snap {snaps} (client too {client_snaps}); action starts off {starts}",
         lines.0, lines.1
     );
 }

@@ -451,8 +451,8 @@ impl ClientSim {
     pub fn debug_state(&self) -> String {
         let l = &self.line;
         format!(
-            "cur {:?} end {:?} len {:.3} acc {:.3} thr {:.3} pend {:.3} dist {} opt {:.3} inv_t {:.3} curve t {:.4} left {:.4} range {:.3} | stop {} roll {:?}",
-            l.unswap(l.cur), l.unswap(l.end), l.len, l.acc, l.thr, l.pending, l.distance_mode, l.opt_rate, l.inv_t, l.curve.t, l.curve.left, l.curve.range, self.stop_pending,
+            "face {:.3} cur {:?} end {:?} len {:.3} acc {:.3} thr {:.3} pend {:.3} dist {} opt {:.3} inv_t {:.3} curve t {:.4} left {:.4} range {:.3} | stop {} roll {:?}",
+            self.facing, l.unswap(l.cur), l.unswap(l.end), l.len, l.acc, l.thr, l.pending, l.distance_mode, l.opt_rate, l.inv_t, l.curve.t, l.curve.left, l.curve.range, self.stop_pending,
             self.roll.as_ref().map(|r| (r.elapsed, r.heading, r.opt_len, r.waiting, r.axes_aimed))
         )
     }
@@ -994,9 +994,8 @@ impl ClientSim {
     /// roll from the current cell (`0x14197cf50`, vfunc `+0x130` `0x141b8c6a0`), unless the movement
     /// vector took over.
     pub fn on_skill_target(&mut self, target: Cell) {
-        let grid = self.grid;
-        if let Some(r) = self.roll.as_mut().filter(|r| !r.axes_aimed) {
-            r.heading = angle((target.0 - grid.0) as f32, (target.1 - grid.1) as f32);
+        if self.roll.as_ref().is_some_and(|r| !r.axes_aimed) {
+            self.roll_aim(target);
         }
     }
 
@@ -1061,6 +1060,11 @@ impl ClientSim {
         self.end_move(true, t);
         let heading = if self.axes != (0, 0) {
             angle(from_world(self.axes.0 as f32) as f32, from_world(self.axes.1 as f32) as f32)
+        } else if target != self.grid {
+            // TEST: the first heading of a cursor roll.
+            let d = ((target.0 - self.grid.0) as f32, (target.1 - self.grid.1) as f32);
+            let l = (d.0 * d.0 + d.1 * d.1).sqrt();
+            angle(round(d.0 / l * 3.0) as f32, round(d.1 / l * 3.0) as f32)
         } else {
             self.facing
         };
@@ -1094,6 +1098,17 @@ impl ClientSim {
             let target = self.clip_to_walkable(target, t);
             self.move_to_waypoint(target, speed, false, t);
         }
+    }
+
+    /// `0x14197cf50`: vfunc `+0x130` `0x141b8c6a0` sets the heading, vfunc `+0x138` `0x141971b80` ->
+    /// `0x141ddc290` faces the target.
+    fn roll_aim(&mut self, target: Cell) {
+        if target == self.grid {
+            return;
+        }
+        let a = angle((target.0 - self.grid.0) as f32, (target.1 - self.grid.1) as f32);
+        self.roll.as_mut().unwrap().heading = a;
+        self.facing = a;
     }
 
     /// `DodgeRollMove_DistanceLeft` `0x141b8cf70`.
@@ -1188,12 +1203,9 @@ impl ClientSim {
     fn roll_tick(&mut self, _dt: f32, t: &dyn Walkable) {
         // Action update (vfunc `+0x1c0` `0x141a3b010` -> `0x141974090` -> `0x14197d060`), with the stat
         // `dynamic_target_updating_prioritises_movement_vector`: the target follows the axes.
-        if self.axes != (0, 0)
-            && let Some(r) = &mut self.roll
-        {
-            let c = (from_world(self.axes.0 as f32), from_world(self.axes.1 as f32));
-            r.heading = angle(c.0 as f32, c.1 as f32);
-            r.axes_aimed = true;
+        if self.axes != (0, 0) && self.roll.is_some() {
+            self.roll_aim(self.axes_goal());
+            self.roll.as_mut().unwrap().axes_aimed = true;
         }
         let Some(r) = &self.roll else { return };
         if r.waiting {

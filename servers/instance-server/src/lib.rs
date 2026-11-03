@@ -35,6 +35,8 @@ pub mod terrain_store;
 #[cfg(test)]
 mod actor_tests;
 #[cfg(test)]
+mod replay_tests;
+#[cfg(test)]
 mod mod_tests;
 #[cfg(test)]
 mod test_support;
@@ -500,7 +502,7 @@ impl InstanceServer {
             tick_ms: self.config.instance.tick_ms.max(1) as u32,
             first_entity_id: self.config.instance.first_entity_id,
             movement: first.movement.clone(),
-            model: Arc::new(poe_game::standstill::StandStillModel),
+            model: Arc::new(poe_game::locomotion::ClientModel),
             grid: first.grid.clone(),
             codec: {
                 let public = stats.clone();

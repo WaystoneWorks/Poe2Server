@@ -454,16 +454,6 @@ impl ClientSim {
         (if l.swap { (l.p.1, l.p.0) } else { l.p }, l.len, l.acc)
     }
 
-    /// Debug text of the line and the roll, for the offline replay.
-    pub fn debug_state(&self) -> String {
-        let l = &self.line;
-        format!(
-            "coast {:?} mv {:?} foll {} face {:.3} cur {:?} end {:?} len {:.3} acc {:.3} thr {:.3} pend {:.3} dist {} opt {:.3} inv_t {:.3} curve t {:.4} left {:.4} range {:.3} | stop {} roll {:?}",
-            self.sprint_end.map(|a| a.left), self.mv.map(|m| m.target), self.following, self.facing, l.unswap(l.cur), l.unswap(l.end), l.len, l.acc, l.thr, l.pending, l.distance_mode, l.opt_rate, l.inv_t, l.curve.t, l.curve.left, l.curve.range, self.stop_pending,
-            self.roll.as_ref().map(|r| (r.elapsed, r.heading, r.opt_len, r.waiting, r.axes_aimed))
-        )
-    }
-
     /// The line's end while one runs.
     pub fn line_end(&self) -> Option<Cell> {
         (self.line.thr != 0.0).then(|| self.line.unswap(self.line.end))
@@ -500,6 +490,36 @@ impl ClientSim {
         }
     }
 
+    /// The path being followed, goal first.
+    pub fn path(&self) -> &[Cell] {
+        &self.path
+    }
+
+    /// `pf + 0x55c`, the Actor's action speed factor.
+    pub fn speed_factor(&self) -> f32 {
+        self.speed_factor
+    }
+
+    /// Sets `pf + 0x55c`: a running line takes it at the next plan.
+    pub fn set_speed_factor(&mut self, f: f32) {
+        self.speed_factor = f;
+    }
+
+    /// The roll's clip reaches its `sprint_start` event in the Animated tick of this frame.
+    pub fn roll_event_due(&self, dt: f32) -> bool {
+        match (&self.roll, &self.curves) {
+            (Some(r), Some(c)) => {
+                !r.event_done && r.elapsed + dt * r.rate >= c.roll_events.sprint_start
+            }
+            _ => false,
+        }
+    }
+
+    /// The roll's clip ends in the Animated tick of this frame.
+    pub fn roll_end_due(&self, dt: f32) -> bool {
+        self.roll.as_ref().is_some_and(|r| r.elapsed + dt * r.rate >= r.length)
+    }
+
     /// `Pathfinding_GetSpeed` `0x141dccfa0`.
     pub fn speed(&self) -> f32 {
         let f = self.permyriad.max(-10000) as f32 / 10000.0 + 1.0;
@@ -523,17 +543,7 @@ impl ClientSim {
         if self.line.thr == 0.0 {
             return;
         }
-        if std::env::var_os("SIM_TRACE").is_some() {
-            let c0 = self.line.curve.clone();
-            let a0 = self.line.acc;
-            self.line.advance(dt);
-            eprintln!(
-                "  advance acc {a0} -> {} t {} -> {} C {} -> {} range {} rate {} len {} inv_t {}",
-                self.line.acc, c0.t, self.line.curve.t, c0.value(c0.t), c0.value(self.line.curve.t), c0.range, self.line.opt_rate, self.line.len, self.line.inv_t
-            );
-        } else {
-            self.line.advance(dt);
-        }
+        self.line.advance(dt);
         while self.line.thr != 0.0 && (self.line.thr <= self.line.acc || (self.line.flag && self.line.acc > 0.0)) {
             let (cell, done) = self.line.step();
             if self.step_blocked(cell, t) {
@@ -1129,7 +1139,8 @@ impl ClientSim {
             rate: 1.0,
             heading,
             backward,
-            total: travel as i32,
+            // `sqrt(1 + stat(0xec) / 10000) * stat(0x57fa)`.
+            total: ((1.0 + self.permyriad as f32 / 10000.0).sqrt() * travel) as i32,
             waiting: false,
             axes_aimed: false,
             opt_len: None,

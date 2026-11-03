@@ -11,7 +11,8 @@
 //!
 //! The world ([`crate::world::World`]) owns the movers and the frame clock; the instance server
 //! decodes packets into [`MoveInput`] and encodes [`MoveEvent`]s. Implementations:
-//! [`crate::standstill::StandStill`] (the stub: the player stands, only teleports move it).
+//! [`crate::locomotion::Locomotion`] (the exact port) and [`crate::standstill::StandStill`] (the
+//! stub: the player stands, only teleports move it).
 
 use std::sync::Arc;
 
@@ -137,6 +138,8 @@ pub enum MoveInput {
     /// `0xfe`: switch to weapon set `set` (client `0x1421150d0`). The lockstep client applies
     /// nothing itself and blocks skill use and swaps until the answer.
     WeaponSwap { set: u8 },
+    /// `0x2e8`: the client's option `sprint_continues_with_move_input` (Player `+0x20a`).
+    SprintOption { continues: bool },
 }
 
 /// Stats the component changes (game stat ids; the session resolves the network keys).
@@ -257,6 +260,51 @@ pub enum MoveEvent {
 }
 
 
+/// Where in the client's frame a message runs: its header order key (`+0x14`, `+0x18`, `+0x1a`).
+/// The client drains the head of its frame queue at each position of `0x142130360` (hub
+/// `docs/re/wasd-movement.md`, "Frame order"), so a frame's messages must go out sorted by this key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Drain {
+    /// Order key 0: before all entities.
+    Start,
+    /// Keyed to a component of the entity: before its tick, later ones as `seq` is reached (the
+    /// frame's phase counter starts at 0 per component).
+    Component { comp: u8, seq: u16 },
+    /// Order key `0xffffffff`: after all entities.
+    End,
+}
+
+impl Drain {
+    pub const fn at(comp: u8, seq: u16) -> Self {
+        Self::Component { comp, seq }
+    }
+
+    /// Where an event runs unless its sender says otherwise.
+    pub fn default_for(event: &MoveEvent) -> Self {
+        match event {
+            MoveEvent::MoveAck { .. } | MoveEvent::Teleport { .. } => Self::at(9, 0),
+            MoveEvent::StanceChanged { .. } => Self::End,
+            _ => Self::Start,
+        }
+    }
+}
+
+/// A [`MoveEvent`] with its place in the client's frame.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Keyed {
+    pub key: Drain,
+    pub event: MoveEvent,
+}
+
+impl From<MoveEvent> for Keyed {
+    fn from(event: MoveEvent) -> Self {
+        Self {
+            key: Drain::default_for(&event),
+            event,
+        }
+    }
+}
+
 /// A character's movement facts from game data, set at player setup (players of different
 /// classes share one world, so each entity carries its own).
 #[derive(Debug, Clone, PartialEq)]
@@ -277,6 +325,10 @@ pub struct MovementConfig {
     pub curves: Option<Arc<MotionCurves>>,
     /// The class's `offset_scale` (`.ao`), scales root motion and the animation's rate.
     pub offset_scale: f32,
+    /// Frames between the client entering aim mode at login and the stance change (official: 8).
+    pub stance_delay_frames: u32,
+    /// The same after an area change (official: 3).
+    pub area_stance_delay_frames: u32,
 }
 
 impl MovementConfig {
@@ -286,11 +338,13 @@ impl MovementConfig {
             skills,
             walk_speed: 37.0,
             roll_travel_distance: 46.0,
-            sprint_bonus_percent: None,
+            sprint_bonus_percent: Some(50.0),
             sprint_clearance_level: 0,
             sprint_buff_rows,
             curves: None,
             offset_scale: 1.0,
+            stance_delay_frames: 8,
+            area_stance_delay_frames: 3,
         }
     }
 }
@@ -318,11 +372,11 @@ pub trait Mover: Send + std::fmt::Debug {
     /// with [`MoveEvent::Teleport`].
     fn teleport(&mut self, cell: Cell);
 
-    /// One frame: what the clients must be told, in send order.
-    fn tick(&mut self, ctx: &mut StepCtx) -> Vec<MoveEvent>;
+    /// One frame: what the clients must be told, in send order for equal keys.
+    fn tick(&mut self, ctx: &mut StepCtx) -> Vec<Keyed>;
 
     /// One frame while the world is paused (solo escape menu): nothing moves, inputs wait.
-    fn tick_paused(&mut self, _ctx: &mut StepCtx) -> Vec<MoveEvent> {
+    fn tick_paused(&mut self, _ctx: &mut StepCtx) -> Vec<Keyed> {
         Vec::new()
     }
 
@@ -339,6 +393,13 @@ pub trait Mover: Send + std::fmt::Debug {
     fn grid(&self) -> Cell {
         self.cell()
     }
+
+    /// Sets the stance directly (a player whose entry stance is already done); later aim-mode
+    /// inputs are then input-mode toggles.
+    fn set_stance(&mut self, _combat: bool) {}
+
+    /// Sets the active weapon set (restored state).
+    fn set_weapon_set(&mut self, _set: u8) {}
 
     /// Whether the character is in combat stance (remote blobs of late joiners).
     fn in_combat_stance(&self) -> bool {

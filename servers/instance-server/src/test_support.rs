@@ -6,7 +6,7 @@ use std::{path::Path, sync::Arc};
 
 use poe_data::views::GrantedSkill;
 use poe_game::movement::{
-    ActionKind, Cell, MoveEvent, MoveInput, MoveStat, Mover, MovementConfig, MovementModel,
+    ActionKind, Cell, Keyed, MoveEvent, MoveInput, MoveStat, Mover, MovementConfig, MovementModel,
     StepCtx, ACTION_INPUT_FLAG,
 };
 use poe_proto::{Direction, Message, OpcodeTable, Protocol};
@@ -151,7 +151,7 @@ impl Mover for Scripted {
         self.placed = true;
     }
 
-    fn tick(&mut self, ctx: &mut StepCtx) -> Vec<MoveEvent> {
+    fn tick(&mut self, ctx: &mut StepCtx) -> Vec<Keyed> {
         let mut out = Vec::new();
         if std::mem::take(&mut self.placed) {
             out.push(MoveEvent::Teleport { cell: self.cell });
@@ -203,7 +203,7 @@ impl Mover for Scripted {
                 _ => {}
             }
         }
-        out
+        out.into_iter().map(Keyed::from).collect()
     }
 
     fn cell(&self) -> Cell {

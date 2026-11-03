@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use poe_game::movement::{MoveEvent, MoveInput, UseSkill as SimUseSkill};
+use poe_game::movement::{Drain, MoveEvent, MoveInput, UseSkill as SimUseSkill};
 use poe_net::{DecodeError, Reader, Writer};
 use poe_proto::{
     Direction, Message, Protocol,
@@ -30,9 +30,6 @@ use poe_proto::{
 };
 use tracing::{debug, warn};
 
-/// Index of the Actor component in the player's object (Positioned 0 .. Actor 9 .. BuffOrbs 12,
-/// as the DLL's component inspector lists them).
-const ACTOR_COMPONENT: u8 = 9;
 /// Last byte of `0x64` on official servers (unread by the client).
 const MOVE_UPDATE_TRAILER: u8 = 0xf1;
 
@@ -136,6 +133,13 @@ pub fn client_input(name: &str, r: &mut Reader<'_>) -> Result<Option<MoveInput>,
                 (mode, _, _) => MoveInput::AimMode { mode },
             }
         }
+        // `u8` game `+0x181` (meaning unread), `u8` the option `sprint_continues_with_move_input`.
+        "Unknown02e8" => {
+            r.u8()?;
+            MoveInput::SprintOption {
+                continues: r.u8()? != 0,
+            }
+        }
         _ => return Ok(None),
     }))
 }
@@ -169,30 +173,56 @@ impl Codec {
     /// The messages for `event` of `entity`, in send order (empty for events the protocol
     /// table cannot express yet). This is the view of the entity's own client.
     pub fn encode(&self, entity: u32, event: &MoveEvent) -> anyhow::Result<Vec<Out>> {
-        self.encode_view(entity, event, true)
+        self.encode_view(entity, Drain::default_for(event), event, true)
+    }
+
+    /// [`Codec::encode`] with the event's place in the client's frame.
+    pub fn encode_keyed(
+        &self,
+        entity: u32,
+        key: Drain,
+        event: &MoveEvent,
+    ) -> anyhow::Result<Vec<Out>> {
+        self.encode_view(entity, key, event, true)
     }
 
     /// The same event as other players' clients get it: `StatsUpdate`s keep only the stats the
     /// registry marks as public (nothing is sent when none is left); every other message is
     /// identical to [`Codec::encode`].
     pub fn encode_for_others(&self, entity: u32, event: &MoveEvent) -> anyhow::Result<Vec<Out>> {
-        self.encode_view(entity, event, false)
+        self.encode_view(entity, Drain::default_for(event), event, false)
     }
 
-    fn encode_view(&self, entity: u32, event: &MoveEvent, owner: bool) -> anyhow::Result<Vec<Out>> {
+    /// [`Codec::encode_for_others`] with the event's place in the client's frame.
+    pub fn encode_others_keyed(
+        &self,
+        entity: u32,
+        key: Drain,
+        event: &MoveEvent,
+    ) -> anyhow::Result<Vec<Out>> {
+        self.encode_view(entity, key, event, false)
+    }
+
+    fn encode_view(
+        &self,
+        entity: u32,
+        key: Drain,
+        event: &MoveEvent,
+        owner: bool,
+    ) -> anyhow::Result<Vec<Out>> {
+        let (unk_14, unk_18, unk_1a) = match key {
+            Drain::Start => (0, 0, 0),
+            Drain::Component { comp, seq } => (entity, comp, seq),
+            Drain::End => (0xffff_ffff, 0, 0),
+        };
         let plain = SimulationHeader {
             entity_id: entity,
-            ..Default::default()
-        };
-        // Official: the `0x64` is ordered after the entity's own Actor component.
-        let actor = SimulationHeader {
-            entity_id: entity,
-            unk_14: entity,
-            unk_18: ACTOR_COMPONENT,
-            unk_1a: 0,
+            unk_14,
+            unk_18,
+            unk_1a,
         };
         let ack = |dir: (i32, i32), cell: (i32, i32)| MoveDirectionUpdate {
-            header: actor,
+            header: plain,
             dir_x: dir.0,
             dir_y: dir.1,
             grid_x: cell.0,
@@ -390,13 +420,7 @@ impl Codec {
             MoveEvent::StanceChanged { combat, request } => out.push(
                 self.pack(
                     &ComponentDelta {
-                        // Official: after all entities (order key 0xffffffff).
-                        header: SimulationHeader {
-                            entity_id: entity,
-                            unk_14: 0xffff_ffff,
-                            unk_18: 0,
-                            unk_1a: 0,
-                        },
+                        header: plain,
                         component: PLAYER_COMPONENT,
                         delta: PlayerDelta {
                             combat_stance: Some(*combat),

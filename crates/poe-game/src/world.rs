@@ -14,7 +14,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
     grid::GridSource,
-    movement::{Cell, MoveEvent, MoveInput, Mover, MovementConfig, MovementModel, StepCtx},
+    movement::{Cell, Drain, MoveEvent, MoveInput, Mover, MovementConfig, MovementModel, StepCtx},
 };
 
 /// An entity id, unique within a world (the protocol's `u32` entity id).
@@ -68,6 +68,8 @@ pub enum Event {
 pub struct WorldEvent {
     pub frame: u64,
     pub entity: EntityId,
+    /// Its place in the client's frame.
+    pub key: Drain,
     pub event: Event,
 }
 
@@ -213,8 +215,10 @@ impl World {
         }
     }
 
-    /// Advances one frame and returns what happened, ordered by entity id and within an entity
-    /// in the order the messages are sent.
+    /// Advances one frame and returns what happened, in the order the client drains it: order key
+    /// 0 first, then by entity, component and sequence, then the end of the frame. The client's
+    /// drain only looks at the head of its queue, so a message out of order would hold back
+    /// all that follow it.
     pub fn tick(&mut self) -> Vec<WorldEvent> {
         self.frame += 1;
         let paused = self.paused;
@@ -234,14 +238,20 @@ impl World {
             } else {
                 e.movement.tick(&mut ctx)
             };
-            for event in events {
+            for keyed in events {
                 out.push(WorldEvent {
                     frame: self.frame,
                     entity: e.id,
-                    event: Event::Movement(event),
+                    key: keyed.key,
+                    event: Event::Movement(keyed.event),
                 });
             }
         }
+        out.sort_by_key(|e| match e.key {
+            Drain::Start => (0, 0, 0, 0),
+            Drain::Component { comp, seq } => (1, e.entity.0, comp, seq),
+            Drain::End => (2, 0, 0, 0),
+        });
         out
     }
 }
@@ -251,7 +261,7 @@ mod tests {
     use super::*;
     use crate::{
         grid::VecGrid,
-        movement::{Open, SkillIds},
+        movement::{Keyed, Open, SkillIds},
         standstill::StandStillModel,
     };
 
@@ -270,7 +280,7 @@ mod tests {
         fn teleport(&mut self, cell: Cell) {
             self.cell = cell;
         }
-        fn tick(&mut self, ctx: &mut StepCtx) -> Vec<MoveEvent> {
+        fn tick(&mut self, ctx: &mut StepCtx) -> Vec<Keyed> {
             let blocked = !ctx.terrain.walkable(self.cell.0, self.cell.1);
             self.inputs
                 .drain(..)
@@ -284,6 +294,7 @@ mod tests {
                         row: action,
                         fade: blocked.then_some(ctx.dt),
                     }
+                    .into()
                 })
                 .collect()
         }

@@ -709,8 +709,8 @@ impl Actor {
             };
             let entity = e.entity.0;
             let (owner, others) = match (
-                self.init.codec.encode(entity, m),
-                self.init.codec.encode_for_others(entity, m),
+                self.init.codec.encode_keyed(entity, e.key, m),
+                self.init.codec.encode_others_keyed(entity, e.key, m),
             ) {
                 (Ok(owner), Ok(others)) => (owner, others),
                 (Err(err), _) | (_, Err(err)) => {

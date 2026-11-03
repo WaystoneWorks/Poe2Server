@@ -3,7 +3,7 @@
 //! server answers it, so the player does not move; login, area transfers and teleports work.
 //! It holds the seam until the exact port of the client's movement replaces it.
 
-use crate::movement::{Cell, MoveEvent, MoveInput, Mover, MovementConfig, MovementModel, StepCtx};
+use crate::movement::{Cell, Keyed, MoveEvent, MoveInput, Mover, MovementConfig, MovementModel, StepCtx};
 
 /// Makes [`StandStill`] movers.
 #[derive(Debug, Clone, Copy, Default)]
@@ -49,9 +49,9 @@ impl Mover for StandStill {
         self.placed = true;
     }
 
-    fn tick(&mut self, _ctx: &mut StepCtx) -> Vec<MoveEvent> {
+    fn tick(&mut self, _ctx: &mut StepCtx) -> Vec<Keyed> {
         if std::mem::take(&mut self.placed) {
-            vec![MoveEvent::Teleport { cell: self.cell }]
+            vec![MoveEvent::Teleport { cell: self.cell }.into()]
         } else {
             Vec::new()
         }
@@ -98,7 +98,7 @@ mod tests {
         assert!(m.tick(&mut ctx).is_empty());
         assert_eq!(m.cell(), (10, 10));
         m.teleport((40, 41));
-        assert_eq!(m.tick(&mut ctx), [MoveEvent::Teleport { cell: (40, 41) }]);
+        assert_eq!(m.tick(&mut ctx), [Keyed::from(MoveEvent::Teleport { cell: (40, 41) })]);
         assert!(m.tick(&mut ctx).is_empty());
         assert_eq!(m.cell(), (40, 41));
     }

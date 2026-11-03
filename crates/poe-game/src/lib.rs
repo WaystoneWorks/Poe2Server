@@ -4,6 +4,7 @@
 pub mod clientpath;
 pub mod clientsim;
 pub mod grid;
+pub mod locomotion;
 pub mod motion_data;
 pub mod movement;
 pub mod standstill;

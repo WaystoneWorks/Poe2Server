@@ -128,9 +128,6 @@ fn main() {
                 _ => {}
             }
         }
-        if a.iter().any(|x| x == "--state") {
-            println!("f{f} grid {:?} {}", sim.grid(), sim.debug_state());
-        }
         let mut seen = false;
         for r in frame.iter().map(|w| &w[2..]) {
             if in_skill && r[0] == "L" {

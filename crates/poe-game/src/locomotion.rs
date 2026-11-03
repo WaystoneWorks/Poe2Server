@@ -1088,6 +1088,11 @@ impl Locomotion {
                 MoveState::Rolling(_) | MoveState::Sprinting(_) => {
                     out.push(Self::skill_ack(&req, target));
                 }
+                // A held repeat never starts a roll: after an attack ended the sprint with the
+                // key still down, the repeats are only acked (2026-11-02, f11801, f12757).
+                _ if req.target_flags & UseSkill::HELD_REPEAT != 0 => {
+                    out.push(Self::skill_ack(&req, target));
+                }
                 // Press and release handled together (inputs queued while paused): the
                 // answers come in input order and the roll itself one batch later (2026-10-20
                 // capture, scheduled headers `(5, 8)`, `(5, 17)`, `(5, 25)`).

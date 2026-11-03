@@ -119,16 +119,17 @@ pub(crate) fn roll_skill(distance: Option<i64>) -> OwnedSkill {
     }
 }
 
-/// The simulation configuration of a test character (37 cells/s, default sprint), with the
+/// The simulation configuration of a test character (37 cells/s, sprint +50 %), with the
 /// game's curves when the hub's game files are there.
-pub(crate) fn movement_config(skills: &[OwnedSkill]) -> poe_game::locomotion::MovementConfig {
+pub(crate) fn movement_config(skills: &[OwnedSkill]) -> poe_game::movement::MovementConfig {
     let mut cfg = sim_config(
         &poe_config::MovementConfig::default(),
         skills,
         Some(MOVE_SKILL),
         Some(ROLL_ACTION_TYPE),
         37.0,
-        None,
+        // The classes' `sprint_movement_speed_+%` (Character.ot).
+        Some(50.0),
     );
     if let Some((curves, offset_scale)) = poe_game::motion_data::hub_motion() {
         cfg.curves = Some(curves);
@@ -147,7 +148,11 @@ struct Session {
 impl Session {
     fn new(cell: (i32, i32)) -> Self {
         // The fixtures are official captures of a solo zone: the player is entity 1.
-        let mut fx = Fixture::with_first_entity(1);
+        // The real port, as `actor_init` chooses it (the actor tests' default is `Scripted`).
+        let mut fx = Fixture::customised(1, |init| crate::actor::ActorInit {
+            model: Arc::new(poe_game::locomotion::ClientModel),
+            ..init
+        });
         poe_game::motion_data::hub_motion_or_panic();
         let me = fx.join("Alice", cell, movement_config(&[roll_skill(None)]));
         Self { fx, me }
@@ -705,7 +710,7 @@ fn non_movement_packets_are_not_consumed() {
 
 #[test]
 fn action_event_is_skipped_while_instance_toml_lacks_it() {
-    use poe_game::locomotion::MoveEvent;
+    use poe_game::movement::MoveEvent;
     let raw = Arc::new(Protocol::load(&capture_opcodes_dir()).unwrap());
     let listed = raw
         .instance
@@ -779,25 +784,10 @@ fn sim_config_comes_from_game_data_and_config() {
         (cfg.skills.move_skill, cfg.skills.roll_skill),
         (MOVE_SKILL, ROLL_SKILL)
     );
-    assert_eq!(cfg.roll.travel_distance, 52.0);
+    assert_eq!(cfg.roll_travel_distance, 52.0);
     assert_eq!(cfg.walk_speed, 41.5);
-    assert_eq!(cfg.sprint.buff_rows, [2758, 2737, 2853]);
-    // The sprint end timing comes from `[movement]` (capture values by default).
-    assert_eq!(
-        (
-            cfg.sprint.end_anim_frames,
-            cfg.sprint.release_window_frames
-        ),
-        (31, 6)
-    );
-    assert_eq!(
-        (
-            cfg.sprint.speed_scale,
-            cfg.sprint.move_speed_percent,
-            cfg.sprint.velocity_permyriad
-        ),
-        (1.3, 30, 3000)
-    );
+    assert_eq!(cfg.sprint_buff_rows, [2758, 2737, 2853]);
+    assert_eq!(cfg.sprint_bonus_percent, Some(30.0));
     // Without the roll skill's constant or without a roll skill, the official defaults/sentinel.
     let cfg = sim_config(
         &poe_config::MovementConfig::default(),
@@ -808,7 +798,7 @@ fn sim_config_comes_from_game_data_and_config() {
         None,
     );
     assert_eq!(
-        (cfg.roll.travel_distance, cfg.skills.move_skill),
+        (cfg.roll_travel_distance, cfg.skills.move_skill),
         (46.0, u32::MAX)
     );
     let cfg = sim_config(
@@ -820,4 +810,38 @@ fn sim_config_comes_from_game_data_and_config() {
         None,
     );
     assert_eq!(cfg.skills.roll_skill, u32::MAX);
+}
+
+/// The dev command `speed`: the actor hands the new stats to the movement, which sends
+/// `movement_velocity_+permyriad` once and walks faster.
+#[test]
+fn speed_command_changes_the_walk_and_sends_the_stat_once() {
+    let mut s = Session::new((100, 100));
+    s.walk(180, 0);
+    for _ in 0..10 {
+        s.tick();
+    }
+    let x0 = s.cell().0;
+    for _ in 0..30 {
+        s.tick();
+    }
+    let slow = s.cell().0 - x0;
+    s.fx.actor.handle(crate::actor::Cmd::SetSpeedStats {
+        session: s.me.session,
+        increased_percent: Some(100),
+        action_speed_percent: None,
+    });
+    let x1 = s.cell().0;
+    let mut stats = Vec::new();
+    for _ in 0..30 {
+        for sent in s.tick() {
+            if sent.name == StatsUpdate::NAME {
+                let m = sent.decode::<StatsUpdate>();
+                stats.extend(m.stats.iter().map(|&(k, v)| (stat_id(k).to_string(), v)));
+            }
+        }
+    }
+    let fast = s.cell().0 - x1;
+    assert_eq!(stats, [("movement_velocity_+permyriad".to_string(), 10000)]);
+    assert!((fast - 2 * slow).abs() <= 2, "{slow} -> {fast} cells in 30 frames");
 }

@@ -338,9 +338,6 @@ pub struct Locomotion {
     /// The cursor's offset from the player, as the roll key's target last said (`0x1a5`,
     /// `0x1a8`): the direction the client sends as `0x63` with Space held and no key.
     roll_cursor: Cell,
-    /// The direction of the unscaled `MoveAck` due in the frame after a sprint ended: it is
-    /// still sent first when the client's zero vector arrives in that very frame.
-    unscaled_dir: Option<Cell>,
     /// The direction the entity last moved or aimed in: the client rolls along it when the
     /// roll has no target (cursor on the player) and no key is held.
     facing: Cell,
@@ -401,7 +398,6 @@ impl Locomotion {
             bonk: false,
             cursor_mode: false,
             roll_cursor: (0, 0),
-            unscaled_dir: None,
             speed_stats: config.speed_stats,
             pending_speed_stats: None,
             sprint_percent: 0,
@@ -614,7 +610,6 @@ impl Locomotion {
             // Official f11798: `0x64 (0, 180)` unscaled at r+1.
             if streaming && self.wasd != (0, 0) {
                 self.due.push((ctx.frame + 1, Due::UnscaledAck));
-                self.unscaled_dir = Some(self.wasd);
             }
             self.finish_sprint();
         }
@@ -1600,7 +1595,6 @@ impl Locomotion {
         let cell = self.sim.grid();
         let wasd = self.wasd;
         let scaled = scale_to(wasd, SPRINT_DIR_LENGTH);
-        self.unscaled_dir = None;
         match self.sprint() {
             Some(run) if run.streaming => out.push(MoveEvent::MoveAck { dir: scaled, cell }),
             _ if self.ack_wanted || unscaled_due => {
@@ -1703,7 +1697,6 @@ impl Locomotion {
         // so it sends none (2026-11-02: one cell off, the client stood instead of coasting).
         if self.wasd != (0, 0) && run.streaming {
             self.due.push((frame + 1, Due::UnscaledAck));
-            self.unscaled_dir = Some(self.wasd);
         }
         self.finish_sprint_by_release(ctx);
     }

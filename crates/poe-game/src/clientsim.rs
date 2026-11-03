@@ -1180,7 +1180,13 @@ impl ClientSim {
         let backward = self.sprint_end.is_none() && d.abs() >= HALF_PI;
         let curve = if backward { cs.roll_back.clone() } else { cs.roll.clone() };
         let length = curve.length;
-        self.sprint_end = None;
+        // The new action ends the clip and its move event: the roll's line starts on the grid
+        // (seg1 f3578: y exactly 635).
+        if self.sprint_end.take().is_some() {
+            self.stop_move();
+            self.line.acc = 0.0;
+            self.line.pending = 0.0;
+        }
         self.roll = Some(Roll {
             elapsed: 0.0,
             length,
@@ -1510,13 +1516,15 @@ impl ClientSim {
         let e = (end.0 - self.grid.0, end.1 - self.grid.1);
         if e.0.abs().max(e.1.abs()) >= 2 {
             // `MoveEvent_Start`: `Positioned_SetMoveCurve` before `MoveEvent_MovePositioned`.
-            // `0x141f62210`: a clipped end ends the curve where the clip has moved that distance
-            // (`0x141ecd760`, the inverse of the curve).
+            // `0x141f62210`: a clipped end ends the curve where the clip has moved that distance,
+            // `|cell delta| * 10.87 / |ev+0x2c| + |curve(state elapsed +0x24)|`, then the inverse of
+            // the curve (`0x141ecd760`). `ev+0x2c` is the event's data, 1. The event fires in the
+            // clip's first Animated tick, one step into it.
             let e_time = if end == target {
                 SPRINT_END_MOVE_TIME
             } else {
                 let moved = ((e.0 * e.0 + e.1 * e.1) as f32).sqrt() * CELL;
-                cs.sprint_end.time_of(moved + cs.sprint_end.value(0.0))
+                cs.sprint_end.time_of(moved + cs.sprint_end.value(0.0).abs())
             };
             self.line.curve.load(cs.sprint_end.clone(), 0.0, e_time);
             let orient = std::mem::replace(&mut self.orient, 0);

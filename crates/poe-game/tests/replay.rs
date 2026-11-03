@@ -50,6 +50,10 @@ fn i(v: &Value, k: &str) -> i32 {
 
 fn input(v: &Value) -> MoveInput {
     match v["op"].as_str().unwrap() {
+        "wasd" if v["cursor"].as_bool() == Some(true) => MoveInput::CursorDirection {
+            x: i(v, "x"),
+            y: i(v, "y"),
+        },
         "wasd" => MoveInput::Direction {
             x: i(v, "x"),
             y: i(v, "y"),

@@ -3,10 +3,11 @@
 //! slot, WASD axes, plan timer, roll, sprint, coast). The spec is hub `docs/re/movement-*.md`;
 //! function comments give the client address (Hotfix 1). All math is `f32`, like the client's.
 //!
-//! The client's delegates are direct calls here. A frame runs in the client's order
-//! ([`ClientSim::frame_start`] = the Positioned, Pathfinding and animation ticks, then the frame's
-//! messages through `on_*`, then [`ClientSim::actor_tick`]), so the grid after `frame_start` is what
-//! a `0x64` of that frame must carry.
+//! The client's delegates are direct calls here. A frame runs in the client's order: each component
+//! ticks in list order (0 Positioned, 2 Pathfinding, 5 Animated, 9 Actor), and the messages keyed to
+//! a component (header order key, component, sequence: hub `docs/protocol/instance.md`, Frame
+//! ordering) are drained just before its tick. So a `0x1c8` keyed `(0, 0, 0)` runs before the
+//! Positioned tick and a `0x64` keyed to the Actor sees the grid after it.
 
 use std::sync::Arc;
 
@@ -483,11 +484,9 @@ impl ClientSim {
 
     // ---- frame start: Positioned tick, Pathfinding tick, animation tick ----
 
-    /// The ticks that run before the frame's Actor messages.
-    pub fn frame_start(&mut self, dt: f32, t: &dyn Walkable) {
+    /// Component 0: the Positioned tick `0x141ddc950`.
+    pub fn positioned_tick(&mut self, dt: f32, t: &dyn Walkable) {
         self.run_line(dt, t);
-        self.pathfinding_tick(dt, t);
-        self.animation_tick(dt, t);
     }
 
     /// `Positioned_RunLine` `0x141ddc9d0`.
@@ -542,8 +541,8 @@ impl ClientSim {
         t.layer(layer, c.0, c.1) < 1
     }
 
-    /// `Pathfinding_Tick` `0x141dcce80`.
-    fn pathfinding_tick(&mut self, dt: f32, t: &dyn Walkable) {
+    /// Component 2: `Pathfinding_Tick` `0x141dcce80`.
+    pub fn pathfinding_tick(&mut self, dt: f32, t: &dyn Walkable) {
         self.dt = dt;
         self.since_plan += dt;
         if !self.following {
@@ -564,9 +563,9 @@ impl ClientSim {
         }
     }
 
-    /// `AnimPlayer_Advance` `0x141d44fb0` for the two clips the movement reads, and the move event
-    /// (`MoveEvent_Start` `0x141f5f650`).
-    fn animation_tick(&mut self, dt: f32, t: &dyn Walkable) {
+    /// Component 5: `AnimPlayer_Advance` `0x141d44fb0` for the two clips the movement reads, and
+    /// the move event (`MoveEvent_Start` `0x141f5f650`).
+    pub fn animated_tick(&mut self, dt: f32, t: &dyn Walkable) {
         if let Some(r) = &mut self.roll {
             r.elapsed = (r.elapsed + dt * r.rate).min(r.length);
         }

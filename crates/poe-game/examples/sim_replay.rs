@@ -28,13 +28,12 @@ fn main() {
         }
     }
     let n = |s: &String| s.parse::<i32>().unwrap();
-    let start = rows.values().flatten().find(|r| r[0] == "G").map(|r| (n(&r[1]), n(&r[2]))).unwrap();
+    let start = rows.values().flatten().find(|r| r[2] == "G").map(|r| (n(&r[3]), n(&r[4]))).unwrap();
     let mut sim = ClientSim::new(start, 37.0, Some(curves), scale);
     let (first, last) = (*rows.keys().next().unwrap(), *rows.keys().last().unwrap());
     let (mut same, mut diff, mut snaps, mut acks, mut shown) = (0, 0, 0, 0, 0);
     let mut logged = start;
     let mut lines = (0, 0);
-    let mut pct = 0;
     let cell = |s: &String| {
         let (x, y) = s.split_once(',').unwrap();
         (x.parse::<i32>().unwrap(), y.parse::<i32>().unwrap())
@@ -42,54 +41,60 @@ fn main() {
     for f in first..=last {
         sim.plan_hints.clear();
         for g in f - 2..=f + 2 {
-            for r in rows.get(&g).into_iter().flatten().filter(|r| r[0] == "P") {
+            for r in rows.get(&g).into_iter().flatten().filter(|r| r[2] == "P").map(|r| &r[2..]) {
                 let path = r[5..].iter().map(&cell).collect();
                 sim.plan_hints.push(((n(&r[3]), n(&r[4])), (n(&r[1]), n(&r[2])), path));
             }
         }
-        sim.frame_start(DT, &grid);
         let empty = Vec::new();
         let frame = rows.get(&f).unwrap_or(&empty);
-        for r in frame {
-            match r[0].as_str() {
-                "M" => {
-                    let (dir, cell) = ((n(&r[1]), n(&r[2])), (n(&r[3]), n(&r[4])));
-                    if dir != (0, 0) {
-                        acks += 1;
-                        if cell != sim.grid() {
-                            snaps += 1;
-                            if shown < show {
-                                shown += 1;
-                                println!("f{f} SNAP model {:?} 0x64 {:?} dir {:?}", sim.grid(), cell, dir);
+        // The drain positions: -1 before all entities, then each component before its tick.
+        for comp in [-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10] {
+            for w in frame.iter().filter(|w| w[0] == comp.to_string()) {
+                let r = &w[2..];
+                match r[0].as_str() {
+                    "M" => {
+                        let (dir, cell) = ((n(&r[1]), n(&r[2])), (n(&r[3]), n(&r[4])));
+                        if dir != (0, 0) {
+                            acks += 1;
+                            if cell != sim.grid() {
+                                snaps += 1;
+                                if shown < show {
+                                    shown += 1;
+                                    println!("f{f} SNAP model {:?} 0x64 {:?} dir {:?}", sim.grid(), cell, dir);
+                                }
                             }
                         }
+                        sim.on_move_ack(dir, cell, &grid);
                     }
-                    sim.on_move_ack(dir, cell, &grid);
-                }
-                "A" => {
-                    let (s, t) = ((n(&r[2]), n(&r[3])), (n(&r[4]), n(&r[5])));
-                    match r[1].as_str() {
-                        "move" => sim.on_start_move(s, t, &grid),
-                        "roll" => sim.on_start_roll(s, t, 46.0, &grid),
-                        _ => sim.on_start_other(s),
+                    "A" => {
+                        let (s, t) = ((n(&r[2]), n(&r[3])), (n(&r[4]), n(&r[5])));
+                        match r[1].as_str() {
+                            "move" => sim.on_start_move(s, t, &grid),
+                            "roll" => sim.on_start_roll(s, t, 46.0, &grid),
+                            _ => sim.on_start_other(s),
+                        }
                     }
-                }
-                "S" => match r[1].as_str() {
-                    "is_sprinting" => sim.on_is_sprinting(r[2] != "0"),
-                    "must_sprint" => sim.on_must_sprint(r[2] != "0"),
-                    "permyriad" => {
-                        pct = n(&r[2]);
-                        sim.on_permyriad(pct);
-                    }
+                    "S" => match r[1].as_str() {
+                        "is_sprinting" => sim.on_is_sprinting(r[2] != "0"),
+                        "must_sprint" => sim.on_must_sprint(r[2] != "0"),
+                        "permyriad" => sim.on_permyriad(n(&r[2])),
+                        _ => {}
+                    },
+                    "K" => sim.on_sprint_key(r[1] != "0"),
                     _ => {}
-                },
-                "K" => sim.on_sprint_key(r[1] != "0"),
+                }
+            }
+            match comp {
+                0 => sim.positioned_tick(DT, &grid),
+                2 => sim.pathfinding_tick(DT, &grid),
+                5 => sim.animated_tick(DT, &grid),
+                9 => sim.actor_tick(DT, &grid),
                 _ => {}
             }
         }
-        sim.actor_tick(DT, &grid);
         let mut seen = false;
-        for r in frame {
+        for r in frame.iter().map(|w| &w[2..]) {
             match r[0].as_str() {
                 "G" => {
                     logged = (n(&r[1]), n(&r[2]));
@@ -114,7 +119,6 @@ fn main() {
             }
         }
     }
-    let _ = pct;
     println!(
         "frames {first}..{last}: grid same {same} differ {diff}; line ends same {} differ {}; 0x64 {acks}, would snap {snaps}",
         lines.0, lines.1

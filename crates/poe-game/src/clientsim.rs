@@ -1134,7 +1134,7 @@ impl ClientSim {
         self.sprint_key = held;
     }
 
-    /// `0x1d3` `movement_velocity_+permyriad`. A running line takes a new speed at the next plan.
+    /// `0x1d3` `virtual_action_speed_+%`: the roll's clip rate follows it.
     pub fn on_action_speed(&mut self, v: i32) {
         self.action_speed = v;
         self.roll_rate_update();
@@ -1159,6 +1159,7 @@ impl ClientSim {
         }
     }
 
+    /// `0x1d3` `movement_velocity_+permyriad`. A running line takes a new speed at the next plan.
     pub fn on_permyriad(&mut self, v: i32) {
         self.permyriad = v;
         self.roll_rate_update();

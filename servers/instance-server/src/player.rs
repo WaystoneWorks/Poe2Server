@@ -136,6 +136,16 @@ impl Player {
         sent && answer.await.unwrap_or(false)
     }
 
+    /// Dev command: change the player's speed stats (`None` keeps a value; the next frame moves
+    /// at the new speed and sends the stats).
+    pub fn set_speed_stats(&self, increased_percent: Option<i32>, action_speed_percent: Option<i32>) {
+        self.actor.send(Cmd::SetSpeedStats {
+            session: self.session,
+            increased_percent,
+            action_speed_percent,
+        });
+    }
+
     /// Dev command: put the player on `cell` (reported by the next frame).
     pub fn teleport(&self, cell: (i32, i32)) {
         self.actor.send(Cmd::Teleport {

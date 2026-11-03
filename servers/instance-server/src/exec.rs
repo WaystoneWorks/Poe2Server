@@ -272,6 +272,15 @@ impl InstanceServer {
                 player.teleport((x, y));
                 Outcome::ok(format!("teleported to {x} {y}"))
             }
+            "speed" => {
+                let increased = p.int("increased").map(|v| v as i32);
+                let action = p.int("action").map(|v| v as i32);
+                if increased.is_none() && action.is_none() {
+                    return Ok(Outcome::err("speed <increased %> [action speed %]"));
+                }
+                player.set_speed_stats(increased, action);
+                Outcome::ok(format!("speed: increased {increased:?} %, action speed {action:?} %"))
+            }
             "terrain" => {
                 self.generate_terrain(&ctx.ticket.area, ctx.seed, ctx.tile_hash, ctx.instance);
                 Outcome::ok("generating on the server: the result is in the server log")

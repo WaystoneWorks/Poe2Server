@@ -13,7 +13,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use poe_game::{
     locomotion::ClientModel,
-    movement::{MoveEvent, MoveInput, MovementConfig, SkillIds, UseSkill},
+    movement::{MoveEvent, MoveInput, MoveStat, MovementConfig, SkillIds, UseSkill},
     world::{World, WorldConfig},
 };
 use serde_json::{Value, json};
@@ -779,4 +779,87 @@ fn every_captured_episode() {
     }
     println!("episodes: {pass} of {total} pass, {} known", known.as_object().map_or(0, |k| k.len()));
     assert!(bad.is_empty(), "{} episodes:\n{}", bad.len(), bad.join("\n"));
+}
+
+/// Distance walked east in `frames` frames, and the speed stat messages sent meanwhile.
+fn walk_east(world: &mut World, player: poe_game::world::EntityId, frames: u32) -> (f32, Vec<Value>) {
+    let x0 = world.entity(player).unwrap().movement.position().0;
+    let mut stats = Vec::new();
+    for _ in 0..frames {
+        for e in world.tick() {
+            if let Some(ev @ MoveEvent::Stats(_)) = e.movement() {
+                stats.push(to_json(ev));
+            }
+        }
+    }
+    (world.entity(player).unwrap().movement.position().0 - x0, stats)
+}
+
+/// The world's speed stats change while walking: the clients get `movement_velocity_+permyriad`
+/// once, before the Positioned tick, and the line walks at the new speed from its next plan (one
+/// frame later, on the server as in the client model).
+#[test]
+fn speed_stats_change_while_walking() {
+    let mut world = World::new(WorldConfig::new(config()), Arc::new(ClientModel), Arc::new(poe_game::movement::Open));
+    let player = world.spawn_player((500, 500));
+    world.entity_mut(player).unwrap().movement.set_stance(false);
+    assert!(world.input(player, MoveInput::Direction { x: 127, y: 0 }));
+    walk_east(&mut world, player, 10);
+    let (before, quiet) = walk_east(&mut world, player, 20);
+    assert!(quiet.is_empty(), "{quiet:?}");
+    let faster = poe_game::movement::SpeedStats {
+        increased_percent: 50,
+        ..Default::default()
+    };
+    assert!(world.set_speed_stats(player, faster));
+    let (after, sent) = walk_east(&mut world, player, 20);
+    assert_eq!(sent, vec![json!({"ev": "stats", "stats": [["movement_velocity_+permyriad", 5000]]})]);
+    let step = before / 20.0;
+    assert!((after - (step + 19.0 * step * 1.5)).abs() < 0.05, "{before} -> {after}");
+    // The same stats again send nothing.
+    assert!(world.set_speed_stats(player, faster));
+    assert!(walk_east(&mut world, player, 5).1.is_empty());
+}
+
+/// A sprint while something else changes the speed (official 2026-11-02, final -4 %): no
+/// `base_move_speed_+%_from_sprint` or namelocking stat, `movement_velocity_+permyriad` from
+/// both (on f11215/f11230, off f11239).
+#[test]
+fn sprint_lists_with_other_speed_stats() {
+    let fx = fixture("sprint_hold_release");
+    let cell = (fx["start_cell"][0].as_i64().unwrap() as i32, fx["start_cell"][1].as_i64().unwrap() as i32);
+    let mut cfg = config();
+    cfg.speed_stats = poe_game::movement::SpeedStats {
+        final_percent: -4,
+        ..Default::default()
+    };
+    let mut world = World::new(WorldConfig::new(cfg), Arc::new(ClientModel), Arc::new(poe_game::movement::Open));
+    let player = world.spawn_player(cell);
+    let inputs = fx["inputs"].as_array().unwrap();
+    let mut lists = Vec::new();
+    for frame in 1..=200u64 {
+        for inp in inputs.iter().filter(|v| v["f"].as_u64().unwrap() + 1 == frame) {
+            if !matches!(inp["op"].as_str(), Some("pause" | "unsupported")) {
+                world.input(player, input(inp));
+            }
+        }
+        for e in world.tick() {
+            if let Some(MoveEvent::Stats(s)) = e.movement() {
+                if s.iter().any(|(k, _)| {
+                    matches!(k, MoveStat::IsSprinting | MoveStat::MovementVelocityPermyriad | MoveStat::AllHitsStunYou)
+                }) {
+                    lists.push(s.iter().map(|(k, v)| format!("{}={v}", k.id())).collect::<Vec<_>>().join(" "));
+                }
+            }
+        }
+    }
+    assert_eq!(
+        lists,
+        [
+            "sprint_blend_time_override_ms=1 is_sprinting=1 must_sprint=1 all_hits_stun_you=1",
+            "movement_velocity_+permyriad=4400",
+            "movement_velocity_+permyriad=-400 sprint_blend_time_override_ms=0 is_sprinting=0",
+            "all_hits_stun_you=0",
+        ]
+    );
 }

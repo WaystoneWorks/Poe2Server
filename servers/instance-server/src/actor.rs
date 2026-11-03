@@ -39,7 +39,7 @@ use std::{
 use poe_cluster::InstanceDirectory;
 use poe_game::{
     grid::GridSource,
-    movement::{MoveInput, MovementConfig, MovementModel, Open},
+    movement::{MoveInput, MovementConfig, MovementModel, Open, SpeedStats},
     world::{EntityId, Event, World, WorldConfig},
 };
 use poe_proto::{
@@ -205,6 +205,12 @@ pub enum Cmd {
         name: String,
         args: String,
     },
+    /// Dev/admin: change the speed stats of the session's entity (`None` keeps a value).
+    SetSpeedStats {
+        session: SessionId,
+        increased_percent: Option<i32>,
+        action_speed_percent: Option<i32>,
+    },
     /// The escape menu; the reply says whether the world was paused or unpaused.
     SetPaused {
         session: SessionId,
@@ -248,6 +254,9 @@ struct Member {
     out: mpsc::UnboundedSender<Frame>,
     appearance: Appearance,
     want_debug: bool,
+    /// The speed stats the entity's movement uses (from the character, then
+    /// [`Cmd::SetSpeedStats`]).
+    speed: SpeedStats,
     /// Lifecycle bytes for the next frame.
     head: Vec<u8>,
 }
@@ -390,6 +399,25 @@ impl Actor {
             } => {
                 let _ = reply.send(self.set_paused(session, paused));
             }
+            Cmd::SetSpeedStats {
+                session,
+                increased_percent,
+                action_speed_percent,
+            } => {
+                let now = self.members.iter_mut().find(|m| m.session == session).map(|m| {
+                    if let Some(v) = increased_percent {
+                        m.speed.increased_percent = v;
+                    }
+                    if let Some(v) = action_speed_percent {
+                        m.speed.action_speed_percent = v;
+                    }
+                    (m.entity, m.speed)
+                });
+                if let Some((entity, speed)) = now {
+                    info!(?speed, "speed stats changed");
+                    self.world.set_speed_stats(entity, speed);
+                }
+            }
         }
     }
 
@@ -481,6 +509,7 @@ impl Actor {
                 "spawn cell taken: standing on a free cell nearby"
             );
         }
+        let speed = req.movement.speed_stats;
         let entity = self
             .world
             .spawn_player_with_config(cell, Some(req.movement));
@@ -493,6 +522,7 @@ impl Actor {
             out: req.out,
             appearance: req.appearance,
             want_debug: req.want_debug,
+            speed,
             head: Vec::new(),
         };
         // The newcomer's entry batch: the players already here (remote form), then itself.

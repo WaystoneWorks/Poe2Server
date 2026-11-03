@@ -1350,13 +1350,17 @@ impl Locomotion {
                 fade: None,
             });
         }
-        out.push(MoveEvent::Stats(vec![
+        let mut stats = vec![
             (MoveStat::SprintBlendTimeOverrideMs, SPRINT_BLEND_OVERRIDE_MS),
             (MoveStat::IsSprinting, 1),
             (MoveStat::MustSprint, 1),
             (MoveStat::AllHitsStunYou, 1),
-            (MoveStat::VirtualSkillIgnoreNamelockingDynamically, 1),
-        ]));
+        ];
+        // Official: only while nothing else changes the speed (2026-11-02 f11215, 8 of 8).
+        if self.speed_stats.is_plain() {
+            stats.push((MoveStat::VirtualSkillIgnoreNamelockingDynamically, 1));
+        }
+        out.push(MoveEvent::Stats(stats));
         self.must_sprint_off = Some(n);
         self.due
             .push((roll + MUST_SPRINT_END_FRAMES, Due::MustSprintOff));

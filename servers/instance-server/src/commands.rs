@@ -103,6 +103,7 @@ pub const COMMANDS: &[Spec] = &[
     Spec { name: "join", group: "instances", admin: true, args: &[arg("instance", Kind::Instance)], help: "Moves you into an existing instance." },
     Spec { name: "close", group: "instances", admin: true, args: &[arg("instance", Kind::Instance)], help: "Closes an instance (its players are disconnected)." },
     Spec { name: "teleport", group: "player", admin: true, args: &[arg("x", Kind::Int), arg("y", Kind::Int)], help: "Moves you to a grid cell." },
+    Spec { name: "speed", group: "player", admin: true, args: &[opt("increased", Kind::Int), opt("action", Kind::Int)], help: "Your movement speed: increased % and action speed % (game data until gear and buffs exist)." },
     Spec { name: "terrain", group: "terrain", admin: true, args: &[], help: "Generates this instance's terrain on the server and compares it with the client's." },
     Spec { name: "account", group: "accounts", admin: true, args: &[arg("action", Kind::Choice(&["list", "create", "role", "disable", "enable", "passwd"])), opt("name", Kind::Text), opt("value", Kind::Rest)], help: "Accounts: create <name> <password>, role <name> player|admin, disable|enable <name>, passwd <name> <password>, list." },
     Spec { name: "area_info", group: "terrain", admin: true, args: &[arg("area", Kind::Area), arg("seed", Kind::Seed)], help: "Research: a second AreaInfo on this connection (the client may crash)." },

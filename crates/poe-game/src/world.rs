@@ -204,6 +204,18 @@ impl World {
         }
     }
 
+    /// The entity's speed stats changed (gear, buffs, a dev command): the next tick moves at the
+    /// new speed and sends the results to the clients ([`Mover::set_speed_stats`]).
+    pub fn set_speed_stats(&mut self, id: EntityId, stats: crate::movement::SpeedStats) -> bool {
+        match self.entities.get_mut(&id) {
+            Some(e) => {
+                e.movement.set_speed_stats(stats);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Places an entity (the next tick reports it with [`MoveEvent::Teleport`]).
     pub fn teleport(&mut self, id: EntityId, cell: Cell) -> bool {
         match self.entities.get_mut(&id) {

@@ -367,6 +367,8 @@ pub struct ClientSim {
     /// `+0x2a1` bit 2.
     in_plan: bool,
     roll: Option<Roll>,
+    /// `A + 0x248`: a server Move that waits for the roll to end, `(start, target)`.
+    queued_move: Option<(Cell, Cell)>,
     /// The sprint part runs its end check.
     sprint: bool,
     sprint_end: Option<SprintEndAnim>,
@@ -415,6 +417,7 @@ impl ClientSim {
             plan_timer: 0.0,
             in_plan: false,
             roll: None,
+            queued_move: None,
             sprint: false,
             sprint_end: None,
             bonked: false,
@@ -451,8 +454,8 @@ impl ClientSim {
     pub fn debug_state(&self) -> String {
         let l = &self.line;
         format!(
-            "face {:.3} cur {:?} end {:?} len {:.3} acc {:.3} thr {:.3} pend {:.3} dist {} opt {:.3} inv_t {:.3} curve t {:.4} left {:.4} range {:.3} | stop {} roll {:?}",
-            self.facing, l.unswap(l.cur), l.unswap(l.end), l.len, l.acc, l.thr, l.pending, l.distance_mode, l.opt_rate, l.inv_t, l.curve.t, l.curve.left, l.curve.range, self.stop_pending,
+            "coast {:?} mv {:?} foll {} face {:.3} cur {:?} end {:?} len {:.3} acc {:.3} thr {:.3} pend {:.3} dist {} opt {:.3} inv_t {:.3} curve t {:.4} left {:.4} range {:.3} | stop {} roll {:?}",
+            self.sprint_end.map(|a| a.left), self.mv.map(|m| m.target), self.following, self.facing, l.unswap(l.cur), l.unswap(l.end), l.len, l.acc, l.thr, l.pending, l.distance_mode, l.opt_rate, l.inv_t, l.curve.t, l.curve.left, l.curve.range, self.stop_pending,
             self.roll.as_ref().map(|r| (r.elapsed, r.heading, r.opt_len, r.waiting, r.axes_aimed))
         )
     }
@@ -569,7 +572,7 @@ impl ClientSim {
         {
             return true;
         }
-        let layer = if self.sprint { 2 } else { 0 };
+        let layer = 0;
         t.layer(layer, c.0, c.1) < 1
     }
 
@@ -939,6 +942,11 @@ impl ClientSim {
 
     /// The Actor tick `0x141e42a00`, the steps that move the player.
     pub fn actor_tick(&mut self, dt: f32, t: &dyn Walkable) {
+        if self.roll.is_none()
+            && let Some((start, target)) = self.queued_move.take()
+        {
+            self.on_start_move(start, target, t);
+        }
         if self.axes != (0, 0) {
             if self.mv.is_none() {
                 self.start_wasd_walk(t);
@@ -968,6 +976,12 @@ impl ClientSim {
 
     /// `0x1c8` of a Move: `Actor_StartQueuedAction` `0x141e40b50`, Move branch.
     pub fn on_start_move(&mut self, start: Cell, target: Cell, t: &dyn Walkable) {
+        // A running roll keeps slot 0: the Move stays queued (`A + 0x248`) until the Actor tick after
+        // the roll's end; its start cell snaps then (`Actor_InstallQueuedMove`).
+        if self.roll.is_some() {
+            self.queued_move = Some((start, target));
+            return;
+        }
         let d = (self.grid.0 - target.0, self.grid.1 - target.1);
         if (((d.0 * d.0 + d.1 * d.1) as f32).sqrt()) < 9.0 {
             return;

@@ -1541,8 +1541,12 @@ mod tests {
             m.positioned_tick(0.033, &open);
             m.actor_tick(0.033, &open);
         }
+        // A 46-cell roll on open ground runs 49 cells, with the stand-in and with the game's
+        // curves alike: each frame's line runs from the cell to `left` past the line's point, so
+        // the sub-cell phase adds up (the harness matches the client's `LINE` on every roll
+        // frame of `port1` with the same total).
         let rolled = m.grid().0 - 100;
-        assert!((43..=47).contains(&rolled), "{rolled}");
+        assert!((47..=50).contains(&rolled), "{rolled}");
         m.end_roll();
         m.positioned_tick(0.033, &open);
         m.set_axes((0, 180), &open);

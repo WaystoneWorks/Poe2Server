@@ -741,14 +741,19 @@ fn a_sprint_without_a_stream_coasts_without_a_direction_update() {
         let batch = s.tick();
         assert!(!batch.iter().any(|b| b.is::<MoveDirectionUpdate>()));
     }
-    // The `SprintEnd` root motion: about 20 cells, at sprint speed (the release batch ended
-    // the sprint: 20 frames).
+    // The `SprintEnd` root motion: about 19 cells, most of it in these 20 frames.
     let coasted = s.cell().0 - x;
-    assert!((18..=21).contains(&coasted), "{x} -> {}", s.cell().0);
-    // The held key walks on from the sprint-off batch + 22.
-    for _ in 0..10 {
+    assert!((16..=20).contains(&coasted), "{x} -> {}", s.cell().0);
+    // `SprintEnd` refuses walks for 0.75 / rate; with no `0x64` plan the rate uses the speed after
+    // the stats (T 1.007 s, 30 frames): the coast stops, then the held key walks on.
+    let mut stood = 0;
+    let mut last = s.cell().0;
+    for _ in 0..20 {
         s.tick();
+        stood += i32::from(s.cell().0 == last);
+        last = s.cell().0;
     }
+    assert!(stood >= 6, "{stood}");
     assert!(s.cell().0 >= x + coasted + 8, "{x} -> {}", s.cell().0);
 }
 

@@ -40,6 +40,16 @@ pub struct SkillIds {
     pub move_skill: u32,
     /// Dodge roll.
     pub roll_skill: u32,
+    /// The dodge roll of the other weapon set: the Actor has one per set (`0x80000040` and
+    /// `0x80000041`, slot byte `0x40`/`0x41`), and the client sends the active set's.
+    pub roll_skill_other_set: u32,
+}
+
+impl SkillIds {
+    /// One of the dodge rolls.
+    pub fn is_roll(&self, skill: u32) -> bool {
+        skill == self.roll_skill || skill == self.roll_skill_other_set
+    }
 }
 
 /// Dodge roll tuning (official values as defaults).
@@ -63,12 +73,13 @@ pub struct RollConfig {
 /// Click-to-move tuning (official values as defaults).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClickConfig {
-    /// While the click is held the server re-issues the Move `StartAction` towards the current
-    /// target every this many frames (2026-10-20 capture: 15, sometimes 13).
+    /// While the click is held, the server re-issues the Move `StartAction` towards the latest
+    /// target when this many frames passed since the hold's last Move start with no new
+    /// press or repeat in between. The client repeats every 2 frames but skips a beat about
+    /// every 15 (its own timing), which is where the official restarts come: all 52 restarts
+    /// of the 5 held clicks in the 2026-10-20 and 2026-11-02 captures, 2 frames after the
+    /// press' answer when the first repeat is late, never while a repeat keeps the pace.
     pub restart_frames: u32,
-    /// Frames after the press' answer at which the first restart comes (hold 1: 2; hold 2: 6,
-    /// so UNVERIFIED what triggers them).
-    pub first_restart_frames: u32,
 }
 
 /// Sprint tuning (official values as defaults).
@@ -178,6 +189,11 @@ pub struct MovementConfig {
     /// Frames between the client entering aim mode (`AimMode(1)`) at entry and the stance
     /// change.
     pub stance_delay_frames: u32,
+    /// The same after an area change: the client then sends `AimMode(0)` and `AimMode(1)` in
+    /// one batch (2026-11-02 capture, 10 waypoint and transition loads: 3 frames 7 times, 2
+    /// once, 4 three times; the 9-14 frames of a login are `stance_delay_frames`). The delay
+    /// follows the area load on the official server.
+    pub area_stance_delay_frames: u32,
     /// Frames between a later input-mode toggle (`AimMode(0|1)` with the stance request
     /// `0x200`, mouse mode and back) and the stance change, counted from the batch that
     /// answers the input (2026-10-20 capture: 0, the same batch).
@@ -202,8 +218,7 @@ impl MovementConfig {
                 stun_threshold: 100,
             },
             click: ClickConfig {
-                restart_frames: 15,
-                first_restart_frames: 2,
+                restart_frames: 2,
             },
             attack_speed: AttackSpeedConfig {
                 floor: 0.3,
@@ -233,6 +248,7 @@ impl MovementConfig {
             walk_speed: 37.0,
             pathfinder: Pathfinder::Client,
             stance_delay_frames: 8,
+            area_stance_delay_frames: 3,
             stance_toggle_frames: 0,
             stance_lerp_combat: 0.05,
             stance_lerp_peaceful: 0.2,
@@ -429,6 +445,8 @@ pub struct MoveHold {
     /// quiet for longer than [`MoveHold::STALE_FRAMES`] is over (5 of 12 holds in the
     /// 2026-10-20 capture ended without a `SkillReleased`).
     last_input: u64,
+    /// Frame of the hold's latest Move start (press, repeat or restart).
+    last_start: u64,
 }
 
 impl MoveHold {
@@ -557,6 +575,8 @@ pub struct Locomotion {
     stance_scheduled: bool,
     /// The stance at entry has been set; later `AimMode` inputs are input-mode toggles.
     stance_entered: bool,
+    /// Frame of an `AimMode(0)` before the entry stance (an area change sends 0 then 1).
+    entry_mode0_frame: Option<u64>,
     /// The value of the last `0x200` not yet answered.
     stance_request: Option<u8>,
     /// The last `AimMode` asked for combat stance (mode 1).
@@ -619,6 +639,7 @@ impl Locomotion {
             combat_stance: false,
             stance_scheduled: false,
             stance_entered: false,
+            entry_mode0_frame: None,
             stance_request: None,
             aim_combat: true,
             teleport: None,
@@ -816,7 +837,7 @@ impl Locomotion {
                 }
                 // In click-to-move mode the roll key is released with `SkillReleased` (no
                 // `SkillInputEnd`), which is answered with both acks (2026-10-20 capture).
-                if skill == ctx.config.skills.roll_skill {
+                if ctx.config.skills.is_roll(skill) {
                     out.push(MoveEvent::InputEndAck);
                 }
                 out.push(MoveEvent::ReleasedAck { skill, flag });
@@ -857,13 +878,18 @@ impl Locomotion {
                 if !self.stance_entered {
                     // At entry the stance follows the first mode 1 in the batch 8 frames after
                     // the one answering it (captures: 9 frames after the input's frame; 14 in the
-                    // 2026-10-20 session: it depends on the area load).
-                    if combat && !self.stance_scheduled {
+                    // 2026-10-20 session: it depends on the area load). After an area change
+                    // (mode 0 then 1 in one batch) 3 frames.
+                    if !combat {
+                        self.entry_mode0_frame = Some(ctx.frame);
+                    } else if !self.stance_scheduled {
                         self.stance_scheduled = true;
-                        self.due.push((
-                            ctx.frame + ctx.config.stance_delay_frames as u64,
-                            Due::Stance(true),
-                        ));
+                        let delay = if self.entry_mode0_frame == Some(ctx.frame) {
+                            ctx.config.area_stance_delay_frames
+                        } else {
+                            ctx.config.stance_delay_frames
+                        };
+                        self.due.push((ctx.frame + delay as u64, Due::Stance(true)));
                     }
                 } else if combat != self.combat_stance || self.stance_request.is_some() {
                     // Input mode toggled (with the stance request `0x200`): 2 of 2 in the
@@ -1009,7 +1035,7 @@ impl Locomotion {
     fn on_use_skill(&mut self, req: UseSkill, ctx: &mut StepCtx, out: &mut Vec<MoveEvent>) {
         let target = self.target_of(&req);
         let busy = matches!(self.state, MoveState::Rolling(_) | MoveState::Sprinting(_));
-        if req.skill == ctx.config.skills.roll_skill {
+        if ctx.config.skills.is_roll(req.skill) {
             match self.state {
                 // Chained rolls (2026-10-20: presses 28 and 29 frames after the previous start,
                 // plus the 2026-10-14 case at 27): acked at once, the roll itself starts when
@@ -1182,7 +1208,8 @@ impl Locomotion {
             .filter(|h| frame - h.last_input <= MoveHold::STALE_FRAMES)
     }
 
-    /// Remembers the click as held until its release; a press starts the restart timer.
+    /// Remembers the click as held until its release; every press or repeat restarts the
+    /// restart timer.
     fn note_hold(&mut self, req: &UseSkill, target: Cell, ctx: &StepCtx) {
         let repeat = req.target_flags & UseSkill::HELD_REPEAT != 0;
         match &mut self.move_hold {
@@ -1190,6 +1217,7 @@ impl Locomotion {
                 h.goal = target;
                 h.flags = req.flags;
                 h.last_input = ctx.frame;
+                h.last_start = ctx.frame;
             }
             _ => {
                 self.hold_seq += 1;
@@ -1198,13 +1226,14 @@ impl Locomotion {
                     flags: req.flags,
                     seq: self.hold_seq,
                     last_input: ctx.frame,
+                    last_start: ctx.frame,
                 });
-                self.due.push((
-                    ctx.frame + ctx.config.click.first_restart_frames as u64,
-                    Due::MoveRestart { seq: self.hold_seq },
-                ));
             }
         }
+        self.due.push((
+            ctx.frame + ctx.config.click.restart_frames as u64,
+            Due::MoveRestart { seq: self.hold_seq },
+        ));
     }
 
     fn start_other(
@@ -1327,11 +1356,11 @@ impl Locomotion {
 
     /// Re-aims the running action after a `UpdateSkillTarget`.
     fn steer(&mut self, skill: u32, offset: Cell, abs: Cell, ctx: &StepCtx) {
-        if skill == ctx.config.skills.roll_skill {
+        if ctx.config.skills.is_roll(skill) {
             self.roll_cursor = offset;
         }
         match &mut self.state {
-            MoveState::Rolling(r) if skill == ctx.config.skills.roll_skill => {
+            MoveState::Rolling(r) if ctx.config.skills.is_roll(skill) => {
                 if offset != (0, 0) && !r.wasd_driven {
                     r.offset = offset;
                     if let Motion::Roll { x, y, .. } = &mut self.mover.motion {
@@ -1507,6 +1536,10 @@ impl Locomotion {
                     self.move_hold = None;
                     return;
                 }
+                // A newer press or repeat restarted the timer.
+                if ctx.frame < h.last_start + cfg.click.restart_frames as u64 {
+                    return;
+                }
                 self.due.push((
                     ctx.frame + cfg.click.restart_frames as u64,
                     Due::MoveRestart { seq },
@@ -1524,6 +1557,9 @@ impl Locomotion {
                         entity: None,
                         unk: 0xff,
                     });
+                    if let Some(m) = &mut self.move_hold {
+                        m.last_start = ctx.frame;
+                    }
                 }
             }
             Due::StartDeferredRoll => {
@@ -1887,6 +1923,7 @@ mod tests {
                 SkillIds {
                     move_skill: MOVE,
                     roll_skill: ROLL,
+                    roll_skill_other_set: u32::MAX,
                 },
                 [100, 101, 102],
             );
@@ -2284,16 +2321,18 @@ mod tests {
     }
 
     #[test]
-    fn a_held_click_restarts_its_move_every_15_frames() {
+    fn a_held_click_restarts_its_move_when_a_repeat_is_late() {
         let mut r = Rig::new((10, 10));
         r.tick(&[MoveInput::UseSkill(skill(MOVE, 60, 0))]);
         let mut held = skill(MOVE, 60, 0);
         held.flags = 0;
         held.target_flags = UseSkill::HELD_REPEAT;
         let mut frames = Vec::new();
-        for i in 0..40 {
-            // The client repeats every 2 frames while the button is down.
-            let inputs = if i % 2 == 1 {
+        // The client repeats every 2 frames while the button is down, but skips a beat now
+        // and then (the first repeat after the press here, and the one at 14 comes at 15).
+        let repeats = [4, 6, 8, 10, 12, 15, 17, 19, 21, 23, 25];
+        for _ in 0..30 {
+            let inputs = if repeats.contains(&(r.frame + 1)) {
                 vec![MoveInput::UseSkill(held)]
             } else {
                 vec![]
@@ -2306,7 +2345,9 @@ mod tests {
                 }
             }
         }
-        assert_eq!(frames, [3, 18, 33]);
+        // 2 frames after the press' start (frame 1) and after the repeat at 12; after the last
+        // repeat (25) every 2 frames until the hold is stale (6 frames).
+        assert_eq!(frames, [3, 14, 27, 29, 31]);
         // Released: no more restarts.
         r.tick(&[MoveInput::SkillReleased {
             skill: MOVE,
@@ -2323,15 +2364,16 @@ mod tests {
     fn a_hold_without_repeats_expires_without_a_release() {
         let mut r = Rig::new((10, 10));
         r.tick(&[MoveInput::UseSkill(skill(MOVE, 200, 0))]);
-        // Nothing follows (the capture's holds that ended with a roll or attack): the
-        // restarts stop and a later roll does not resume the walk.
+        // Nothing follows (the capture's holds that ended with a roll or attack): restarts
+        // every 2 frames until the hold is stale (6 frames), then none, and a later roll
+        // does not resume the walk.
         let ev = r.run(40);
-        assert!(
-            ev.iter()
-                .filter(|(_, e)| matches!(e, MoveEvent::ActionStart { .. }))
-                .count()
-                <= 1
-        );
+        let starts: Vec<u64> = ev
+            .iter()
+            .filter(|(_, e)| matches!(e, MoveEvent::ActionStart { .. }))
+            .map(|(f, _)| *f)
+            .collect();
+        assert_eq!(starts, [3, 5, 7]);
         r.tick(&[roll(0, 30)]);
         let ev = r.run(31);
         assert!(!ev.iter().any(|(_, e)| matches!(
@@ -3038,6 +3080,26 @@ mod tests {
         // Once only.
         r.tick(&[MoveInput::AimMode { mode: 1 }]);
         assert!(r.run(12).is_empty());
+    }
+
+    #[test]
+    fn after_an_area_change_the_stance_comes_3_frames_after_the_mode_pair() {
+        let mut r = Rig::new((10, 10));
+        r.tick(&[MoveInput::AimMode { mode: 0 }, MoveInput::AimMode { mode: 1 }]);
+        let ev = r.run(12);
+        assert_eq!(
+            ev,
+            vec![
+                (4, MoveEvent::OrientationLerp { value: 0.05 }),
+                (
+                    4,
+                    MoveEvent::StanceChanged {
+                        combat: true,
+                        request: None
+                    }
+                )
+            ]
+        );
     }
 
     #[test]

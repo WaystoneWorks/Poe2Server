@@ -28,6 +28,8 @@ fn config() -> MovementConfig {
         SkillIds {
             move_skill: MOVE_SKILL,
             roll_skill: ROLL_SKILL,
+            // The second weapon set's roll (2026-11-02 capture).
+            roll_skill_other_set: ROLL_SKILL + 1,
         },
         BUFF_ROWS,
     );
@@ -262,10 +264,14 @@ fn problems(fx: &Value, name: &str, tol: Tol, max_err: Option<f64>, check_events
         fx["start_cell"][0].as_i64().unwrap() as i32,
         fx["start_cell"][1].as_i64().unwrap() as i32,
     );
-    let mut world = World::new(
-        WorldConfig::new(config()),
-        Arc::new(poe_game::movement::Open),
-    );
+    let mut cfg = config();
+    // Entry episodes carry the frame of the official entry stance: it follows the official
+    // server's area load (login 9-14 frames, area change 3-5), which no input decides.
+    if let Some(f) = fx["entry_stance_frame"].as_u64() {
+        cfg.stance_delay_frames = f as u32 - 1;
+        cfg.area_stance_delay_frames = f as u32 - 1;
+    }
+    let mut world = World::new(WorldConfig::new(cfg), Arc::new(poe_game::movement::Open));
     let player = world.spawn_player(start);
     // Fixtures that start after the entry stance say which one it was.
     if let Some(combat) = fx["combat_stance"].as_bool() {
@@ -738,7 +744,12 @@ fn every_captured_episode() {
             let reason = known[&id].as_str();
             match (p.is_empty(), reason) {
                 (true, None) => pass += 1,
-                (false, Some(_)) => {}
+                (false, Some(r)) => {
+                    // `REPLAY_SHOW_KNOWN=1`: how the known ones differ.
+                    if std::env::var_os("REPLAY_SHOW_KNOWN").is_some() {
+                        println!("known {id} ({r}): {}", p.first().unwrap());
+                    }
+                }
                 (true, Some(_)) => bad.push(format!("{id}: passes now, remove it from known.json")),
                 (false, None) => bad.push(format!(
                     "{id} ({} inputs): {}",

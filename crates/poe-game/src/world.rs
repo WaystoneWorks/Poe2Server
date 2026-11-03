@@ -260,6 +260,7 @@ mod tests {
             SkillIds {
                 move_skill: 0x2000_2909,
                 roll_skill: ROLL,
+                roll_skill_other_set: u32::MAX,
             },
             [1, 2, 3],
         );

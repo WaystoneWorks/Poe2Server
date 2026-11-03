@@ -51,11 +51,16 @@ pub fn sim_config(
     speed: f32,
     sprint_bonus: Option<f32>,
 ) -> SimConfig {
-    let roll = roll_action.and_then(|t| skills.iter().find(|s| s.granted.action_type == Some(t)));
+    let mut rolls = skills
+        .iter()
+        .filter(|s| roll_action.is_some() && s.granted.action_type == roll_action);
+    let roll = rolls.next();
+    let roll_other_set = rolls.next();
     let mut cfg = SimConfig::new(
         SkillIds {
             move_skill: move_skill.unwrap_or(u32::MAX),
             roll_skill: roll.map_or(u32::MAX, |s| s.id),
+            roll_skill_other_set: roll_other_set.map_or(u32::MAX, |s| s.id),
         },
         config.sprint_buff_rows,
     );

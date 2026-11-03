@@ -21,7 +21,8 @@ const GOAL_LIMIT_SQ: i64 = 0x4840;
 const GOAL_CLAMP: f32 = 126.0;
 /// `0x141dcc460`: the line of a turning sprint ends this many cells along the turned facing.
 const SPRINT_TURN_AHEAD: f32 = 180.0;
-/// `FUN_141b8c7f0`: a roll stops steering when its goal is this close (`FUN_140132800`).
+/// `FUN_141b8c7f0`: a roll stops steering when its target is this close (`FUN_140132800`,
+/// measured: between 1.41 and 2 by the `LINE` log).
 const ROLL_STOP_DISTANCE: f32 = 1.6;
 /// `FUN_141b8d1f0`: a roll's search looks at least this far ahead.
 const ROLL_MIN_LOOKAHEAD: f32 = 10.0;
@@ -60,6 +61,16 @@ impl Curve {
             + self.positions[i]
             + (last - first) * loops
     }
+}
+
+/// The curves of the character's dodge roll and sprint end (`basedodgeroll`, `basesprint`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MotionCurves {
+    pub roll: Curve,
+    pub roll_back: Curve,
+    pub roll_sprint: Curve,
+    pub roll_back_sprint: Curve,
+    pub sprint_end: Curve,
 }
 
 /// A curve in use (Positioned `+0x2a8`, `L + 0xa0`).
@@ -362,6 +373,8 @@ struct Roll {
     extend: Option<f32>,
     /// The heading follows the keys, not the cursor.
     keys: bool,
+    /// `+0x3f`: at least 90 degrees from the facing: `_bwd_` animation, orientation mode 2.
+    backward: bool,
     /// Clearance level of the action's search (`+0x20`, `FUN_141b8d1f0`), fixed at its start: the
     /// sprint arriving during the roll does not change it.
     level: i32,
@@ -401,8 +414,7 @@ pub struct ClientMotion {
     curve: Option<CurveRun>,
     /// The animation's coast line runs ([`ClientMotion::start_coast`]).
     coasting: bool,
-    /// The `SprintEnd` curve (`sprint_end_*`, `basesprint/onerig.amd`).
-    pub sprint_end_curve: Option<Curve>,
+    pub curves: Option<Arc<MotionCurves>>,
     /// The class's `offset_scale` (`.ao`), scales root motion and the animation's rate.
     pub offset_scale: f32,
     /// Seconds of `SprintEnd` left. `Actor_StartWasdWalk` starts nothing while it plays.
@@ -414,6 +426,9 @@ pub struct ClientMotion {
     sprint_on: bool,
     /// The buff `must_sprint`: key state does not end the sprint while it is on.
     pub must_sprint: bool,
+    /// The speed when the frame started: the stats of a frame do not reach the `SprintEnd` rate
+    /// of that frame (`LINE`: coast T after a batch with the sprint-off stats).
+    frame_speed: f32,
     /// Cells per second: base speed, attack factor and the sprint's stats.
     pub speed: f32,
     pub factor: f32,
@@ -460,12 +475,13 @@ impl ClientMotion {
             roll: None,
             curve: None,
             coasting: false,
-            sprint_end_curve: None,
+            curves: None,
             offset_scale: 1.0,
             end_anim: 0.0,
             coast_due: None,
             sprint_on: false,
             must_sprint: false,
+            frame_speed: speed,
             speed,
             factor: 1.0,
             scale: 1.0,
@@ -487,6 +503,11 @@ impl ClientMotion {
         } else {
             (self.grid.0 as f32, self.grid.1 as f32)
         }
+    }
+
+    /// Line state for logs: time, elapsed, acc, length.
+    pub fn line_state(&self) -> (f32, f32, f32, f32) {
+        (self.line.t, self.line.elapsed, self.line.acc, self.line.len)
     }
 
     /// End cell of the running line.
@@ -534,6 +555,7 @@ impl ClientMotion {
 
     /// The frame's components before the Actor: Positioned, then Animated.
     pub fn positioned_tick(&mut self, dt: f32, terrain: &dyn Walkable) {
+        self.frame_speed = self.move_speed();
         self.step_line(dt, terrain);
         self.animated_tick(dt, terrain);
     }
@@ -726,6 +748,10 @@ impl ClientMotion {
             (target.0 - self.grid.0) as f32,
             (target.1 - self.grid.1) as f32,
         );
+        if self.roll.as_ref().is_some_and(|r| r.backward) {
+            // Orientation mode 2 (`0x141de3afa`).
+            self.facing = (self.facing - PI).rem_euclid(TAU);
+        }
         self.line.setup(self.grid, target, speed, distance_mode);
     }
 
@@ -847,9 +873,9 @@ impl ClientMotion {
         if self.roll.is_some() {
             return;
         }
-        if let Some(curve) = &self.sprint_end_curve {
+        if let Some(curve) = self.curves.as_ref().map(|c| &c.sprint_end) {
             // `0x141e56ae0`: movement speed in units over the animation's speed.
-            let rate = self.move_speed() * UNITS_PER_CELL
+            let rate = self.frame_speed * UNITS_PER_CELL
                 / (SPRINT_END_ANIM_SPEED * self.offset_scale);
             self.end_anim = curve.length / rate;
             self.coast_due = Some(rate);
@@ -863,7 +889,6 @@ impl ClientMotion {
         &mut self,
         cell: Cell,
         target: Cell,
-        curve: Curve,
         total: i32,
         dt: f32,
         terrain: &dyn Walkable,
@@ -875,6 +900,7 @@ impl ClientMotion {
         self.end_path();
         self.ending = 0;
         self.coasting = false;
+        let playing_end_anim = self.end_anim;
         self.end_anim = 0.0;
         self.coast_due = None;
         // `DodgeRoll_InitHeading` (`0x141b8bda0`).
@@ -888,8 +914,22 @@ impl ClientMotion {
         } else {
             self.facing
         };
+        // The action start turns to its target, so a roll against the cursor runs backwards.
+        let faces = if target != self.grid {
+            facing_of(
+                (target.0 - self.grid.0) as f32,
+                (target.1 - self.grid.1) as f32,
+            )
+        } else {
+            self.facing
+        };
+        let off = (heading - faces).rem_euclid(TAU);
+        // Not while `SprintEnd` plays (`LINE`: one roll each way; the reason is unread).
+        let backward = playing_end_anim <= 0.0 && off.min(TAU - off) >= PI / 2.0;
         self.facing = heading;
-        self.curve = Some(CurveRun::load(curve));
+        self.curve = self.curves.as_ref().map(|c| {
+            CurveRun::load(if backward { c.roll_back.clone() } else { c.roll.clone() })
+        });
         self.roll = Some(Roll {
             heading,
             total,
@@ -897,6 +937,7 @@ impl ClientMotion {
             steering: true,
             extend: None,
             keys: self.axes != (0, 0),
+            backward,
             level: self.level,
         });
         // The action start: a plan from the cell and one step (the second plan is the frame's
@@ -921,11 +962,16 @@ impl ClientMotion {
         }
     }
 
-    /// The roll's animation changes (sprint variant): same time, new curve (`FUN_141b8cd50`).
-    pub fn set_roll_curve(&mut self, curve: Curve) {
+    /// The roll's animation changes to its sprint variant: same time, new curve (`FUN_141b8cd50`).
+    pub fn set_roll_sprinting(&mut self) {
+        let Some(curves) = self.curves.clone() else { return };
         if let (Some(run), Some(r)) = (&mut self.curve, &self.roll) {
             let t = r.elapsed;
-            *run = CurveRun::load(curve);
+            *run = CurveRun::load(if r.backward {
+                curves.roll_back_sprint.clone()
+            } else {
+                curves.roll_sprint.clone()
+            });
             run.restart(t);
         }
     }
@@ -994,17 +1040,21 @@ impl ClientMotion {
             (goal.0 - self.grid.0) as f32,
             (goal.1 - self.grid.1) as f32,
         );
-        if (gx * gx + gy * gy).sqrt() < ROLL_STOP_DISTANCE {
-            return;
-        }
+        let (tx, ty) = (
+            (target.0 - self.grid.0) as f32,
+            (target.1 - self.grid.1) as f32,
+        );
+        // `FUN_141b8d770`, `FUN_141dde3f0` (`LINE`: the restart also runs when no line follows).
         let Some(run) = &mut self.curve else { return };
         let time_left = run.curve.length - r.elapsed;
         if time_left <= 0.0 {
             return;
         }
-        // `FUN_141b8d770`.
         let speed = left / time_left;
         run.restart(r.elapsed);
+        if (tx * tx + ty * ty).sqrt() < ROLL_STOP_DISTANCE {
+            return;
+        }
         // `FUN_141b8fe20`: a wall within 2 cells of the start: no move this frame.
         if Self::blocked_within(terrain, self.grid, target, 2) {
             return;
@@ -1012,14 +1062,15 @@ impl ClientMotion {
         // `FUN_141b90060`: the line ends before the first wall on the way.
         let target = Self::last_free(terrain, self.grid, target);
         if let Some(ahead) = r.extend {
-            // The optional length (`+0x44`, `+0x48`): a long line along the same direction; the
+            // The optional length (`+0x44`, `+0x48`): a long line along the waypoint's direction
+            // (`LINE`: not the target's, they differ once `left` is under the look-ahead); the
             // distance per frame stays that of the real target (`+0x280` = speed / its distance).
             let d = (
                 (target.0 - self.grid.0) as f32,
                 (target.1 - self.grid.1) as f32,
             );
             let dist = (d.0 * d.0 + d.1 * d.1).sqrt();
-            let v = along(d.1.atan2(d.0) + PI / 2.0, ahead);
+            let v = along(gy.atan2(gx) + PI / 2.0, ahead);
             let far = (self.grid.0 + round(v.0), self.grid.1 + round(v.1));
             self.move_to(far, speed, true, terrain);
             if dist > 0.0 {
@@ -1091,7 +1142,7 @@ impl ClientMotion {
     /// facing, the curve's displacement x `offset_scale` long, over the animation's time at `rate`.
     /// The speed comes from the rounded target (`LINE`: T stays length / rate).
     fn start_coast(&mut self, rate: f32, terrain: &dyn Walkable) {
-        let Some(curve) = self.sprint_end_curve.clone() else { return };
+        let Some(curve) = self.curves.as_ref().map(|c| c.sprint_end.clone()) else { return };
         let units = (curve.value(curve.length) - curve.value(0.0)) * self.offset_scale;
         let cells = units / UNITS_PER_CELL;
         let f = (self.facing.sin(), -self.facing.cos());

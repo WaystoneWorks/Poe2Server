@@ -4,7 +4,7 @@
 //!
 //! `cargo run -p poe-game --example line_compare -- TRACE LOG PORT [--show N] [--from F] [--to F]`
 
-use poe_game::clientmotion::{ClientMotion, Curve, LoggedLine};
+use poe_game::clientmotion::{ClientMotion, Curve, LoggedLine, MotionCurves};
 use poe_game::grid::Grid;
 use poe_game::movement::{Open, Walkable};
 use std::collections::BTreeMap;
@@ -159,10 +159,14 @@ fn main() {
     let show = opt("--show").unwrap_or(30);
     let (from, to) = (opt("--from").unwrap_or(0), opt("--to").unwrap_or(u64::MAX));
     let amd = std::env::var("ROLL_AMD").expect("ROLL_AMD = path of basedodgeroll/onerig.amd");
-    let tap = amd_curve(&amd, "dodge_unarmed_01");
-    let sprint = amd_curve(&amd, "dodge_unarmed_01_sprinting");
     let sprint_amd = std::env::var("SPRINT_AMD").expect("SPRINT_AMD = path of basesprint/onerig.amd");
-    let end = amd_curve(&sprint_amd, "sprint_end_unarmed_01");
+    let curves = std::sync::Arc::new(MotionCurves {
+        roll: amd_curve(&amd, "dodge_unarmed_01"),
+        roll_back: amd_curve(&amd, "dodge_unarmed_bwd_01"),
+        roll_sprint: amd_curve(&amd, "dodge_unarmed_01_sprinting"),
+        roll_back_sprint: amd_curve(&amd, "dodge_unarmed_bwd_01_sprinting"),
+        sprint_end: amd_curve(&sprint_amd, "sprint_end_unarmed_01"),
+    });
     let frames = load_log(log);
     let msgs = load_trace(trace, port);
     // `--grids DIR`: the session's area export; the grid with the fewest walked cells in walls.
@@ -193,7 +197,7 @@ fn main() {
     let (mut ok, mut bad, mut snaps, mut end_ok, mut end_bad, mut shown) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
     let mut roll_end: Option<u64> = None;
     let (mut released, mut ignored) = (false, false);
-    m.sprint_end_curve = Some(end.clone());
+    m.curves = Some(curves);
     m.offset_scale = OFFSET_SCALE;
     let mut prev = first.cell().unwrap();
     for n in start..=last {
@@ -229,7 +233,7 @@ fn main() {
                 Out::Start(cx, cy, tx, ty, skill) => {
                     if skill == 1 {
                         released = false;
-                        m.start_roll((cx, cy), (tx, ty), tap.clone(), 46, DT, terrain);
+                        m.start_roll((cx, cy), (tx, ty), 46, DT, terrain);
                         roll_end = Some(n + 30);
                         notes += " roll";
                     }
@@ -254,7 +258,7 @@ fn main() {
                             m.set_sprinting(val != 0);
                             m.level = if val != 0 { 4 } else { 0 };
                             if val != 0 {
-                                m.set_roll_curve(sprint.clone());
+                                m.set_roll_sprinting();
                                 m.extend_roll(300.0);
                             }
                             notes += &format!(" sprinting={val}");
@@ -293,13 +297,14 @@ fn main() {
         if (!same || !end_same || from > 0) && window && shown < show {
             shown += 1;
             println!(
-                "f{n} grid {:?}/{:?} end {:?}/{:?} pt {:.2},{:.2} log {:?} {notes}",
+                "f{n} grid {:?}/{:?} end {:?}/{:?} pt {:.2},{:.2} m {:?} log {:?} {notes}",
                 m.grid(),
                 cell,
                 m.line_end(),
                 f.end(),
                 m.point().0,
                 m.point().1,
+                m.line_state(),
                 f.line.map(|l| (l.p, l.el, l.acc, l.len, l.t)),
             );
         }

@@ -25,6 +25,8 @@ const SPRINT_TURN_AHEAD: f32 = 180.0;
 const ROLL_STOP_DISTANCE: f32 = 1.6;
 /// `FUN_141b8d1f0`: a roll's search looks at least this far ahead.
 const ROLL_MIN_LOOKAHEAD: f32 = 10.0;
+/// `SprintEnd` is `speed = 600` in `character.act` (`0x141e56ae0`).
+const SPRINT_END_ANIM_SPEED: f32 = 600.0;
 
 /// A movement curve of an animation (`.amd`: duration and one position per frame).
 #[derive(Debug, Clone, PartialEq)]
@@ -360,6 +362,9 @@ struct Roll {
     extend: Option<f32>,
     /// The heading follows the keys, not the cursor.
     keys: bool,
+    /// Clearance level of the action's search (`+0x20`, `FUN_141b8d1f0`), fixed at its start: the
+    /// sprint arriving during the roll does not change it.
+    level: i32,
 }
 
 /// The Move slot.
@@ -384,8 +389,9 @@ pub struct ClientMotion {
     /// Actor `+0x3dc`.
     plan_timer: f32,
     walk: Walk,
-    /// A `0x64 (0, 0)` ended the walk: one more frame on the line, then it stops.
-    ending: bool,
+    /// A `0x64 (0, 0)` ended the walk: the line runs through the next frame's Positioned tick,
+    /// then it stops. Actor ticks left.
+    ending: u8,
     /// The walk's path in walking order, and the next entry.
     path: Vec<Cell>,
     next: usize,
@@ -395,6 +401,19 @@ pub struct ClientMotion {
     curve: Option<CurveRun>,
     /// The animation's coast line runs ([`ClientMotion::start_coast`]).
     coasting: bool,
+    /// The `SprintEnd` curve (`sprint_end_*`, `basesprint/onerig.amd`).
+    pub sprint_end_curve: Option<Curve>,
+    /// The class's `offset_scale` (`.ao`), scales root motion and the animation's rate.
+    pub offset_scale: f32,
+    /// Seconds of `SprintEnd` left. `Actor_StartWasdWalk` starts nothing while it plays.
+    end_anim: f32,
+    /// The rate of the `SprintEnd` that started in the last Actor tick: its move event comes in
+    /// the next frame's Animated tick (`0x141da76c0`).
+    coast_due: Option<f32>,
+    /// The sprint part is on (`0x141b77110` ran, `0x141b773a0` not yet).
+    sprint_on: bool,
+    /// The buff `must_sprint`: key state does not end the sprint while it is on.
+    pub must_sprint: bool,
     /// Cells per second: base speed, attack factor and the sprint's stats.
     pub speed: f32,
     pub factor: f32,
@@ -434,13 +453,19 @@ impl ClientMotion {
             axes: (0, 0),
             plan_timer: 0.0,
             walk: Walk::None,
-            ending: false,
+            ending: 0,
             path: Vec::new(),
             next: 0,
             turn_factor: 0.99,
             roll: None,
             curve: None,
             coasting: false,
+            sprint_end_curve: None,
+            offset_scale: 1.0,
+            end_anim: 0.0,
+            coast_due: None,
+            sprint_on: false,
+            must_sprint: false,
             speed,
             factor: 1.0,
             scale: 1.0,
@@ -507,8 +532,31 @@ impl ClientMotion {
         self.line.running() && self.line.cur() == self.grid
     }
 
-    /// `FUN_141ddc9d0`: advances the line and makes its steps.
+    /// The frame's components before the Actor: Positioned, then Animated.
     pub fn positioned_tick(&mut self, dt: f32, terrain: &dyn Walkable) {
+        self.step_line(dt, terrain);
+        self.animated_tick(dt, terrain);
+    }
+
+    /// The part of the Animated tick that moves the entity: `SprintEnd`'s move event, its end.
+    fn animated_tick(&mut self, dt: f32, terrain: &dyn Walkable) {
+        if self.end_anim <= 0.0 {
+            return;
+        }
+        if let Some(rate) = self.coast_due.take() {
+            self.start_coast(rate, terrain);
+        }
+        self.end_anim = (self.end_anim - dt).max(0.0);
+        if self.end_anim <= 0.0 && self.coasting {
+            // `0x141da7dc0`: the animation changed, its move stops.
+            self.line.kill();
+            self.coasting = false;
+            self.curve = None;
+        }
+    }
+
+    /// `FUN_141ddc9d0`: advances the line and makes its steps.
+    fn step_line(&mut self, dt: f32, terrain: &dyn Walkable) {
         if self.line.thr == 0.0 {
             return;
         }
@@ -720,14 +768,14 @@ impl ClientMotion {
         }
         if self.axes == (0, 0) {
             if self.walk == Walk::Axes {
-                self.ending = true;
+                self.ending = 2;
             }
             return;
         }
-        if self.coasting {
+        if self.end_anim > 0.0 {
             return;
         }
-        self.ending = false;
+        self.ending = 0;
         self.walk = Walk::Axes;
         self.plan_now(terrain);
     }
@@ -741,16 +789,18 @@ impl ClientMotion {
     /// Click-to-move: a Move with a target.
     pub fn walk_to(&mut self, goal: Cell, terrain: &dyn Walkable) {
         self.walk = Walk::Target(goal);
-        self.ending = false;
+        self.ending = 0;
         self.plan_now(terrain);
     }
 
     /// `0x141e42a00`.
     pub fn actor_tick(&mut self, dt: f32, terrain: &dyn Walkable) {
-        if self.ending {
-            self.ending = false;
-            self.end_path();
-            self.line.kill();
+        if self.ending > 0 {
+            self.ending -= 1;
+            if self.ending == 0 {
+                self.end_path();
+                self.line.kill();
+            }
         }
         if self.roll.is_some() {
             self.roll_tick(dt, terrain);
@@ -765,7 +815,45 @@ impl ClientMotion {
         {
             // Clicks plan only when their line ends: the timer is not used for them.
         }
+        // `0x141b76da0`, a part of this tick: after the re-aim, before the timer.
+        if self.sprint_on && !self.is_sprinting {
+            self.end_sprint();
+        }
         self.plan_timer = (self.plan_timer - dt).max(0.0);
+    }
+
+    /// The stat `is_sprinting` changes.
+    pub fn set_sprinting(&mut self, on: bool) {
+        self.is_sprinting = on;
+        if on {
+            self.sprint_on = true;
+        }
+    }
+
+    /// The server's echo of the sprint key's release: without `must_sprint` it ends the sprint at
+    /// once, so before the stats that follow it in the batch (sprint speed sets the coast's rate).
+    pub fn sprint_key_released(&mut self) {
+        if self.sprint_on && !self.must_sprint {
+            self.end_sprint();
+        }
+    }
+
+    /// `0x141b773a0`: ends Move, stops the entity, and with no action running plays `SprintEnd`.
+    fn end_sprint(&mut self) {
+        self.sprint_on = false;
+        self.end_path();
+        self.ending = 0;
+        self.line.kill();
+        if self.roll.is_some() {
+            return;
+        }
+        if let Some(curve) = &self.sprint_end_curve {
+            // `0x141e56ae0`: movement speed in units over the animation's speed.
+            let rate = self.move_speed() * UNITS_PER_CELL
+                / (SPRINT_END_ANIM_SPEED * self.offset_scale);
+            self.end_anim = curve.length / rate;
+            self.coast_due = Some(rate);
+        }
     }
 
     // --- Roll ---
@@ -785,8 +873,10 @@ impl ClientMotion {
         }
         self.line.kill();
         self.end_path();
-        self.ending = false;
+        self.ending = 0;
         self.coasting = false;
+        self.end_anim = 0.0;
+        self.coast_due = None;
         // `DodgeRoll_InitHeading` (`0x141b8bda0`).
         let heading = if self.axes != (0, 0) {
             facing_of(floor_goal(self.axes.0) as f32, floor_goal(self.axes.1) as f32)
@@ -807,6 +897,7 @@ impl ClientMotion {
             steering: true,
             extend: None,
             keys: self.axes != (0, 0),
+            level: self.level,
         });
         // The action start: a plan from the cell and one step (the second plan is the frame's
         // Actor tick).
@@ -887,7 +978,7 @@ impl ClientMotion {
             terrain,
             self.grid,
             far,
-            self.level,
+            r.level,
             &Params {
                 moving,
                 ..Params::default()
@@ -997,21 +1088,21 @@ impl ClientMotion {
     // --- Coast ---
 
     /// `0x141f5f650`: the `SprintEnd` animation's root motion: one line from the grid along the
-    /// facing, `curve`'s whole length long (`units` world units), played at `rate`.
-    pub fn start_coast(&mut self, curve: Curve, rate: f32, terrain: &dyn Walkable) {
-        let units = curve.value(curve.length) - curve.value(0.0);
+    /// facing, the curve's displacement x `offset_scale` long, over the animation's time at `rate`.
+    /// The speed comes from the rounded target (`LINE`: T stays length / rate).
+    fn start_coast(&mut self, rate: f32, terrain: &dyn Walkable) {
+        let Some(curve) = self.sprint_end_curve.clone() else { return };
+        let units = (curve.value(curve.length) - curve.value(0.0)) * self.offset_scale;
         let cells = units / UNITS_PER_CELL;
         let f = (self.facing.sin(), -self.facing.cos());
-        let target = (
-            round(self.grid.0 as f32 + f.0 * cells),
-            round(self.grid.1 as f32 + f.1 * cells),
-        );
+        let d = (round(f.0 * cells), round(f.1 * cells));
+        let target = (self.grid.0 + d.0, self.grid.1 + d.1);
         let time = curve.length / rate;
+        let len = ((d.0 * d.0 + d.1 * d.1) as f32).sqrt();
         self.line.kill();
-        self.end_path();
         self.curve = Some(CurveRun::load(curve));
         self.coasting = true;
-        self.move_to(target, cells / time, true, terrain);
+        self.move_to(target, len / time, true, terrain);
     }
 
     /// Replaces the line with a state logged by the client (`LINE`), for the offline comparison.
@@ -1060,14 +1151,5 @@ impl ClientMotion {
             pending: self.line.pending,
             ..Line::default()
         };
-    }
-
-    /// `FUN_141de4de0` from outside: the entity stands where it is.
-    pub fn stop(&mut self) {
-        self.end_path();
-        self.line.kill();
-        self.ending = false;
-        self.coasting = false;
-        self.curve = None;
     }
 }

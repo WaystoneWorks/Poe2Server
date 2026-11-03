@@ -12,6 +12,9 @@ use std::collections::BTreeMap;
 const DT: f32 = 0.033;
 const IS_SPRINTING: i64 = 22342;
 const SPRINT_SPEED: i64 = 174;
+const MUST_SPRINT: i64 = 22426;
+/// `offset_scale` of the class's `.ao`.
+const OFFSET_SCALE: f32 = 0.9;
 
 #[derive(Default, Clone)]
 struct ClientFrame {
@@ -111,6 +114,9 @@ enum Out {
     Start(i32, i32, i32, i32, u32),
     Stats(Vec<(i64, i64)>),
     Target(i32, i32),
+    SprintReleased,
+    /// The player's key (input, not sent to the client).
+    Key(bool),
 }
 
 fn load_trace(path: &str, port: &str) -> BTreeMap<u64, Vec<Out>> {
@@ -130,6 +136,8 @@ fn load_trace(path: &str, port: &str) -> BTreeMap<u64, Vec<Out>> {
                 let skill = u32::from_str_radix(p[7].trim_start_matches("0x"), 16).unwrap();
                 out.entry(tick).or_default().push(Out::Start(i(3), i(4), i(5), i(6), skill))
             }
+            "out-sprint" if p[3] == "false" => out.entry(tick).or_default().push(Out::SprintReleased),
+            "in-SprintInput" => out.entry(tick).or_default().push(Out::Key(l.contains("held: true"))),
             "out-target" => out.entry(tick).or_default().push(Out::Target(i(3), i(4))),
             "out-stats" => {
                 let s = p[3].replace(['[', ']', '(', ')', ' '], "");
@@ -184,8 +192,9 @@ fn main() {
     let last = *frames.keys().last().unwrap();
     let (mut ok, mut bad, mut snaps, mut end_ok, mut end_bad, mut shown) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
     let mut roll_end: Option<u64> = None;
-    let mut coast: Option<u64> = None;
-    let (mut stop, mut coast_rate) = (false, 1.0f32);
+    let (mut released, mut ignored) = (false, false);
+    m.sprint_end_curve = Some(end.clone());
+    m.offset_scale = OFFSET_SCALE;
     let mut prev = first.cell().unwrap();
     for n in start..=last {
         if roll_end == Some(n) {
@@ -193,14 +202,20 @@ fn main() {
             roll_end = None;
         }
         m.positioned_tick(DT, terrain);
-        let tick_scale = m.scale;
-        if coast == Some(n) {
-            // The rate of the `SprintEnd` animation: movement speed / (600 x 0.9) in world units.
-            m.start_coast(end.clone(), coast_rate, terrain);
-            coast = None;
-        }
         let mut notes = String::new();
-        for o in msgs.get(&n).map(|v| v.as_slice()).unwrap_or(&[]) {
+        // The trace lists a frame's messages in code order, the client's batch has the `0x64` first.
+        let mut batch: Vec<Out> = msgs.get(&n).cloned().unwrap_or_default();
+        batch.sort_by_key(|o| match o {
+            Out::Dir(..) => 0,
+            Out::SprintReleased => 1,
+            Out::Key(_) => 3,
+            _ => 2,
+        });
+        for o in &batch {
+            if let Out::Key(held) = o {
+                released |= !*held;
+                continue;
+            }
             match *o {
                 Out::Dir(x, y, cx, cy) => {
                     if (cx, cy) != m.grid() && (x, y) != (0, 0) {
@@ -213,25 +228,39 @@ fn main() {
                 }
                 Out::Start(cx, cy, tx, ty, skill) => {
                     if skill == 1 {
+                        released = false;
                         m.start_roll((cx, cy), (tx, ty), tap.clone(), 46, DT, terrain);
                         roll_end = Some(n + 30);
                         notes += " roll";
                     }
                 }
                 Out::Stats(ref v) => {
+                    // A sprint sent into a released roll (server bug, the tap-then-hold rule of
+                    // the spec): the client takes the stats (turns, speed) but runs no sprint
+                    // part: no sprint curve, no long line, no `SprintEnd`.
+                    if v.contains(&(IS_SPRINTING, 1)) && released {
+                        ignored = true;
+                    }
+                    let was_ignored = ignored;
+                    if v.contains(&(IS_SPRINTING, 0)) {
+                        ignored = false;
+                    }
                     for &(id, val) in v {
-                        if id == IS_SPRINTING {
+                        if was_ignored && id == IS_SPRINTING {
                             m.is_sprinting = val != 0;
+                            continue;
+                        }
+                        if id == IS_SPRINTING {
+                            m.set_sprinting(val != 0);
                             m.level = if val != 0 { 4 } else { 0 };
-                            if val == 0 {
-                                coast = Some(n + 1);
-                                stop = true;
-                            }
                             if val != 0 {
                                 m.set_roll_curve(sprint.clone());
                                 m.extend_roll(300.0);
                             }
                             notes += &format!(" sprinting={val}");
+                        }
+                        if id == MUST_SPRINT {
+                            m.must_sprint = val != 0;
                         }
                         if id == SPRINT_SPEED {
                             m.scale = 1.0 + val as f32 / 100.0;
@@ -239,12 +268,9 @@ fn main() {
                     }
                 }
                 Out::Target(x, y) => m.steer_roll((x, y)),
+                Out::SprintReleased => m.sprint_key_released(),
+                Out::Key(_) => {}
             }
-        }
-        if stop {
-            stop = false;
-            m.stop();
-            coast_rate = 37.0 * tick_scale * 10.869565 / 540.0;
         }
         m.actor_tick(DT, terrain);
         let empty = ClientFrame::default();

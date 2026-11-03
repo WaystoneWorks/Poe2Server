@@ -38,7 +38,9 @@ fn main() {
         let (x, y) = s.split_once(',').unwrap();
         (x.parse::<i32>().unwrap(), y.parse::<i32>().unwrap())
     };
+    let mut drift = 0;
     for f in first..=last {
+        let f_ = f;
         sim.plan_hints.clear();
         for g in f - 2..=f + 2 {
             for r in rows.get(&g).into_iter().flatten().filter(|r| r[2] == "P").map(|r| &r[2..]) {
@@ -94,6 +96,9 @@ fn main() {
                 _ => {}
             }
         }
+        if a.iter().any(|x| x == "--state") {
+            println!("f{f} grid {:?} {}", sim.grid(), sim.debug_state());
+        }
         let mut seen = false;
         for r in frame.iter().map(|w| &w[2..]) {
             match r[0].as_str() {
@@ -104,7 +109,18 @@ fn main() {
                 "L" => {
                     let e = (n(&r[5]), n(&r[6]));
                     if sim.line_end() == Some(e) {
-                        lines.0 += 1
+                        lines.0 += 1;
+                        // The line's float state: a drift here changes a later rounding.
+                        let f = |s: &String| s.parse::<f32>().unwrap();
+                        let (p, len, acc) = sim.line_state();
+                        let d = (p.0 - f(&r[7])).abs().max((p.1 - f(&r[8])).abs()).max((len - f(&r[9])).abs()).max((acc - f(&r[10])).abs());
+                        if d > 0.002 {
+                            drift += 1;
+                            if a.iter().any(|x| x == "--drift") && shown < show {
+                                shown += 1;
+                                println!("f{f_} drift p {p:?} len {len} acc {acc} client {} {} {} {}", r[7], r[8], r[9], r[10], f_ = f_);
+                            }
+                        }
                     } else {
                         lines.1 += 1;
                         if shown < show {
@@ -129,7 +145,7 @@ fn main() {
         }
     }
     println!(
-        "frames {first}..{last}: grid same {same} differ {diff}; line ends same {} differ {}; 0x64 {acks}, would snap {snaps}",
+        "frames {first}..{last}: grid same {same} differ {diff}; line ends same {} differ {} (float drift on {drift}); 0x64 {acks}, would snap {snaps}",
         lines.0, lines.1
     );
 }

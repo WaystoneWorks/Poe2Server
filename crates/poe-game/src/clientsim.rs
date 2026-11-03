@@ -437,6 +437,22 @@ impl ClientSim {
         self.axes
     }
 
+    /// The line's start point, length and accumulator as the client logs them.
+    pub fn line_state(&self) -> ((f32, f32), f32, f32) {
+        let l = &self.line;
+        (if l.swap { (l.p.1, l.p.0) } else { l.p }, l.len, l.acc)
+    }
+
+    /// Debug text of the line and the roll, for the offline replay.
+    pub fn debug_state(&self) -> String {
+        let l = &self.line;
+        format!(
+            "cur {:?} end {:?} len {:.3} acc {:.3} thr {:.3} pend {:.3} dist {} opt {:.3} inv_t {:.3} curve t {:.4} left {:.4} range {:.3} | stop {} roll {:?}",
+            l.unswap(l.cur), l.unswap(l.end), l.len, l.acc, l.thr, l.pending, l.distance_mode, l.opt_rate, l.inv_t, l.curve.t, l.curve.left, l.curve.range, self.stop_pending,
+            self.roll.as_ref().map(|r| (r.elapsed, r.heading, r.opt_len, r.waiting, r.axes_aimed))
+        )
+    }
+
     /// The line's end while one runs.
     pub fn line_end(&self) -> Option<Cell> {
         (self.line.thr != 0.0).then(|| self.line.unswap(self.line.end))
@@ -496,7 +512,17 @@ impl ClientSim {
         if self.line.thr == 0.0 {
             return;
         }
-        self.line.advance(dt);
+        if std::env::var_os("SIM_TRACE").is_some() {
+            let c0 = self.line.curve.clone();
+            let a0 = self.line.acc;
+            self.line.advance(dt);
+            eprintln!(
+                "  advance acc {a0} -> {} t {} -> {} C {} -> {} range {} rate {} len {} inv_t {}",
+                self.line.acc, c0.t, self.line.curve.t, c0.value(c0.t), c0.value(self.line.curve.t), c0.range, self.line.opt_rate, self.line.len, self.line.inv_t
+            );
+        } else {
+            self.line.advance(dt);
+        }
         while self.line.thr != 0.0 && (self.line.thr <= self.line.acc || (self.line.flag && self.line.acc > 0.0)) {
             let (cell, done) = self.line.step();
             if self.step_blocked(cell, t) {

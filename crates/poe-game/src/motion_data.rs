@@ -14,6 +14,11 @@ const SPRINT_AMD: &str = "art/models/charactersfour/animations/basesprint/onerig
 const ROLL_ATL: &str = "metadata/characters/timelines/base_dodge_roll/base_dodge_roll.atl";
 /// The timeline animation whose gameplay events every unarmed roll clip inherits.
 const ROLL_ATL_ANIMATION: &str = "GP_dodge_roll_base_01";
+/// The sprint's timeline and the animation of its end's move event.
+const SPRINT_ATL: &str = "metadata/characters/timelines/base_sprint/base_sprint.atl";
+const SPRINT_END_ATL_ANIMATION: &str = "GP_sprinting_end_base_01";
+/// The characters' animation list (`SprintEnd`; no class file overrides it).
+const CHARACTER_ACT: &str = "metadata/characters/character.act";
 
 /// A movement curve of an animation (`.amd`: duration and one position per frame).
 #[derive(Debug, Clone, PartialEq)]
@@ -90,6 +95,12 @@ pub struct MotionCurves {
     pub roll_back_sprint: Curve,
     pub sprint_end: Curve,
     pub roll_events: RollEvents,
+    /// The sprint end's move event end, seconds of the clip (`base_sprint.atl`
+    /// `GP_sprinting_end_base_01` event `move` `end_time`).
+    pub sprint_end_move_time: f32,
+    /// The `SprintEnd` animation's base speed (`Character.act` `sprinting_end_*_01 : speed`), the
+    /// clip's rate denominator in `0x141e56ae0`.
+    pub sprint_end_base_speed: f32,
 }
 
 /// The gameplay events of the dodge roll's timeline that move the character.
@@ -124,9 +135,29 @@ impl RollEvents {
     }
 }
 
+/// The `move` event's `end_time` of the sprint end in the sprint's timeline (JSON text).
+pub fn sprint_end_move_time(sprint_atl: &str) -> Option<f32> {
+    let v: serde_json::Value = serde_json::from_str(sprint_atl.trim_start_matches('\u{feff}')).ok()?;
+    let events = v["animations"]
+        .as_array()?
+        .iter()
+        .find(|a| a["name"] == SPRINT_END_ATL_ANIMATION)?["events"]
+        .as_array()?;
+    Some(events.iter().find(|e| e["name"] == "move")?["end_time"].as_f64()? as f32)
+}
+
+/// `SprintEnd = " sprinting_end_*_01 : speed = 600 " timeline ...` in an `.act`.
+pub fn sprint_end_base_speed(act: &str) -> Option<f32> {
+    let (_, rest) = act.split_once("SprintEnd =")?;
+    let entry = rest.split("timeline").next()?;
+    let (_, speed) = entry.split_once("speed")?;
+    speed.trim_start().trim_start_matches('=').split_whitespace().next()?.trim_matches('"').parse().ok()
+}
+
 impl MotionCurves {
-    /// From the game's two `.amd` files and the roll's timeline (UTF-16 text).
-    pub fn from_files(roll_text: &str, sprint_text: &str, roll_atl: &str) -> Option<Self> {
+    /// From the game's two `.amd` files, the roll's and sprint's timelines and `Character.act`
+    /// (UTF-16 text).
+    pub fn from_files(roll_text: &str, sprint_text: &str, roll_atl: &str, sprint_atl: &str, act: &str) -> Option<Self> {
         Some(Self {
             roll: Curve::from_amd(roll_text, "dodge_unarmed_01")?,
             roll_back: Curve::from_amd(roll_text, "dodge_unarmed_bwd_01")?,
@@ -134,6 +165,8 @@ impl MotionCurves {
             roll_back_sprint: Curve::from_amd(roll_text, "dodge_unarmed_bwd_01_sprinting")?,
             sprint_end: Curve::from_amd(sprint_text, "sprint_end_unarmed_01")?,
             roll_events: RollEvents::from_atl(roll_atl.trim_start_matches('\u{feff}'))?,
+            sprint_end_move_time: sprint_end_move_time(sprint_atl)?,
+            sprint_end_base_speed: sprint_end_base_speed(act)?,
         })
     }
 
@@ -148,7 +181,13 @@ impl MotionCurves {
                 String::from_utf16_lossy(&words).replace('\r', "")
             })
         };
-        Ok(Self::from_files(&text(ROLL_AMD)?, &text(SPRINT_AMD)?, &text(ROLL_ATL)?))
+        Ok(Self::from_files(
+            &text(ROLL_AMD)?,
+            &text(SPRINT_AMD)?,
+            &text(ROLL_ATL)?,
+            &text(SPRINT_ATL)?,
+            &text(CHARACTER_ACT)?,
+        ))
     }
 }
 

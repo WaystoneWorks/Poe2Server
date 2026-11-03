@@ -30,9 +30,10 @@ const TAU: f32 = 6.283_185_5;
 const HALF_PI: f32 = 1.570_796_4;
 /// `DodgeRoll_StartSprint` `0x141aa92e0`: the optional line length of a roll that sprints.
 const ROLL_SPRINT_LINE: i32 = 300;
-/// `GP_sprinting_end_base_01`: the move event's end time, seconds of the clip.
+/// Without game data (tests without curves): the game's `GP_sprinting_end_base_01` move event end
+/// and `sprinting_end_*` speed. With curves the values come from the game data
+/// ([`MotionCurves`](crate::motion_data::MotionCurves)).
 const SPRINT_END_MOVE_TIME: f32 = 0.75;
-/// `sprinting_end_*` entry speed (`0x141e56ae0`).
 const SPRINT_END_BASE_SPEED: f32 = 600.0;
 /// `0x141e42650`: the plan timer of an entity with a Player component.
 const PLAN_TIMER: f32 = 0.05;
@@ -554,6 +555,14 @@ impl ClientSim {
         self.action_speed.max(-100) as f32 / 100.0 + 1.0
     }
 
+    fn sprint_end_move_time(&self) -> f32 {
+        self.curves.as_ref().map_or(SPRINT_END_MOVE_TIME, |c| c.sprint_end_move_time)
+    }
+
+    fn sprint_end_base_speed(&self) -> f32 {
+        self.curves.as_ref().map_or(SPRINT_END_BASE_SPEED, |c| c.sprint_end_base_speed)
+    }
+
     /// The character's stats at setup, as the client has them from its spawn.
     pub fn set_speed_stats(&mut self, s: &crate::movement::SpeedStats) {
         self.permyriad = s.permyriad(0);
@@ -720,7 +729,7 @@ impl ClientSim {
             // The clip's rate follows the speed: at a wall the sprint-off's stats come right after
             // the step that ended it (seg2 f800: walks are refused to f828, 30 frames at walking
             // speed, not the 20 of the sprint's).
-            let rate = self.speed() * CELL / (SPRINT_END_BASE_SPEED * self.offset_scale);
+            let rate = self.speed() * CELL / (self.sprint_end_base_speed() * self.offset_scale);
             let a = self.sprint_end.as_mut().unwrap();
             a.left -= dt * rate;
             if a.left <= 0.0 {
@@ -1545,10 +1554,10 @@ impl ClientSim {
             return;
         }
         let v = self.speed() * CELL;
-        let rate = v / (SPRINT_END_BASE_SPEED * self.offset_scale);
+        let rate = v / (self.sprint_end_base_speed() * self.offset_scale);
         if rate > 0.0 {
             self.sprint_end = Some(SprintEndAnim {
-                left: SPRINT_END_MOVE_TIME,
+                left: self.sprint_end_move_time(),
                 rate,
                 coast_due: !bonk,
             });
@@ -1558,7 +1567,8 @@ impl ClientSim {
     /// `MoveEvent_Start` `0x141f5f650`, `Positioned_RootOffsetToCell` `0x141de6030`.
     fn start_coast(&mut self, rate: f32, t: &dyn Walkable) {
         let Some(cs) = self.curves.clone() else { return };
-        let disp = cs.sprint_end.value(SPRINT_END_MOVE_TIME) - cs.sprint_end.value(0.0);
+        let end_time = cs.sprint_end_move_time;
+        let disp = cs.sprint_end.value(end_time) - cs.sprint_end.value(0.0);
         let r = rot(0.0, -disp * self.offset_scale, self.facing);
         let target = (
             from_world(world(self.grid.0) + r.0),
@@ -1569,7 +1579,7 @@ impl ClientSim {
         }
         let d = (target.0 - self.grid.0, target.1 - self.grid.1);
         let dist = ((d.0 * d.0 + d.1 * d.1) as f32).sqrt();
-        let speed = dist / (SPRINT_END_MOVE_TIME / rate);
+        let speed = dist / (end_time / rate);
         let end = self.clip_to_walkable(target, t);
         // `0x141f63640`: fewer than 2 cells to go beyond the start cell is no move at all.
         let e = (end.0 - self.grid.0, end.1 - self.grid.1);
@@ -1580,7 +1590,7 @@ impl ClientSim {
             // the curve (`0x141ecd760`). `ev+0x2c` is the event's data, 1. The event fires in the
             // clip's first Animated tick, one step into it.
             let e_time = if end == target {
-                SPRINT_END_MOVE_TIME
+                end_time
             } else {
                 let moved = ((e.0 * e.0 + e.1 * e.1) as f32).sqrt() * CELL;
                 cs.sprint_end.time_of(moved + cs.sprint_end.value(0.0).abs())

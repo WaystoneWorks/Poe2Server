@@ -180,3 +180,10 @@ fn entity_target_skills_use_absolute_cells() {
     );
 }
 
+
+/// The sprint end's clip values come from the game data (`base_sprint.atl`, `Character.act`).
+#[test]
+fn sprint_end_values_are_read_from_the_game_data() {
+    let (curves, _) = poe_game::motion_data::hub_motion_or_panic();
+    assert_eq!((curves.sprint_end_move_time, curves.sprint_end_base_speed), (0.75, 600.0));
+}

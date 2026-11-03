@@ -19,8 +19,7 @@ use serde_json::{Value, json};
 
 const MOVE_SKILL: u32 = 0x2000_2909;
 const ROLL_SKILL: u32 = 0x8000_0040;
-/// Buff rows of the sprint, as in the game's buff definitions (the tests' stand-in for game
-/// data).
+/// Buff rows of the sprint, as in the game's buff definitions.
 const BUFF_ROWS: [u16; 3] = [2758, 2737, 2853];
 
 fn config() -> MovementConfig {
@@ -36,6 +35,9 @@ fn config() -> MovementConfig {
     // The fixtures are official captures: that client played `SprintEnd` at walking speed
     // after a release batch too (the private client does not, see `SprintConfig`).
     cfg.sprint.release_ends_at_sprint_speed = false;
+    let (curves, offset_scale) = poe_game::clientmotion::hub_motion_or_panic();
+    cfg.curves = Some(curves);
+    cfg.offset_scale = offset_scale;
     cfg
 }
 

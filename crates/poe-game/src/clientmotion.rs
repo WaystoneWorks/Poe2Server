@@ -36,8 +36,8 @@ const SPRINT_TURN_RATE: f32 = 5.0;
 /// `FUN_141b8c7f0`: roll action `+0x44`, the optional length of a sprinting roll's lines, in
 /// cells. Measured (`LINE`: e = s + 300 along the heading); its writer is unread.
 pub const ROLL_SPRINT_LINE: f32 = 300.0;
-/// `offset_scale` of the class's `.ao` when the game data is not there.
-pub const STAND_IN_OFFSET_SCALE: f32 = 0.9;
+/// The class whose `offset_scale` [`hub_motion`] reads (the test account's class).
+const HUB_CLASS: &str = "Metadata/Characters/Dex/DexFour";
 /// Where the character's dodge roll and sprint end curves are (`Character.act`). Characters are
 /// unarmed for now; the weapon variants follow the `dodge_*_01` pattern.
 const ROLL_AMD: &str = "art/models/charactersfour/animations/basedodgeroll/onerig.amd";
@@ -114,10 +114,10 @@ impl MotionCurves {
         })
     }
 
-    /// Reads the curves from the game data.
-    pub fn load(data: &poe_data::GameData) -> poe_data::Result<Option<Self>> {
+    /// Reads the curves from the game files.
+    pub fn load(files: &poe_data::GameFiles) -> poe_data::Result<Option<Self>> {
         let text = |path: &str| {
-            data.files().read(path).map(|bytes| {
+            files.read(path).map(|bytes| {
                 let words: Vec<u16> = bytes
                     .chunks_exact(2)
                     .map(|c| u16::from_le_bytes([c[0], c[1]]))
@@ -127,56 +127,14 @@ impl MotionCurves {
         };
         Ok(Self::from_amd(&text(ROLL_AMD)?, &text(SPRINT_AMD)?))
     }
-
-    /// NOT game data: curves for running without game files (the unit and replay tests, a server
-    /// with no client data), rebuilt from the per-frame steps measured on the client's `LINE` log
-    /// (cells per 33 ms frame of a 46-cell roll; `sprint_end` from its total and a linear decay).
-    /// Close to [`MotionCurves::load`], not equal: a real server loads the real ones.
-    pub fn stand_in() -> Self {
-        const ROLL: [f32; 31] = [
-            3.7324, 3.5283, 3.3310, 3.1405, 2.9568, 2.7627, 2.5501, 2.3350, 2.1171, 1.8971, 1.6743,
-            1.4492, 1.2353, 1.1218, 1.0497, 0.9889, 0.9394, 0.9010, 0.8740, 0.8581, 0.8536, 0.8601,
-            0.8741, 0.8537, 0.7971, 0.7168, 0.60, 0.45, 0.30, 0.18, 0.0719,
-        ];
-        const SPRINT_TAIL: [f32; 15] = [
-            0.9175, 0.9501, 1.0087, 1.0703, 1.1262, 1.1701, 1.2210, 1.3018, 1.3852, 1.4565, 1.4771,
-            1.5311, 1.5200, 2.00, 2.37,
-        ];
-        const SPRINT_END_UNITS: f32 = 242.425;
-        const SPRINT_END_SECONDS: f32 = 0.75;
-        const UNITS_PER_ROLL_CELL: f32 = 500.0 / 46.0;
-        let curve = |steps: &[f32], sign: f32| {
-            let mut at = 0.0;
-            let mut positions = vec![0.0];
-            for step in steps {
-                at += step * UNITS_PER_ROLL_CELL * sign;
-                positions.push(at);
-            }
-            Curve::new(1.0, positions)
-        };
-        let sprinting: Vec<f32> = ROLL[..16].iter().chain(&SPRINT_TAIL).copied().collect();
-        let end = (0..46)
-            .map(|i| {
-                let left = 1.0 - i as f32 / 45.0;
-                SPRINT_END_UNITS * (1.0 - left * left)
-            })
-            .collect();
-        Self {
-            roll: curve(&ROLL, 1.0),
-            roll_back: curve(&ROLL, -1.0),
-            roll_sprint: curve(&sprinting, 1.0),
-            roll_back_sprint: curve(&sprinting, -1.0),
-            sprint_end: Curve::new(SPRINT_END_SECONDS, end),
-        }
-    }
 }
 
 /// `offset_scale` from the `.ao` of `metadata_id` (`Melee { offset_scale = 0.9 }`), the class's
 /// own file or the ones it extends.
-pub fn load_offset_scale(data: &poe_data::GameData, metadata_id: &str) -> Option<f32> {
+pub fn load_offset_scale(files: &poe_data::GameFiles, metadata_id: &str) -> Option<f32> {
     let mut path = metadata_id.to_owned();
     for _ in 0..16 {
-        let bytes = data.files().read(&format!("{path}.ao").to_lowercase()).ok()?;
+        let bytes = files.read(&format!("{path}.ao").to_lowercase()).ok()?;
         let words: Vec<u16> = bytes
             .chunks_exact(2)
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
@@ -184,7 +142,8 @@ pub fn load_offset_scale(data: &poe_data::GameData, metadata_id: &str) -> Option
         let text = String::from_utf16_lossy(&words);
         let value = |key: &str| {
             text.lines().find_map(|l| {
-                let (k, v) = l.split_once(|c: char| c == '=' || c.is_whitespace())?;
+                // Keys inside a block (`Melee { ... }`) are indented with tabs.
+                let (k, v) = l.trim().split_once(|c: char| c == '=' || c.is_whitespace())?;
                 (k.trim() == key).then(|| v.trim().trim_matches(['=', ' ', '"']).to_owned())
             })
         };
@@ -197,6 +156,32 @@ pub fn load_offset_scale(data: &poe_data::GameData, metadata_id: &str) -> Option
         }
     }
     None
+}
+
+/// The game's movement data from the hub's `GameFiles/` (`POE_GAME_DIR` to point elsewhere), read
+/// once: the curves and the `offset_scale` of the test account's class. For tests and tools; a
+/// server reads its own game data. `None` without the game files.
+pub fn hub_motion() -> Option<(Arc<MotionCurves>, f32)> {
+    static MOTION: std::sync::OnceLock<Option<(Arc<MotionCurves>, f32)>> = std::sync::OnceLock::new();
+    MOTION
+        .get_or_init(|| {
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
+            let game = std::env::var_os("POE_GAME_DIR")
+                .map_or_else(|| root.join("GameFiles"), std::path::PathBuf::from);
+            let files = poe_data::GameFiles::open(&game).ok()?;
+            let curves = MotionCurves::load(&files).ok()??;
+            let scale = load_offset_scale(&files, HUB_CLASS)?;
+            Some((Arc::new(curves), scale))
+        })
+        .clone()
+}
+
+/// [`hub_motion`] for tests that need it.
+pub fn hub_motion_or_panic() -> (Arc<MotionCurves>, f32) {
+    hub_motion().expect(
+        "movement tests need the game's curves: the hub's GameFiles/ (or POE_GAME_DIR) with \
+         basedodgeroll and basesprint onerig.amd",
+    )
 }
 
 /// A curve in use (Positioned `+0x2a8`, `L + 0xa0`).
@@ -1489,8 +1474,8 @@ mod tests {
     }
 
     #[test]
-    fn the_stand_in_curves_have_the_measured_ends() {
-        let c = MotionCurves::stand_in();
+    fn the_game_curves_have_the_measured_ends() {
+        let c = hub_motion_or_panic().0;
         assert!((c.roll.value(1.0) - 500.0).abs() < 10.0);
         assert!((c.roll_back.value(1.0) + 500.0).abs() < 10.0);
         assert!(c.roll_sprint.value(1.0) > c.roll.value(1.0));
@@ -1506,8 +1491,9 @@ mod tests {
             }
         }
         let mut m = ClientMotion::at_cell((50, 50), 37.0);
-        m.curves = Some(Arc::new(MotionCurves::stand_in()));
-        m.offset_scale = STAND_IN_OFFSET_SCALE;
+        let (curves, offset_scale) = hub_motion_or_panic();
+        m.curves = Some(curves);
+        m.offset_scale = offset_scale;
         m.scale = 1.5;
         m.set_sprinting(true);
         let mut bonks = 0;
@@ -1535,14 +1521,13 @@ mod tests {
     fn a_roll_runs_its_distance_and_a_walk_follows_the_keys() {
         let open = crate::movement::Open;
         let mut m = ClientMotion::at_cell((100, 100), 37.0);
-        m.curves = Some(Arc::new(MotionCurves::stand_in()));
+        m.curves = Some(hub_motion_or_panic().0);
         m.start_roll((100, 100), (146, 100), 46, 0.033, &open);
         for _ in 0..30 {
             m.positioned_tick(0.033, &open);
             m.actor_tick(0.033, &open);
         }
-        // A 46-cell roll on open ground runs 49 cells, with the stand-in and with the game's
-        // curves alike: each frame's line runs from the cell to `left` past the line's point, so
+        // A 46-cell roll on open ground runs 49 cells: each frame's line runs from the cell to `left` past the line's point, so
         // the sub-cell phase adds up (the harness matches the client's `LINE` on every roll
         // frame of `port1` with the same total).
         let rolled = m.grid().0 - 100;

@@ -256,7 +256,7 @@ mod tests {
     const ROLL: u32 = 0x8000_0040;
 
     fn world() -> World {
-        let cfg = MovementConfig::new(
+        let mut cfg = MovementConfig::new(
             SkillIds {
                 move_skill: 0x2000_2909,
                 roll_skill: ROLL,
@@ -264,6 +264,9 @@ mod tests {
             },
             [1, 2, 3],
         );
+        let (curves, offset_scale) = crate::clientmotion::hub_motion_or_panic();
+        cfg.curves = Some(curves);
+        cfg.offset_scale = offset_scale;
         World::new(WorldConfig::new(cfg), Arc::new(Open))
     }
 

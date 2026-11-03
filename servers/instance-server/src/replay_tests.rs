@@ -119,16 +119,22 @@ pub(crate) fn roll_skill(distance: Option<i64>) -> OwnedSkill {
     }
 }
 
-/// The simulation configuration of a test character (37 cells/s, default sprint).
+/// The simulation configuration of a test character (37 cells/s, default sprint), with the
+/// game's curves when the hub's game files are there.
 pub(crate) fn movement_config(skills: &[OwnedSkill]) -> poe_game::locomotion::MovementConfig {
-    sim_config(
+    let mut cfg = sim_config(
         &poe_config::MovementConfig::default(),
         skills,
         Some(MOVE_SKILL),
         Some(ROLL_ACTION_TYPE),
         37.0,
         None,
-    )
+    );
+    if let Some((curves, offset_scale)) = poe_game::clientmotion::hub_motion() {
+        cfg.curves = Some(curves);
+        cfg.offset_scale = offset_scale;
+    }
+    cfg
 }
 
 /// A client talking to an instance actor through the test harness: encodes packets, decodes
@@ -142,6 +148,7 @@ impl Session {
     fn new(cell: (i32, i32)) -> Self {
         // The fixtures are official captures of a solo zone: the player is entity 1.
         let mut fx = Fixture::with_first_entity(1);
+        poe_game::clientmotion::hub_motion_or_panic();
         let me = fx.join("Alice", cell, movement_config(&[roll_skill(None)]));
         Self { fx, me }
     }

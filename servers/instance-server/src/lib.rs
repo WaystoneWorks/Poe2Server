@@ -1392,14 +1392,15 @@ impl InstanceServer {
             sprint_bonus,
         );
         movement.sprint.clearance_level = sprint_clearance;
-        match poe_game::clientmotion::MotionCurves::load(&self.data) {
-            Ok(Some(curves)) => movement.curves = Arc::new(curves),
-            Ok(None) => tracing::warn!("no movement curves in the game data: using the stand-in"),
-            Err(e) => tracing::warn!(error = %e, "movement curves: using the stand-in"),
-        }
-        if let Some(scale) = poe_game::clientmotion::load_offset_scale(&self.data, &class.metadata_id) {
-            movement.offset_scale = scale;
-        }
+        // Required: the client's roll and sprint end move by these curves.
+        use anyhow::Context as _;
+        let curves = poe_game::clientmotion::MotionCurves::load(self.data.files())
+            .context("reading the movement curves from the game data")?
+            .context("no movement curves in the game data (basedodgeroll, basesprint onerig.amd)")?;
+        movement.curves = Some(Arc::new(curves));
+        movement.offset_scale =
+            poe_game::clientmotion::load_offset_scale(self.data.files(), &class.metadata_id)
+                .with_context(|| format!("no offset_scale in {}.ao or its parents", class.metadata_id))?;
         Ok(PlayerSetup { skills, speed, movement })
     }
 

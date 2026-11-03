@@ -24,7 +24,7 @@
 
 use std::sync::Arc;
 
-use crate::clientmotion::{ClientMotion, MotionCurves, ROLL_SPRINT_LINE, STAND_IN_OFFSET_SCALE};
+use crate::clientmotion::{ClientMotion, MotionCurves, ROLL_SPRINT_LINE};
 use crate::movement::Walkable;
 
 pub type Cell = (i32, i32);
@@ -187,10 +187,11 @@ pub struct MovementConfig {
     pub attack_speed: AttackSpeedConfig,
     /// Characters' walking speed, cells per second.
     pub walk_speed: f32,
-    /// The character's movement curves ([`MotionCurves::stand_in`] until the server loads the
-    /// game's).
-    pub curves: Arc<MotionCurves>,
-    /// The class's `offset_scale` (`.ao`), scales root motion and the animation's rate.
+    /// The character's movement curves, from the game data at player setup (required there;
+    /// `None` only in tests that do not roll or sprint).
+    pub curves: Option<Arc<MotionCurves>>,
+    /// The class's `offset_scale` (`.ao`, set at player setup), scales root motion and the
+    /// animation's rate.
     pub offset_scale: f32,
     /// Frames between the client entering aim mode (`AimMode(1)`) at entry and the stance
     /// change.
@@ -250,8 +251,8 @@ impl MovementConfig {
                 cursor_match_degrees: 10.0,
             },
             walk_speed: 37.0,
-            curves: Arc::new(MotionCurves::stand_in()),
-            offset_scale: STAND_IN_OFFSET_SCALE,
+            curves: None,
+            offset_scale: 1.0,
             stance_delay_frames: 8,
             area_stance_delay_frames: 3,
             stance_toggle_frames: 0,
@@ -833,7 +834,7 @@ impl Locomotion {
         // that ended on a wall in the last frame's Actor tick is seen now, so the sprint-off comes
         // after the client's own end check and cannot turn its Bonk into a plain `SprintEnd`.
         if self.motion.curves.is_none() {
-            self.motion.curves = Some(ctx.config.curves.clone());
+            self.motion.curves = ctx.config.curves.clone();
             self.motion.offset_scale = ctx.config.offset_scale;
             self.motion.plan_frame_keeps_speed = ctx.config.sprint.release_ends_at_sprint_speed;
         }
@@ -2233,7 +2234,7 @@ mod tests {
         }
 
         fn on(cell: Cell, grid: Box<dyn Walkable>) -> Self {
-            let cfg = MovementConfig::new(
+            let mut cfg = MovementConfig::new(
                 SkillIds {
                     move_skill: MOVE,
                     roll_skill: ROLL,
@@ -2241,6 +2242,9 @@ mod tests {
                 },
                 [100, 101, 102],
             );
+            let (curves, offset_scale) = crate::clientmotion::hub_motion_or_panic();
+            cfg.curves = Some(curves);
+            cfg.offset_scale = offset_scale;
             Self {
                 loco: Locomotion::new(cell, cfg.walk_speed),
                 cfg,

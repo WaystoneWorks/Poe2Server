@@ -218,9 +218,9 @@ fn main() {
             match *o {
                 Out::Dir(x, y, cx, cy) => {
                     if (cx, cy) != m.grid() && (x, y) != (0, 0) {
+                        notes += &format!(" snap{:?}", m.grid());
                         m.snap((cx, cy));
                         snaps += 1;
-                        notes += " snap";
                     }
                     m.set_axes((x, y), terrain);
                     notes += &format!(" dir{x},{y}");

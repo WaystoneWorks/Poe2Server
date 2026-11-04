@@ -80,6 +80,7 @@ pub(crate) fn split(protocol: &Protocol, mut bytes: &[u8]) -> Vec<Sent> {
             };
         }
         let name = known!(
+            poe_proto::instance::SimulationFrameValue,
             MoveDirectionUpdate,
             StartAction,
             ActionEvent,
@@ -691,6 +692,42 @@ fn a_session_whose_channel_closed_is_removed_like_a_leave() {
         ]
     );
     assert_eq!(fx.directory.get(fx.instance).unwrap().players, ["Bob"]);
+}
+
+#[test]
+fn a_time_scale_reaches_every_session_ahead_of_its_frame_and_steps_the_world() {
+    use poe_proto::instance::SimulationFrameValue;
+    let mut fx = Fixture::new();
+    let mut a = fx.join_default("Alice", (100, 100));
+    let mut b = fx.join_default("Bob", (300, 300));
+    fx.tick();
+    a.got(&fx.protocol);
+    b.got(&fx.protocol);
+    fx.actor.handle(Cmd::SetFrameMs { frame_ms: 10 });
+    assert_eq!(fx.actor.world().tick_ms(), 10);
+    fx.tick();
+    for who in [&mut a, &mut b] {
+        let got = who.got(&fx.protocol);
+        assert_eq!(got.head.iter().map(|s| s.name).collect::<Vec<_>>(), ["SimulationFrameValue"]);
+        assert_eq!(got.head[0].decode::<SimulationFrameValue>().value, 10);
+    }
+    // Only when it changes.
+    fx.tick();
+    assert!(a.got(&fx.protocol).head.is_empty());
+    // A late joiner plays at the instance's length, not the one InitialState told it.
+    let mut c = fx.join_default("Cara", (500, 500));
+    fx.tick();
+    let got = c.got(&fx.protocol);
+    assert!(got.head.iter().any(|s| s.name == "SimulationFrameValue"), "{:?}", got.head.iter().map(|s| s.name).collect::<Vec<_>>());
+}
+
+#[test]
+fn stuck_stays_on_a_walkable_cell() {
+    let mut fx = Fixture::new();
+    let a = fx.join_default("Alice", (100, 100));
+    fx.teleport(&a, (120, 130));
+    fx.actor.handle(Cmd::Unstick { session: a.session });
+    assert_eq!(fx.cell(&a), (120, 130));
 }
 
 #[test]

@@ -29,6 +29,10 @@ pub struct LiveSession {
     pub connected_at: i64,
     /// The client's address, when known (the web admin shows it to admins).
     pub ip: Option<std::net::IpAddr>,
+    pub league: String,
+    pub level: u32,
+    /// The session's latest grid cell (`tp <player>`, `summon`).
+    pub cell: (i32, i32),
     /// Joined global and trade channel numbers (ChatJoinRequest).
     pub global: Option<u16>,
     pub trade: Option<u16>,
@@ -62,6 +66,10 @@ pub struct Online {
     pub ip: Option<std::net::IpAddr>,
     pub instance: Option<u32>,
     pub area: String,
+    pub session: u64,
+    pub league: String,
+    pub level: u32,
+    pub cell: (i32, i32),
 }
 
 impl Live {
@@ -86,6 +94,9 @@ impl Live {
                 session,
                 connected_at,
                 ip,
+                league: String::new(),
+                level: 0,
+                cell: (0, 0),
                 global: None,
                 trade: None,
                 kick,
@@ -118,6 +129,10 @@ impl Live {
                 ip: s.ip,
                 instance: s.instance,
                 area: s.area.clone(),
+                session: s.session,
+                league: s.league.clone(),
+                level: s.level,
+                cell: s.cell,
             })
             .collect();
         out.sort_by(|a, b| a.character.cmp(&b.character));
@@ -185,8 +200,23 @@ impl Live {
         self.sessions.lock().unwrap().get(&character.to_lowercase()).map_or((None, None), |s| (s.global, s.trade))
     }
 
-    pub fn mute(&self, character: &str, minutes: Option<u64>) {
-        let until = minutes.map(|m| Instant::now() + Duration::from_secs(m * 60));
+    /// Facts a [`Self::register_from`] caller knows about the character.
+    pub fn set_character(&self, character: &str, league: &str, level: u32) {
+        if let Some(s) = self.sessions.lock().unwrap().get_mut(&character.to_lowercase()) {
+            s.league = league.to_owned();
+            s.level = level;
+        }
+    }
+
+    /// Records the session's grid cell (each frame).
+    pub fn set_cell(&self, character: &str, cell: (i32, i32)) {
+        if let Some(s) = self.sessions.lock().unwrap().get_mut(&character.to_lowercase()) {
+            s.cell = cell;
+        }
+    }
+
+    pub fn mute(&self, character: &str, duration: Option<Duration>) {
+        let until = duration.map(|d| Instant::now() + d);
         self.muted.lock().unwrap().insert(character.to_lowercase(), until);
     }
 

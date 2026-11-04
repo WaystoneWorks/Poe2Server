@@ -16,9 +16,9 @@ fn outcome(o: Outcome) -> AdminOutcome {
     }
 }
 
-/// `instance_new <area> [seed] [topology] [orientation]` for the registry's parser.
+/// `instance new <area> [seed] [topology] [orientation]` for the registry's parser.
 fn instance_line(new: &NewInstance) -> String {
-    let mut line = format!("instance_new {}", new.area);
+    let mut line = format!("instance new {}", new.area);
     if new.seed.is_some() || new.topology.is_some() || new.orientation.is_some() {
         line += &format!(
             " {} {} {}",
@@ -31,15 +31,21 @@ fn instance_line(new: &NewInstance) -> String {
 }
 
 impl InstanceServer {
+    /// Parses a line this file built (the caller checks the role).
+    fn parse_internal(line: &str) -> Result<Parsed, String> {
+        let (spec, rest) = commands::locate(line).map_err(|miss| miss.text(true))?;
+        commands::parse_args(spec, rest)
+    }
+
     fn web_label(actor: &str) -> String {
         format!("{actor} (web)")
     }
 
     fn create_instance_inner(&self, actor: &str, new: &NewInstance) -> Result<u32, AdminOutcome> {
         let line = instance_line(new);
-        let parsed = commands::parse(&line).map_err(AdminOutcome::err)?;
+        let parsed = Self::parse_internal(&line).map_err(AdminOutcome::err)?;
         if !self.is_admin(actor) {
-            return Err(AdminOutcome::err("instance_new is for admins only"));
+            return Err(AdminOutcome::err("instance new is for admins only"));
         }
         let result = self.new_instance(&parsed);
         let id = result.as_ref().ok().copied();
@@ -81,12 +87,12 @@ impl AdminControl for InstanceServer {
         character: &str,
         target: TransferTarget,
     ) -> AdminOutcome {
-        let spec = commands::find("transfer").expect("transfer is in the registry");
+        let spec = commands::find("instance transfer").expect("instance transfer is in the registry");
         let line = match &target {
             TransferTarget::Instance(id) => format!("transfer {character} -> instance #{id}"),
             TransferTarget::New(new) => format!(
                 "transfer {character} -> {}",
-                instance_line(new).replacen("instance_new ", "", 1)
+                instance_line(new).replacen("instance new ", "", 1)
             ),
         };
         let result = (|| -> anyhow::Result<Outcome> {
@@ -99,38 +105,17 @@ impl AdminControl for InstanceServer {
             let id = match &target {
                 TransferTarget::Instance(id) => *id,
                 TransferTarget::New(new) => {
-                    let parsed =
-                        commands::parse(&instance_line(new)).map_err(anyhow::Error::msg)?;
+                    let parsed = Self::parse_internal(&instance_line(new)).map_err(anyhow::Error::msg)?;
                     self.new_instance(&parsed)?
                 }
             };
-            // The character as the login server hands it over.
-            let Some(found) = self
-                .store
-                .characters(account_id)?
-                .into_iter()
-                .find(|c| c.name.eq_ignore_ascii_case(&name))
-            else {
-                anyhow::bail!("{name} is not in the database");
-            };
-            let ticket_character = poe_cluster::TicketCharacter {
-                id: found.id,
-                name: found.name.clone(),
-                league: found.league.clone(),
-                class_id: found.class_id,
-                level: found.level,
-                intro_done: found.intro_done,
-                location: None,
-            };
-            self.hand_off(account_id, ticket_character, id)?;
-            // Ends the player's instance session; the client falls back to character
-            // selection on its login connection, which delivers the pending InstanceDetails.
-            self.live.kick(&name);
+            self.transfer_character(account_id, &name, id, None)?;
             Ok(Outcome::ok(format!("moving {name} to instance #{id}")))
         })();
         let parsed = Parsed {
             spec,
             args: Vec::new(),
+            flags: Vec::new(),
         };
         outcome(self.finish(&Self::web_label(actor), &parsed, &line, result))
     }

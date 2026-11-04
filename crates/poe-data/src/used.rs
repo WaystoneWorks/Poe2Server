@@ -43,6 +43,17 @@ pub const USED: &[UsedTable] = &[
         ],
     ),
     t("Topologies", &["DGRFile"]),
+    // Name lists of command arguments (`views::NameList`).
+    t("Ascendancy", &["Id", "Name"]),
+    t("BaseItemTypes", &["Id", "Name"]),
+    t("UniqueStashLayout", &["WordsKey"]),
+    t("Words", &["Text"]),
+    t("Mods", &["Id", "Name"]),
+    t("CurrencyItems", &["BaseItemType"]),
+    t("SkillGems", &["BaseItemType"]),
+    t("MonsterVarieties", &["Id", "Name"]),
+    t("Rarity", &["Id"]),
+    t("VirtualStatContextFlags", &["Id"]),
     t("TerrainPlugins", &["Id"]),
     t(
         "Characters",

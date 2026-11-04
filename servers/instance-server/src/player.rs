@@ -154,6 +154,26 @@ impl Player {
         });
     }
 
+    /// Dev command: put another session of this instance on `cell`.
+    pub fn teleport_session(&self, session: SessionId, cell: (i32, i32)) {
+        self.actor.send(Cmd::Teleport { session, cell });
+    }
+
+    /// `stuck`: the actor moves the player to the nearest walkable cell, or back to its entry.
+    pub fn unstick(&self) {
+        self.actor.send(Cmd::Unstick { session: self.session });
+    }
+
+    /// The instance's frame length in ms.
+    pub fn frame_ms(&self) -> u32 {
+        self.actor.frame_ms()
+    }
+
+    /// Dev command: the instance's frame length (`time scale`, docs/re/time-scale.md).
+    pub fn set_frame_ms(&self, frame_ms: u32) {
+        self.actor.send(Cmd::SetFrameMs { frame_ms });
+    }
+
     /// A chat command of a mod: the actor runs the mod's callback and applies what it submits.
     /// `false` when the actor is gone.
     pub fn mod_command(&self, mod_id: &str, name: &str, args: &str) -> bool {

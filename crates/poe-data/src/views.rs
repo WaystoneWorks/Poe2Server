@@ -89,6 +89,17 @@ impl WorldArea {
         first.map(|id| Self::find(data, &id)).transpose().map(Option::flatten)
     }
 
+    /// Every area, in table order.
+    pub fn all(data: &GameData) -> Result<Vec<Self>> {
+        let mut out = Vec::new();
+        for row in data.table("WorldAreas")?.rows() {
+            if let Some(area) = Self::find(data, &row.str("Id")?)? {
+                out.push(area);
+            }
+        }
+        Ok(out)
+    }
+
     pub fn find(data: &GameData, id: &str) -> Result<Option<Self>> {
         let areas = data.table("WorldAreas")?;
         let Some(row) = areas.find_by_str("Id", id)? else {
@@ -394,4 +405,106 @@ impl GrantedSkill {
             implicit_stats,
         }))
     }
+}
+
+/// A row a player can name: its id and its display name (empty when it has none).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedRow {
+    pub id: String,
+    pub display: String,
+}
+
+/// Rows of a game table for command arguments and completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NameList {
+    Area,
+    Waypoint,
+    Class,
+    Ascendancy,
+    ItemBase,
+    Unique,
+    Mod,
+    Stat,
+    Currency,
+    Gem,
+    Monster,
+    Rarity,
+    DamageType,
+}
+
+impl NameList {
+    /// Reads the list from the game data.
+    pub fn rows(self, data: &GameData) -> Result<Vec<NamedRow>> {
+        match self {
+            Self::Area => id_name(data, "WorldAreas", "Name"),
+            Self::Waypoint => {
+                let mut out = Vec::new();
+                for row in data.table("WorldAreas")?.rows() {
+                    if row.bool("HasWaypoint")? {
+                        out.push(NamedRow { id: row.str("Id")?, display: row.str("Name")? });
+                    }
+                }
+                Ok(out)
+            }
+            Self::Class => id_name(data, "Characters", "Name"),
+            Self::Ascendancy => id_name(data, "Ascendancy", "Name"),
+            Self::ItemBase => id_name(data, "BaseItemTypes", "Name"),
+            Self::Mod => id_name(data, "Mods", "Name"),
+            Self::Monster => id_name(data, "MonsterVarieties", "Name"),
+            Self::Stat => id_name(data, "Stats", "Id"),
+            Self::Rarity => id_name(data, "Rarity", "Id"),
+            // The game has no damage type table; its per-type damage-over-time context flags
+            // name each type once (`PhysicalDot`, `FireDot`, ...).
+            Self::DamageType => {
+                let mut out = Vec::new();
+                for row in data.table("VirtualStatContextFlags")?.rows() {
+                    if let Some(kind) = row.str("Id")?.strip_suffix("Dot") {
+                        out.push(NamedRow { id: kind.to_owned(), display: String::new() });
+                    }
+                }
+                Ok(out)
+            }
+            Self::Currency => through_base(data, "CurrencyItems"),
+            Self::Gem => through_base(data, "SkillGems"),
+            Self::Unique => {
+                let words = data.table("Words")?;
+                let mut out: Vec<NamedRow> = Vec::new();
+                for row in data.table("UniqueStashLayout")?.rows() {
+                    let Some(word) = row.row_ref("WordsKey")?.and_then(|i| words.row(i)) else {
+                        continue;
+                    };
+                    let id = word.str("Text")?;
+                    if !out.iter().any(|n| n.id == id) {
+                        out.push(NamedRow { display: id.clone(), id });
+                    }
+                }
+                Ok(out)
+            }
+        }
+    }
+}
+
+fn id_name(data: &GameData, table: &str, name: &str) -> Result<Vec<NamedRow>> {
+    let mut out = Vec::new();
+    for row in data.table(table)?.rows() {
+        let id = row.str("Id")?;
+        let display = if name == "Id" { String::new() } else { row.str(name)? };
+        // Rows the game marks as unused ("[DNT-UNUSED] Bait Fisher").
+        if !display.starts_with("[DNT") {
+            out.push(NamedRow { id, display });
+        }
+    }
+    Ok(out)
+}
+
+/// A table whose rows are named by their `BaseItemType` row.
+fn through_base(data: &GameData, table: &str) -> Result<Vec<NamedRow>> {
+    let bases = data.table("BaseItemTypes")?;
+    let mut out = Vec::new();
+    for row in data.table(table)?.rows() {
+        if let Some(base) = row.row_ref("BaseItemType")?.and_then(|i| bases.row(i)) {
+            out.push(NamedRow { id: base.str("Id")?, display: base.str("Name")? });
+        }
+    }
+    Ok(out)
 }

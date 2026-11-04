@@ -119,6 +119,12 @@ impl World {
         self.config.tick_ms
     }
 
+    /// Changes the frame length from the next frame on (`time scale`; the frame rate stays with
+    /// the server's clock).
+    pub fn set_tick_ms(&mut self, tick_ms: u32) {
+        self.config.tick_ms = tick_ms;
+    }
+
     pub fn config(&self) -> &WorldConfig {
         &self.config
     }

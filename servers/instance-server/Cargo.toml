@@ -20,10 +20,10 @@ poe-store.workspace = true
 poe-web-api.workspace = true
 poe-world.workspace = true
 rand.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 # Paused time for the actor tests.
 tokio = { workspace = true, features = ["test-util"] }

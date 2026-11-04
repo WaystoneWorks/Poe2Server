@@ -16,7 +16,6 @@ use crate::{
 pub struct SessionCtx<'a> {
     pub ticket: &'a Ticket,
     pub account: String,
-    pub admin: bool,
     pub instance: Option<u32>,
     pub seed: u32,
     /// The client's tile hash for this layout.
@@ -53,24 +52,40 @@ const MAX_ALIAS_DEPTH: u8 = 4;
 /// The name server messages are sent under.
 pub const SERVER_NAME: &str = "<Server>";
 
+/// The frame length (ms) for a time scale: at most the tick (the client plays faster only with
+/// frames queued, which adds latency) and at least 1 ms. `None` when the factor is out of range.
+fn frame_ms_for(factor: f64, tick_ms: u32) -> Option<u32> {
+    let ms = (factor * f64::from(tick_ms)).round();
+    (factor > 0.0 && factor <= 1.0 && ms >= 1.0).then_some(ms as u32)
+}
+
 impl InstanceServer {
     /// Parses and runs a command line (without the chat prefix).
     pub(crate) fn run_command(&self, ctx: &SessionCtx<'_>, player: &mut player::Player, line: &str) -> Outcome {
         self.run_command_depth(ctx, player, line, 0)
     }
 
+    /// Finds a line's command, checks the caller's role and the arguments, and turns names into
+    /// ids. The role is checked at the time of the command (a demoted admin loses it at once),
+    /// before the arguments, so messages name only what the caller may see.
+    fn parse_checked(&self, actor: &str, line: &str) -> Result<Parsed, String> {
+        let (spec, rest) = commands::locate(line).map_err(|miss| miss.text(self.is_admin(actor)))?;
+        if spec.is_admin() && !self.is_admin(actor) {
+            return Err(format!("{} is for admins only", spec.name()));
+        }
+        let mut parsed = commands::parse_args(spec, rest)?;
+        commands::resolve(&mut parsed, self)?;
+        Ok(parsed)
+    }
+
     /// [`run_command`](Self::run_command) for an alias of a mod: `depth` counts the aliases
     /// followed so far.
     fn run_command_depth(&self, ctx: &SessionCtx<'_>, player: &mut player::Player, line: &str, depth: u8) -> Outcome {
-        let parsed = match commands::parse(line) {
+        let parsed = match self.parse_checked(&ctx.account, line) {
             Ok(p) => p,
             Err(e) => return Outcome::err(e),
         };
-        // The role is checked at the time of the command (a demoted admin loses it at once).
-        if parsed.spec.admin && !self.is_admin(&ctx.account) {
-            return Outcome::err(format!("{} is for admins only", parsed.spec.name));
-        }
-        let out = match commands::extra(parsed.spec.name) {
+        let out = match commands::extra(parsed.spec) {
             Some(extra) => self.execute_mod(ctx, player, &parsed, extra, depth),
             None => self.execute(ctx, player, &parsed),
         };
@@ -94,13 +109,13 @@ impl InstanceServer {
             CommandAction::Reply(text) => Outcome::ok(fill(text)),
             CommandAction::Alias(line) => {
                 if depth >= MAX_ALIAS_DEPTH {
-                    return Ok(Outcome::err(format!("{}: aliases nest too deep", p.spec.name)));
+                    return Ok(Outcome::err(format!("{}: aliases nest too deep", p.spec.name())));
                 }
                 // The target command is checked like a typed one (its role, its arguments).
                 return Ok(self.run_command_depth(ctx, player, fill(line).trim(), depth + 1));
             }
             CommandAction::Native => {
-                if player.mod_command(&extra.mod_id, p.spec.name, args) {
+                if player.mod_command(&extra.mod_id, p.spec.path[0], args) {
                     Outcome::ok("")
                 } else {
                     Outcome::err("the instance is not running")
@@ -113,15 +128,12 @@ impl InstanceServer {
     /// the same registry, role check, log and audit as chat commands. `account` is the label
     /// logged and audited.
     pub(crate) fn run_global(&self, account: &str, actor: &str, line: &str) -> Outcome {
-        let parsed = match commands::parse(line) {
+        let parsed = match self.parse_checked(actor, line) {
             Ok(p) => p,
             Err(e) => return Outcome::err(e),
         };
-        if parsed.spec.admin && !self.is_admin(actor) {
-            return Outcome::err(format!("{} is for admins only", parsed.spec.name));
-        }
         let out = self.execute_global(actor, &parsed).unwrap_or_else(|| {
-            Ok(Outcome::err(format!("{} needs your own game session", parsed.spec.name)))
+            Ok(Outcome::err(format!("{} needs your own game session", parsed.spec.name())))
         });
         self.finish(account, &parsed, line, out)
     }
@@ -129,56 +141,97 @@ impl InstanceServer {
     /// Logs a command's result and appends admin commands to the audit file. Passwords never
     /// reach either.
     pub(crate) fn finish(&self, account: &str, parsed: &Parsed, line: &str, result: anyhow::Result<Outcome>) -> Outcome {
-        let shown = match parsed.spec.name {
-            "account" => poe_accounts::redact(parsed.get("action").unwrap_or_default(), line),
+        let shown = match parsed.spec.path {
+            ["account"] => poe_accounts::redact(parsed.get("action").unwrap_or_default(), line),
             _ => line.to_string(),
         };
         let out = match result {
             Ok(o) => o,
             Err(e) => Outcome::err(format!("{e:#}")),
         };
-        info!(account = %account, command = %shown, ok = out.ok, result = %out.text, "command");
-        if parsed.spec.admin {
-            self.audit(account, &shown, &out.text);
+        let flat = out.text.replace('\n', " | ");
+        info!(account = %account, command = %shown, ok = out.ok, result = %flat, "command");
+        if parsed.spec.is_admin() {
+            self.audit(account, &shown, &flat);
         }
         out
     }
 
     /// The commands that work without a game session. `None`: the command needs one.
     pub(crate) fn execute_global(&self, actor: &str, p: &Parsed) -> Option<anyhow::Result<Outcome>> {
-        Some(Ok(match p.spec.name {
-            "who" => {
+        let prefix = &self.config.commands.prefix;
+        Some(Ok(match p.spec.path {
+            ["help"] => {
+                let (query, page) = commands::split_page(p.get("search"));
+                let lines = commands::help_lines(query, self.is_admin(actor), prefix);
+                let next = format!("{prefix}help{}", query.map_or(String::new(), |q| format!(" {q}")));
+                Outcome::ok(commands::paged(&lines, page, &next))
+            }
+            ["uptime"] => {
+                let secs = self.started.elapsed().as_secs();
+                Outcome::ok(format!(
+                    "up {}d {}h {}m; server {}, client {}",
+                    secs / 86400,
+                    secs / 3600 % 24,
+                    secs / 60 % 60,
+                    env!("CARGO_PKG_VERSION"),
+                    self.config.game.version
+                ))
+            }
+            ["who"] => {
                 let rows: Vec<String> = self
                     .live
                     .online()
                     .into_iter()
-                    .map(|o| format!("{} ({}) in {} #{}", o.character, o.account, o.area, o.instance.map_or("-".into(), |i| i.to_string())))
+                    .map(|o| format!("{} ({}) level {} {} in {} #{}", o.character, o.account, o.level, o.league, o.area, o.instance.map_or("-".into(), |i| i.to_string())))
                     .collect();
                 Outcome::ok(format!("{} online: {}", rows.len(), rows.join("; ")))
             }
-            "kick" => {
+            ["player", "kick"] => {
                 let who = p.get("player").unwrap_or_default();
-                if self.live.kick(who) { Outcome::ok(format!("kicked {who}")) } else { Outcome::err(format!("{who} is not online")) }
+                let reason = p.get("reason");
+                if let Some(reason) = reason {
+                    self.live.tell(who, ChatOut { sender: SERVER_NAME.into(), text: format!("You were kicked: {reason}") });
+                }
+                if self.live.kick(who) {
+                    Outcome::ok(match reason {
+                        Some(r) => format!("kicked {who}: {r}"),
+                        None => format!("kicked {who}"),
+                    })
+                } else {
+                    Outcome::err(format!("{who} is not online"))
+                }
             }
-            "mute" => {
+            ["player", "mute"] => {
                 let who = p.get("player").unwrap_or_default();
-                let minutes = p.int("minutes").map(|m| m.max(1) as u64);
-                self.live.mute(who, minutes);
-                Outcome::ok(match minutes {
-                    Some(m) => format!("muted {who} for {m} min"),
+                let duration = p.duration("duration");
+                self.live.mute(who, duration);
+                Outcome::ok(match duration {
+                    Some(d) => format!("muted {who} for {}", commands::show_duration(d)),
                     None => format!("muted {who}"),
                 })
             }
-            "unmute" => {
+            ["player", "unmute"] => {
                 let who = p.get("player").unwrap_or_default();
                 if self.live.unmute(who) { Outcome::ok(format!("unmuted {who}")) } else { Outcome::err(format!("{who} was not muted")) }
             }
-            "announce" => {
+            ["announce"] => {
                 let text = p.get("message").unwrap_or_default().to_string();
                 let n = self.live.broadcast(ChatOut { sender: SERVER_NAME.into(), text }, |_| true);
                 Outcome::ok(format!("sent to {n} players"))
             }
-            "instances" => {
+            ["area", "list"] => {
+                let (query, page) = commands::split_page(p.get("search"));
+                match self.area_lines(query) {
+                    Ok(lines) if lines.is_empty() => Outcome::err(format!("no area matches {:?}", query.unwrap_or_default())),
+                    Ok(lines) => {
+                        let next = format!("{prefix}area list{}", query.map_or(String::new(), |q| format!(" {q}")));
+                        Outcome::ok(commands::paged(&lines, page, &next))
+                    }
+                    Err(e) => return Some(Err(e)),
+                }
+            }
+            ["instance", "list"] => {
                 let list = self.instances.list();
                 let rows: Vec<String> = list
                     .iter()
@@ -198,15 +251,15 @@ impl InstanceServer {
                     .collect();
                 Outcome::ok(format!("{} instances: {}", rows.len(), rows.join("; ")))
             }
-            "instance_new" => match self.new_instance(p) {
+            ["instance", "new"] => match self.new_instance(p) {
                 Ok(id) => Outcome::ok(format!("created instance #{id}")),
                 Err(e) => return Some(Err(e)),
             },
-            "close" => {
-                let id = p.int("instance").unwrap_or(0) as u32;
+            ["instance", "close"] => {
+                let id = p.int("id").unwrap_or(0) as u32;
                 if self.instances.close(id) { Outcome::ok(format!("closed instance #{id}")) } else { Outcome::err(format!("no instance #{id}")) }
             }
-            "account" => match poe_accounts::run_account_command(
+            ["account"] => match poe_accounts::run_account_command(
                 &*self.accounts,
                 Some(actor),
                 p.get("action").unwrap_or_default(),
@@ -222,16 +275,26 @@ impl InstanceServer {
                 }
                 Err(e) => Outcome::err(e),
             },
-            "league" => self.league_command(actor, p),
+            ["league", ..] => self.league_command(actor, p),
             _ => return None,
         }))
+    }
+
+    /// `area list`: one line per area whose id or name contains the search word.
+    fn area_lines(&self, query: Option<&str>) -> anyhow::Result<Vec<String>> {
+        let q = query.unwrap_or_default().to_lowercase();
+        Ok(WorldArea::all(&self.data)?
+            .into_iter()
+            .filter(|a| a.id.to_lowercase().contains(&q) || a.name.to_lowercase().contains(&q))
+            .map(|a| format!("{}  {}  act {} level {}", a.id, a.name, a.act, a.level))
+            .collect())
     }
 
     /// `league list` and `league end <league> <target>` (admins; the web admin does the rest).
     fn league_command(&self, actor: &str, p: &Parsed) -> Outcome {
         let store = &*self.leagues;
-        match p.get("action").unwrap_or_default() {
-            "list" => match (store.leagues(), store.character_counts()) {
+        match p.spec.path {
+            ["league", "list"] => match (store.leagues(), store.character_counts()) {
                 (Ok(rows), Ok(counts)) => {
                     let rows: Vec<String> = rows
                         .iter()
@@ -241,9 +304,9 @@ impl InstanceServer {
                 }
                 (Err(e), _) | (_, Err(e)) => Outcome::err(format!("league list failed: {e}")),
             },
-            "end" => {
+            ["league", "end"] => {
                 let (Some(league), Some(target)) = (p.get("league"), p.get("target")) else {
-                    return Outcome::err("usage: league end <league> <target>");
+                    return Outcome::err(format!("usage: {}", commands::usage(p.spec)));
                 };
                 let family = match store.league(league) {
                     Ok(Some(l)) => l.family,
@@ -256,7 +319,7 @@ impl InstanceServer {
                     Err(e) => Outcome::err(format!("league end failed: {e}")),
                 }
             }
-            other => Outcome::err(format!("unknown league action {other:?}")),
+            other => Outcome::err(format!("unknown league command {other:?}")),
         }
     }
 
@@ -265,33 +328,40 @@ impl InstanceServer {
             return done;
         }
         let name = &ctx.ticket.character.name;
-        Ok(match p.spec.name {
-            "help" => match p.get("command") {
-                Some(c) => match commands::find(c) {
-                    Some(spec) => Outcome::ok(format!("{}{}: {}", self.config.commands.prefix, commands::usage(spec), spec.help)),
-                    None => Outcome::err(format!("no command {c}")),
-                },
-                None => {
-                    let list: Vec<&str> = commands::all().filter(|c| ctx.admin || !c.admin).map(|c| c.name).collect();
-                    Outcome::ok(format!("commands ({}help <command>): {}", self.config.commands.prefix, list.join(", ")))
-                }
-            },
-            "where" => {
+        Ok(match p.spec.path {
+            ["where"] => {
                 let (x, y) = player.cell();
+                let players = ctx.instance.and_then(|i| self.actors.players(i)).unwrap_or(0);
                 Outcome::ok(format!(
-                    "instance {} area {} seed {} cell {x} {y}",
+                    "instance {} ({players} players) area {} league {} seed {} cell {x} {y}",
                     ctx.instance.map_or("-".to_string(), |i| i.to_string()),
                     ctx.ticket.area,
+                    ctx.ticket.character.league,
                     ctx.seed
                 ))
             }
-            "transfer" => {
+            ["seed"] => {
+                let spec = ctx.instance.and_then(|i| self.instances.get(i)).map(|i| i.spec);
+                let show = |v: Option<String>| v.unwrap_or_else(|| "natural".into());
+                Outcome::ok(format!(
+                    "seed {} topology {} orientation {} in {}",
+                    ctx.seed,
+                    show(spec.as_ref().and_then(|s| s.topology).map(|t| t.to_string())),
+                    show(spec.as_ref().and_then(|s| s.orientation).map(|o| o.to_string())),
+                    ctx.ticket.area
+                ))
+            }
+            ["stuck"] => {
+                player.unstick();
+                Outcome::ok("moving you to the nearest walkable cell")
+            }
+            ["instance", "transfer"] => {
                 let id = self.new_instance(p)?;
                 self.move_to(ctx, id)?;
                 Outcome { leave: true, ..Outcome::ok(format!("moving to new instance #{id}")) }
             }
-            "join" => {
-                let id = p.int("instance").unwrap_or(0) as u32;
+            ["instance", "join"] => {
+                let id = p.int("id").unwrap_or(0) as u32;
                 if self.instances.get(id).is_none() {
                     return Ok(Outcome::err(format!("no instance #{id}")));
                 }
@@ -301,35 +371,104 @@ impl InstanceServer {
                 self.move_to(ctx, id)?;
                 Outcome { leave: true, ..Outcome::ok(format!("moving to instance #{id}")) }
             }
-            "teleport" => {
-                let (x, y) = (p.int("x").unwrap_or(0) as i32, p.int("y").unwrap_or(0) as i32);
-                player.teleport((x, y));
-                Outcome::ok(format!("teleported to {x} {y}"))
+            ["instance", "reset"] => {
+                let Some(area) = WorldArea::find(&self.data, &ctx.ticket.area)? else {
+                    anyhow::bail!("no area {} in WorldAreas", ctx.ticket.area);
+                };
+                let spec = InstanceSpec { seed: area.fixed_seed(), area: area.id, topology: None, orientation: None };
+                let id = self.instances.create(spec, false);
+                self.move_to(ctx, id)?;
+                Outcome { leave: true, ..Outcome::ok(format!("moving to fresh instance #{id}")) }
             }
-            "speed" => {
+            ["tp"] => return self.teleport_command(ctx, player, p),
+            ["summon"] => return self.summon(ctx, player, p),
+            ["time", "scale"] => return self.time_scale(ctx, player, p),
+            ["speed"] => {
                 let increased = p.int("increased").map(|v| v as i32);
                 let action = p.int("action").map(|v| v as i32);
                 if increased.is_none() && action.is_none() {
-                    return Ok(Outcome::err("speed <increased %> [action speed %]"));
+                    return Ok(Outcome::err(format!("usage: {}", commands::usage(p.spec))));
                 }
                 player.set_speed_stats(increased, action);
                 Outcome::ok(format!("speed: increased {increased:?} %, action speed {action:?} %"))
             }
-            "terrain" => {
+            ["terrain", "compare"] => {
                 self.generate_terrain(&ctx.ticket.area, ctx.seed, ctx.tile_hash, ctx.instance);
                 Outcome::ok("generating on the server: the result is in the server log")
             }
-            "area_info" => {
+            ["research", "area_info"] => {
                 let args = format!("{} {}", p.get("area").unwrap_or_default(), p.get("seed").unwrap_or("1"));
                 let mut o = Outcome::ok("sent a second AreaInfo");
                 o.raw = self.area_info_command(&args, ctx.ticket)?;
                 o
             }
             other => {
-                warn!(command = other, name, "command without an implementation");
-                Outcome::err(format!("{other} is not implemented"))
+                warn!(command = ?other, name, "command without an implementation");
+                Outcome::err(format!("{} is not implemented", other.join(" ")))
             }
         })
+    }
+
+    /// `tp <x> <y>` in this instance, `tp <player>` to their cell (and their instance).
+    fn teleport_command(&self, ctx: &SessionCtx<'_>, player: &mut player::Player, p: &Parsed) -> anyhow::Result<Outcome> {
+        let target = p.get("x|player").unwrap_or_default();
+        if let Some(y) = p.int("y") {
+            let Ok(x) = target.parse::<i32>() else {
+                return Ok(Outcome::err(format!("bad <x>: {target:?}; usage: {}", commands::usage(p.spec))));
+            };
+            player.teleport((x, y as i32));
+            return Ok(Outcome::ok(format!("teleported to {x} {y}")));
+        }
+        let Some(other) = self.live.online().into_iter().find(|o| o.character.eq_ignore_ascii_case(target)) else {
+            return Ok(Outcome::err(format!("{target} is not online")));
+        };
+        if other.instance == ctx.instance {
+            let (x, y) = other.cell;
+            player.teleport((x, y));
+            return Ok(Outcome::ok(format!("teleported to {} at {x} {y}", other.character)));
+        }
+        let Some(id) = other.instance else {
+            return Ok(Outcome::err(format!("{} is in no instance", other.character)));
+        };
+        let place = self.instances.get(id).and_then(|i| i.spec.seed).map(|seed| (seed, other.cell.0, other.cell.1));
+        self.hand_off_at(ctx.ticket.account_id, ctx.ticket.character.clone(), id, place)?;
+        Ok(Outcome { leave: true, ..Outcome::ok(format!("moving to {} in instance #{id}", other.character)) })
+    }
+
+    /// `summon <player>`: onto your cell, through a hand-off when they are in another instance.
+    fn summon(&self, ctx: &SessionCtx<'_>, player: &mut player::Player, p: &Parsed) -> anyhow::Result<Outcome> {
+        let target = p.get("player").unwrap_or_default();
+        let Some(other) = self.live.online().into_iter().find(|o| o.character.eq_ignore_ascii_case(target)) else {
+            return Ok(Outcome::err(format!("{target} is not online")));
+        };
+        if other.character == ctx.ticket.character.name {
+            return Ok(Outcome::err("that is you"));
+        }
+        let (x, y) = player.cell();
+        if other.instance == ctx.instance {
+            player.teleport_session(other.session, (x, y));
+            return Ok(Outcome::ok(format!("{} moved to {x} {y}", other.character)));
+        }
+        let Some(id) = ctx.instance else {
+            return Ok(Outcome::err("you are in no instance"));
+        };
+        self.transfer_character(other.account_id, &other.character, id, Some((ctx.seed, x, y)))?;
+        Ok(Outcome::ok(format!("moving {} to instance #{id}", other.character)))
+    }
+
+    /// `time scale [factor]`: the frame length of the whole instance (docs/re/time-scale.md).
+    fn time_scale(&self, ctx: &SessionCtx<'_>, player: &mut player::Player, p: &Parsed) -> anyhow::Result<Outcome> {
+        let tick = self.config.instance.tick_ms.max(1) as u32;
+        let Some(factor) = p.float("factor") else {
+            let ms = player.frame_ms();
+            return Ok(Outcome::ok(format!("time scale {:.2} (frame length {ms} ms of {tick} ms)", f64::from(ms) / f64::from(tick))));
+        };
+        let Some(ms) = frame_ms_for(factor, tick) else {
+            return Ok(Outcome::err(format!("factor must be from {:.2} to 1 (steps of 1/{tick})", 1.0 / f64::from(tick))));
+        };
+        player.set_frame_ms(ms);
+        info!(instance = ?ctx.instance, frame_ms = ms, "time scale");
+        Ok(Outcome::ok(format!("time scale {:.2} for this instance (frame length {ms} ms)", f64::from(ms) / f64::from(tick))))
     }
 
     /// Creates an instance from `area [seed] [topology] [orientation]`, checking the layout
@@ -356,6 +495,28 @@ impl InstanceServer {
         }
         let spec = InstanceSpec { area: area.id.clone(), seed: p.seed().or(area.fixed_seed()), topology, orientation };
         Ok(self.instances.create(spec, false))
+    }
+
+    /// Moves an online character to instance `id` from outside its session (another admin's
+    /// command, the web API): the character as the login server hands it over.
+    pub(crate) fn transfer_character(&self, account_id: u32, name: &str, id: u32, location: Option<(u32, i32, i32)>) -> anyhow::Result<()> {
+        let Some(found) = self.store.characters(account_id)?.into_iter().find(|c| c.name.eq_ignore_ascii_case(name)) else {
+            anyhow::bail!("{name} is not in the database");
+        };
+        let character = poe_cluster::TicketCharacter {
+            id: found.id,
+            name: found.name.clone(),
+            league: found.league.clone(),
+            class_id: found.class_id,
+            level: found.level,
+            intro_done: found.intro_done,
+            location: None,
+        };
+        self.hand_off_at(account_id, character, id, location)?;
+        // Ends the player's instance session; the client falls back to character selection on
+        // its login connection, which delivers the pending InstanceDetails.
+        self.live.kick(name);
+        Ok(())
     }
 
     /// Hands this session's client to instance `id` (its login connection sends
@@ -408,6 +569,21 @@ impl InstanceServer {
                 warn!(account, "role lookup failed: {e}");
                 false
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::frame_ms_for;
+
+    #[test]
+    fn time_scale_steps_are_whole_milliseconds_and_never_faster() {
+        assert_eq!(frame_ms_for(1.0, 33), Some(33));
+        assert_eq!(frame_ms_for(0.5, 33), Some(17));
+        assert_eq!(frame_ms_for(0.03, 33), Some(1));
+        for bad in [0.0, -1.0, 0.001, 1.01, 2.0] {
+            assert_eq!(frame_ms_for(bad, 33), None, "{bad}");
         }
     }
 }

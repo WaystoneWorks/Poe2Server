@@ -17,6 +17,11 @@ async fn main() -> anyhow::Result<()> {
     let config = Arc::new(Config::load_default()?);
     // `poe-server mod <list|install|enable|disable|verify>` manages the mods folder offline.
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // The command table of the docs (`cargo xtask commands-doc` in the hub).
+    if args.first().map(String::as_str) == Some("commands-doc") {
+        print!("{}", instance_server::commands::doc_table());
+        return Ok(());
+    }
     if args.first().map(String::as_str) == Some("mod") {
         return mods_cli::run(&config.mods.dir, &args[1..]);
     }
@@ -86,7 +91,7 @@ async fn main() -> anyhow::Result<()> {
         game_version: config.game.version.clone(),
         server_version: env!("CARGO_PKG_VERSION").to_owned(),
         server_dir: std::env::current_dir().unwrap_or_default(),
-        reserved_commands: instance_server::commands::COMMANDS.iter().map(|c| c.name.to_owned()).collect(),
+        reserved_commands: instance_server::commands::reserved_names(),
     }));
     instance_server::commands::install_mod_commands(mods.commands());
     let mut game_data = GameData::open(&config.game.game_dir, &config.game.schema)?;
@@ -132,6 +137,8 @@ async fn main() -> anyhow::Result<()> {
         mods: mods.clone(),
         layouts: Default::default(),
         terrain_memory: Default::default(),
+        started: std::time::Instant::now(),
+        names: instance_server::names::NameCache::default(),
     });
 
     let (web_lifecycle, mut shutdown_requests) = poe_web_api::Lifecycle::new();

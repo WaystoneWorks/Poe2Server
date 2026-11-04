@@ -144,3 +144,29 @@ fn finds_the_town_of_an_area() {
     assert_eq!(town("G2_1").as_deref(), Some("G2_town"));
     assert_eq!(town("P2_1").as_deref(), Some("P2_Town"));
 }
+
+#[test]
+fn name_lists_read_from_the_game_files() {
+    use poe_data::views::NameList;
+    let Some(data) = open() else { return };
+    for list in [
+        NameList::Area,
+        NameList::Waypoint,
+        NameList::Class,
+        NameList::Ascendancy,
+        NameList::ItemBase,
+        NameList::Unique,
+        NameList::Mod,
+        NameList::Stat,
+        NameList::Currency,
+        NameList::Gem,
+        NameList::Monster,
+        NameList::Rarity,
+        NameList::DamageType,
+    ] {
+        let rows = list.rows(&data).unwrap_or_else(|e| panic!("{list:?}: {e:#}"));
+        assert!(!rows.is_empty(), "{list:?}");
+        let sample: Vec<String> = rows.iter().take(6).map(|r| format!("{}={}", r.id, r.display)).collect();
+        eprintln!("{list:?}: {} rows: {}", rows.len(), sample.join(", "));
+    }
+}

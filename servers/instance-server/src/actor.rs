@@ -31,7 +31,7 @@ use std::{
     collections::HashMap,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -44,7 +44,7 @@ use poe_game::{
 };
 use poe_proto::{
     Message, Protocol,
-    instance::{AddObject, SetPause, SimulationHeader, SimulationTick},
+    instance::{AddObject, SetPause, SimulationFrameValue, SimulationHeader, SimulationTick},
     player_blob::PlayerBlob,
     remote::{DestroyEntity, EntitySleep, PresenceChanged, RemoveObject},
 };
@@ -71,6 +71,8 @@ pub type SessionId = u64;
 /// Order key of `AddObject` and `RemoveObject` on official servers: after everything else in
 /// the frame.
 const AFTER_ALL: u32 = 0xffff_ffff;
+/// How far `stuck` looks for a walkable cell (cells).
+const UNSTICK_RADIUS: i32 = 400;
 /// Player component flag of the combat stance `+0x20c` (official remote blobs: `0x0c`, bit 3
 /// being the always-set part the blob itself carries, [`crate::appearance::REMOTE_PLAYER_FLAGS`]).
 const PLAYER_FLAG_STANCE: u8 = 0x04;
@@ -197,6 +199,15 @@ pub enum Cmd {
         session: SessionId,
         cell: (i32, i32),
     },
+    /// `stuck`: put the session's entity on the nearest walkable cell, or back on its entry cell.
+    Unstick {
+        session: SessionId,
+    },
+    /// `time scale`: the instance's frame length. Every session gets `SimulationFrameValue`
+    /// before the marker of the first frame of that length, and the world steps by it.
+    SetFrameMs {
+        frame_ms: u32,
+    },
     /// A chat command of a mod: the actor delivers it to the mod with a full snapshot and
     /// applies what the mod submits (`EVENT_COMMAND`).
     ModCommand {
@@ -257,6 +268,8 @@ struct Member {
     /// The speed stats the entity's movement uses (from the character, then
     /// [`Cmd::SetSpeedStats`]).
     speed: SpeedStats,
+    /// Where the session entered the instance (`stuck` with no walkable cell in reach).
+    entry: (i32, i32),
     /// Lifecycle bytes for the next frame.
     head: Vec<u8>,
 }
@@ -274,6 +287,8 @@ pub struct Actor {
     tick_marker: Vec<u8>,
     /// Lets the registry show the live player count.
     players: Arc<AtomicUsize>,
+    /// The current frame length in ms (`time scale`), for commands.
+    frame_ms: Arc<AtomicU32>,
 }
 
 impl Actor {
@@ -291,6 +306,7 @@ impl Actor {
             paused_by: None,
             tick_marker,
             players: Arc::new(AtomicUsize::new(0)),
+            frame_ms: Arc::new(AtomicU32::new(init.tick_ms)),
             init,
         })
     }
@@ -389,6 +405,16 @@ impl Actor {
                     self.world.teleport(m.entity, cell);
                 }
             }
+            Cmd::Unstick { session } => {
+                if let Some(m) = self.member(session) {
+                    let (entity, entry) = (m.entity, m.entry);
+                    let here = self.world.entity(entity).map_or(entry, |e| e.movement.cell());
+                    let cell = self.world.grid().nearest_walkable(here, UNSTICK_RADIUS).unwrap_or(entry);
+                    info!(session, ?here, ?cell, "stuck: moving");
+                    self.world.teleport(entity, cell);
+                }
+            }
+            Cmd::SetFrameMs { frame_ms } => self.set_frame_ms(frame_ms),
             Cmd::ModCommand { session, mod_id, name, args } => {
                 self.mod_command(session, &mod_id, &name, &args)
             }
@@ -472,6 +498,24 @@ impl Actor {
         }
     }
 
+    /// Changes the frame length: the world steps by it from the next frame on, and the client
+    /// gets it ahead of that frame's marker (docs/re/time-scale.md).
+    fn set_frame_ms(&mut self, frame_ms: u32) {
+        self.world.set_tick_ms(frame_ms);
+        self.frame_ms.store(frame_ms, Ordering::Relaxed);
+        let bytes = self.frame_value();
+        for m in &mut self.members {
+            m.head.extend_from_slice(&bytes);
+        }
+    }
+
+    /// The encoded `SimulationFrameValue` for the current frame length.
+    fn frame_value(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        self.put(&mut bytes, &SimulationFrameValue { value: self.world.tick_ms().min(255) as u8 });
+        bytes
+    }
+
     fn join(&mut self, req: JoinRequest, reply: oneshot::Sender<Joined>) {
         if self.member(req.session).is_some() {
             warn!(session = req.session, "session joined twice: ignored");
@@ -523,7 +567,8 @@ impl Actor {
             appearance: req.appearance,
             want_debug: req.want_debug,
             speed,
-            head: Vec::new(),
+            entry: cell,
+            head: if self.world.tick_ms() == self.init.tick_ms { Vec::new() } else { self.frame_value() },
         };
         // The newcomer's entry batch: the players already here (remote form), then itself.
         let mut add_objects = Vec::new();
@@ -925,6 +970,7 @@ pub struct ActorHandle {
     pub instance: u32,
     pub area: String,
     players: Arc<AtomicUsize>,
+    frame_ms: Arc<AtomicU32>,
 }
 
 impl ActorHandle {
@@ -935,6 +981,11 @@ impl ActorHandle {
 
     pub fn players(&self) -> usize {
         self.players.load(Ordering::Relaxed)
+    }
+
+    /// The instance's frame length in ms.
+    pub fn frame_ms(&self) -> u32 {
+        self.frame_ms.load(Ordering::Relaxed)
     }
 
     pub fn is_running(&self) -> bool {
@@ -1029,6 +1080,7 @@ impl Actors {
             instance,
             area: actor.init.area.clone(),
             players: actor.players.clone(),
+            frame_ms: actor.frame_ms.clone(),
         };
         map.insert(instance, handle.clone());
         info!(instance, area = %handle.area, "instance actor started");

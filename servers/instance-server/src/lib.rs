@@ -23,6 +23,7 @@ pub mod commands;
 mod exec;
 pub use exec::SERVER_NAME;
 pub mod live;
+pub mod names;
 pub mod modlink;
 mod movement;
 mod player;
@@ -95,6 +96,10 @@ pub struct InstanceServer {
     pub layouts: LayoutCache,
     /// Where each character left last and its recent kicks (the terrain check's destinations).
     pub terrain_memory: terrain_check::Memory,
+    /// When the server started (`uptime`).
+    pub started: std::time::Instant,
+    /// Game-data name lists of command arguments, read on first use.
+    pub names: names::NameCache,
 }
 
 impl InstanceServer {
@@ -461,7 +466,6 @@ impl InstanceServer {
 
         let ctx = exec::SessionCtx {
             ticket: &ticket,
-            admin: self.is_admin(&account),
             account: account.clone(),
             instance,
             seed,
@@ -472,6 +476,7 @@ impl InstanceServer {
         // Another login of the account (or disabling it) ends this session.
         let superseded = self.sessions.subscribe_superseded(ticket.account_id);
         let registration = self.live.register_from(ticket.account_id, &account, &name, instance, &ticket.area, session, Some(client_ip));
+        self.live.set_character(&name, &ticket.character.league, ticket.character.level);
         let social_in = self.live.social.register(self.social_person(&ticket, &account, instance_id, player.entity_id, session));
         self.send_registry(&ctx);
         let closed = self.instances.closed(instance_id);
@@ -645,6 +650,7 @@ impl InstanceServer {
                     let started = std::time::Instant::now();
                     ticks += 1;
                     player.apply(frame.own.clone());
+                    self.live.set_cell(&ctx.ticket.character.name, player.cell());
                     if let Some(t) = self.reports.trace() {
                         t.line(client_port, "tick", format_args!("{ticks}"));
                         if ticks.is_multiple_of(30) {
@@ -687,17 +693,22 @@ impl InstanceServer {
                                 self.send_registry(ctx);
                                 continue;
                             }
+                            if let Some(request) = command.strip_prefix("complete ") {
+                                self.send_completion(ctx, request);
+                                continue;
+                            }
                             let cmd = self.run_command(ctx, player, &command);
                             out.extend(cmd.raw);
                             leave |= cmd.leave;
                             let status = if cmd.ok { "ok" } else { "error" };
                             self.reports.send_debug(
                                 ctx.side,
-                                &format!("ack\t{command}\t{status}: {}\n", cmd.text.replace(['\t', '\n'], " ")),
+                                &format!("ack\t{command}\t{status}: {}\n", cmd.text.replace('\t', " ").replace('\n', " | ")),
                             );
                         }
                         if ticks.is_multiple_of(30) {
                             self.send_instances(ctx);
+                            self.send_state(ctx, player);
                         }
                         if ticks.is_multiple_of(2) {
                             self.reports.send_debug(
@@ -958,14 +969,15 @@ fn chat_line(line: &live::ChatOut) -> poe_proto::instance::ChatMessage {
 }
 
 impl InstanceServer {
-    /// The command registry for the overlay (debug link): `cmds` datagrams of `cmd` lines
-    /// (`commands::wire`), then whether this account is an admin.
+    /// The command registry for the overlay (debug link): `cmds` datagrams of `cmdspec` lines
+    /// (`commands::wire`), only what this account may use, then who it is.
     fn send_registry(&self, ctx: &exec::SessionCtx<'_>) {
         if !self.config.dev.debug_link {
             return;
         }
+        let admin = self.is_admin(&ctx.account);
         let mut chunk = String::from("cmds\tbegin\n");
-        for spec in commands::all() {
+        for spec in commands::all().filter(|c| c.visible_to(admin)) {
             let line = commands::wire(spec);
             if chunk.len() + line.len() > 3000 {
                 self.reports.send_debug(ctx.side, &chunk);
@@ -974,8 +986,72 @@ impl InstanceServer {
             chunk.push_str(&line.replace('\n', " "));
             chunk.push('\n');
         }
-        chunk.push_str(&format!("you\t{}\t{}\t{}\n", ctx.account, ctx.admin as u8, self.config.commands.prefix));
+        chunk.push_str(&format!("you\t{}\t{}\t{}\n", ctx.account, admin as u8, self.config.commands.prefix));
         self.reports.send_debug(ctx.side, &chunk);
+    }
+
+    /// Answers `complete <kind> <typed>`: `completion\t<kind>\t<typed>` and a `name\t<id>\t<display>`
+    /// line per match. Player, instance and league names are for admins only.
+    fn send_completion(&self, ctx: &exec::SessionCtx<'_>, request: &str) {
+        let (kind, typed) = request.split_once(' ').unwrap_or((request, ""));
+        let Some(parsed) = commands::Kind::listed(kind) else {
+            return;
+        };
+        let private = matches!(parsed, commands::Kind::Player | commands::Kind::Instance | commands::Kind::League);
+        let list = if private && !self.is_admin(&ctx.account) { None } else { commands::Names::names(self, parsed) };
+        let mut out = format!("completion\t{kind}\t{typed}\n");
+        for n in list.as_deref().map_or(Vec::new(), |l| commands::complete(l, typed, names::COMPLETIONS)) {
+            let line = format!("name\t{}\t{}\n", n.id, n.display);
+            if out.len() + line.len() > 3000 {
+                break;
+            }
+            out.push_str(&line);
+        }
+        self.reports.send_debug(ctx.side, &out);
+    }
+
+    /// Live values for the overlay's Debug tabs: `state\t<key>\t<value>` lines, and for admins
+    /// the online players as `online` lines (`character, account, area, instance, league, level,
+    /// muted`).
+    fn send_state(&self, ctx: &exec::SessionCtx<'_>, player: &player::Player) {
+        let character = &ctx.ticket.character;
+        let tick = self.config.instance.tick_ms.max(1) as f64;
+        let (x, y) = player.cell();
+        let mut out = String::from("state\tbegin\n");
+        for (key, value) in [
+            ("character", character.name.clone()),
+            ("level", character.level.to_string()),
+            ("class", character.class_id.to_string()),
+            ("league", character.league.clone()),
+            ("area", ctx.ticket.area.clone()),
+            ("instance", ctx.instance.map_or("-".into(), |i| i.to_string())),
+            ("seed", ctx.seed.to_string()),
+            ("cell", format!("{x} {y}")),
+            ("time_scale", format!("{:.2}", f64::from(player.frame_ms()) / tick)),
+            ("muted", (self.live.is_muted(&character.name) as u8).to_string()),
+        ] {
+            out.push_str(&format!("state\t{key}\t{value}\n"));
+        }
+        if self.is_admin(&ctx.account) {
+            for o in self.live.online() {
+                let line = format!(
+                    "online\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                    o.character,
+                    o.account,
+                    o.area,
+                    o.instance.map_or("-".into(), |i| i.to_string()),
+                    o.league,
+                    o.level,
+                    self.live.is_muted(&o.character) as u8
+                );
+                // Enough for a private server; the rest stays in `who`.
+                if out.len() + line.len() > 3000 {
+                    break;
+                }
+                out.push_str(&line);
+            }
+        }
+        self.reports.send_debug(ctx.side, &out);
     }
 
     /// The instance list for the overlay's Instances tab: `instances` datagrams of `inst`
@@ -1211,8 +1287,13 @@ impl InstanceServer {
                         // A mod's own command answers with the chat lines it submits.
                         if !(out.ok && out.text.is_empty()) {
                             let text = if out.ok { out.text } else { format!("Error: {}", out.text) };
-                            let line = live::ChatOut { sender: exec::SERVER_NAME.into(), text };
-                            conn.send(&table.encode(&chat_line(&line))?).await?;
+                            // Long output (help pages) is one chat line per line.
+                            let mut lines = Vec::new();
+                            for text in text.lines() {
+                                let line = live::ChatOut { sender: exec::SERVER_NAME.into(), text: text.to_owned() };
+                                lines.extend(table.encode(&chat_line(&line))?);
+                            }
+                            conn.send(&lines).await?;
                         }
                         if leave {
                             info!("handing the client to another instance: ending this session");

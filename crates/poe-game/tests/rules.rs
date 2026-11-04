@@ -215,3 +215,41 @@ fn a_sprint_bonk_at_an_angle_coasts_along_the_wall() {
     assert_eq!(last, (294, 139), "coasted to the clip's end");
     assert!(last.0 - at.0 >= 2, "a coast after the Bonk at {at:?}");
 }
+
+/// A roll that starts while the SprintEnd clip plays keeps the sprint's facing (no turn to the
+/// target), so rolling back against the sprint is a backward roll (`_bwd_` curve): user test 2
+/// f2802 and seg1 f3578 (first roll frame 3.706 cells; forward: 3.732).
+#[test]
+fn a_roll_out_of_the_sprint_end_against_the_sprint_is_backward() {
+    let rows: Vec<String> = (0..400).map(|_| ".".repeat(300)).collect();
+    let rows: Vec<&str> = rows.iter().map(|r| r.as_str()).collect();
+    let (mut w, p) = world(Arc::new(VecGrid::from_rows(&rows)), (150, 60));
+    w.input(p, MoveInput::Direction { x: 0, y: 180 });
+    tick(&mut w);
+    w.input(p, MoveInput::SprintInput { held: true });
+    w.input(p, MoveInput::UseSkill(skill(ROLL, 0, 20)));
+    for _ in 0..60 {
+        tick(&mut w);
+    }
+    w.input(p, MoveInput::SprintInput { held: false });
+    w.input(p, MoveInput::SkillInputEnd);
+    tick(&mut w);
+    tick(&mut w);
+    // Keys and cursor both back up the screen, against the sprint.
+    w.input(p, MoveInput::Direction { x: 0, y: -180 });
+    tick(&mut w);
+    w.input(p, MoveInput::SprintInput { held: true });
+    w.input(p, MoveInput::UseSkill(skill(ROLL, 5, -16)));
+    let pos = |w: &World| w.entity(p).unwrap().movement.position();
+    let mut steps = Vec::new();
+    let mut last = pos(&w);
+    for _ in 0..3 {
+        tick(&mut w);
+        let now = pos(&w);
+        steps.push(((now.0 - last.0).powi(2) + (now.1 - last.1).powi(2)).sqrt());
+        last = now;
+    }
+    // The roll's first frame also carries the coast's last step; its next two are the curve's
+    // (the client's, user test 2 f2803-2804: 3.5289, 3.3449; forward: 3.5283, 3.3310).
+    assert!((steps[1] - 3.5289).abs() < 0.002 && (steps[2] - 3.3449).abs() < 0.002, "roll steps {steps:?}: not the backward curve");
+}

@@ -8,6 +8,7 @@
 //! Always from the segment's start (the area's start).
 //! `--free`: no placing on the client's log inside skills. The two models must then agree in every frame.
 //! `OFFSET`: log frame minus capture frame of the segment, as the trace script prints it.
+//! A private session (`scripts/re/movement_session_replay.py`): OFFSET 0, `--roll-skill 1`.
 
 use poe_game::clientsim::ClientSim;
 use poe_game::grid::Grid;
@@ -121,7 +122,9 @@ fn main() {
     let off: i64 = a[4].parse().unwrap();
     let grid = Grid::parse(&std::fs::read(&a[3]).unwrap()).expect("grid");
     let (curves, scale) = hub_motion_or_panic();
-    let skills = SkillIds { move_skill: 0x2000_2909, roll_skill: 0x8000_0040, roll_skill_other_set: 0x8000_0041 };
+    // `--roll-skill N`: the roll's skill id (a private session: our server's id, 1).
+    let roll_skill = a.iter().position(|x| x == "--roll-skill").map_or(0x8000_0040, |i| a[i + 1].parse().unwrap());
+    let skills = SkillIds { move_skill: 0x2000_2909, roll_skill, roll_skill_other_set: 0x8000_0041 };
     let mut cfg = MovementConfig::new(skills, [2758, 2737, 2853]);
     cfg.curves = Some(curves.clone());
     cfg.offset_scale = scale;
@@ -162,6 +165,9 @@ fn main() {
             for v in eps.iter().filter(|v| v["f"].as_i64() == Some(f - off)) {
                 if let Some(m) = input(v) {
                     loco.input(m);
+                } else if v["op"] == "teleport" {
+                    // An admin teleport in a private session (not a client input).
+                    loco.teleport((i(v, "x"), i(v, "y")));
                 }
             }
             // The plans the client logged hold entities our terrain does not have.
@@ -262,6 +268,23 @@ fn main() {
             // A roll replaces the skill: from here the models run by themselves.
             if theirs.iter().any(|t| t.0) {
                 skill_until = -1;
+            }
+            // The line's float state against the client's LINE of the same line (as in sim_replay):
+            // a drift here changes a later rounding. `--drift` shows them.
+            if f >= skill_until
+                && let Some(l) = frame.into_iter().flatten().find(|w| w[2] == "L")
+                && client.line_end() == Some((n(&l[7]), n(&l[8])))
+            {
+                let fl = |s: &String| s.parse::<f32>().unwrap();
+                let (p, len, acc) = client.line_state();
+                let d = (p.0 - fl(&l[9])).abs().max((p.1 - fl(&l[10])).abs()).max((len - fl(&l[11])).abs()).max((acc - fl(&l[12])).abs());
+                if d > 0.002 {
+                    *c.entry("line_drift").or_default() += 1;
+                    if a.iter().any(|x| x == "--drift") && shown < show {
+                        shown += 1;
+                        println!("f{f} drift p {p:?} len {len} acc {acc} client {} {} {} {}", l[9], l[10], l[11], l[12]);
+                    }
+                }
             }
             if let Some(g) = logged_at(f) {
                 if f < skill_until {

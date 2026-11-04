@@ -338,6 +338,9 @@ struct SprintEndAnim {
     rate: f32,
     /// The move event starts in the next animation tick.
     coast_due: bool,
+    /// Played in this frame's Positioned tick (a blocked step): the frame's component-0 messages
+    /// (the sprint-off stats at the wall) still set its rate before the move event fires.
+    this_frame: bool,
 }
 
 /// One entity's client movement state.
@@ -579,6 +582,9 @@ impl ClientSim {
 
     /// Component 0: the Positioned tick `0x141ddc950`.
     pub fn positioned_tick(&mut self, dt: f32, t: &dyn Walkable) {
+        if let Some(a) = self.sprint_end.as_mut() {
+            a.this_frame = false;
+        }
         self.run_line(dt, t);
     }
 
@@ -724,8 +730,15 @@ impl ClientSim {
         if let Some(a) = self.sprint_end {
             if a.coast_due {
                 self.sprint_end.as_mut().unwrap().coast_due = false;
-                // The clip's rate when its MoveEvent fires (it follows the speed, below).
-                let rate = self.speed() * CELL / (self.sprint_end_base_speed() * self.offset_scale);
+                // The move event's speed is the clip's rate as played (user test 2 f1451: a Bonk of
+                // the last frame's Actor tick coasts at the sprint's rate, though the sprint-off
+                // stats came before the event); a clip of this frame's Positioned tick has the rate
+                // of the stats after it (game test sprint-turn f425: walking rate).
+                let rate = if a.this_frame {
+                    self.speed() * CELL / (self.sprint_end_base_speed() * self.offset_scale)
+                } else {
+                    a.rate
+                };
                 self.start_coast(rate, t);
             }
             // The clip's rate follows the speed: at a wall the sprint-off's stats come right after
@@ -1226,7 +1239,9 @@ impl ClientSim {
         }
         // `0x141e4ea40`: an action whose vfunc `+0x340` answers true faces its target before anything
         // else, so a key-held roll away from the cursor is a backward roll.
-        if target != self.grid {
+        // TEST: a roll that cuts the SprintEnd clip keeps the sprint's facing (seg1 f3578 and user
+        // test 2 f2802 are backward rolls against it).
+        if target != self.grid && self.sprint_end.is_none() {
             self.facing = angle((target.0 - self.grid.0) as f32, (target.1 - self.grid.1) as f32);
         }
         self.end_move(true, t);
@@ -1244,7 +1259,7 @@ impl ClientSim {
         if d > PI {
             d -= TAU;
         }
-        let backward = self.sprint_end.is_none() && d.abs() >= HALF_PI;
+        let backward = d.abs() >= HALF_PI;
         let curve = if backward { cs.roll_back.clone() } else { cs.roll.clone() };
         let length = curve.length;
         // The new action ends the clip and its move event: the roll's line starts on the grid
@@ -1567,6 +1582,7 @@ impl ClientSim {
                 // no move and a wall met at an angle a coast along it (game test sprint-turn case 4:
                 // the client coasted 6 cells along the wall to the clip's end).
                 coast_due: true,
+                this_frame: true,
             });
         }
     }

@@ -435,6 +435,11 @@ pub trait Mover: Send + std::fmt::Debug {
         (x as f32, y as f32)
     }
 
+    /// The facing the client model holds (radians, Positioned `+0x44c`; tests).
+    fn facing(&self) -> f32 {
+        0.0
+    }
+
     /// The client grid cell the model holds for the entity (movement trace `pos` lines).
     fn grid(&self) -> Cell {
         self.cell()

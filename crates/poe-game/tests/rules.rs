@@ -383,3 +383,34 @@ fn a_roll_started_with_the_axes_still_set_ignores_the_cursor() {
     let now = pos(&w);
     assert!(now.0 > start.0 + 5.0, "from {start:?} to {now:?}: the cursor must not turn the roll");
 }
+
+/// `0x1dc` SetAimTarget (`0x141e50940`): the echo of an aim turns the player towards the cell, a WASD
+/// walk keeps that facing (no `Positioned_SetFacing` from its waypoints, hook `FACE` rows,
+/// crazy-keys 2026-11-04), and a roll's start does not turn (`0x14197e160` is 2*pi for a roll), so a
+/// roll along the keys away from the aim is backward.
+#[test]
+fn the_aim_echo_sets_the_facing_and_a_key_walk_keeps_it() {
+    let rows: Vec<String> = (0..400).map(|_| ".".repeat(300)).collect();
+    let rows: Vec<&str> = rows.iter().map(|r| r.as_str()).collect();
+    let (mut w, p) = world(Arc::new(VecGrid::from_rows(&rows)), (150, 200));
+    let facing = |w: &World| w.entity(p).unwrap().movement.facing();
+    // Facing of a direction: `atan2(dy, dx) + pi/2`, in [0, 2pi).
+    let ang = |dx: f32, dy: f32| (dy.atan2(dx) + std::f32::consts::FRAC_PI_2).rem_euclid(std::f32::consts::TAU);
+    w.input(p, MoveInput::Aim { x: 150, y: 250 });
+    tick(&mut w);
+    tick(&mut w);
+    assert!((facing(&w) - ang(0.0, 1.0)).abs() < 1e-4, "facing {} after the aim", facing(&w));
+    // Keys up the screen: the walk does not face its waypoints.
+    w.input(p, MoveInput::Direction { x: 0, y: -180 });
+    for _ in 0..10 {
+        tick(&mut w);
+    }
+    assert!(cell(&w, p).1 < 195, "no walk: {:?}", cell(&w, p));
+    assert!((facing(&w) - ang(0.0, 1.0)).abs() < 1e-4, "facing {} during the key walk", facing(&w));
+    // A new aim during the walk turns the player again.
+    let c = cell(&w, p);
+    w.input(p, MoveInput::Aim { x: c.0 + 40, y: c.1 });
+    tick(&mut w);
+    tick(&mut w);
+    assert!((facing(&w) - ang(1.0, 0.0)).abs() < 0.1, "facing {} after the second aim", facing(&w));
+}

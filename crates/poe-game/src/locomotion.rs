@@ -674,6 +674,7 @@ impl Locomotion {
                 self.sim.on_move_ack((0, 0), cell, t);
             }
             MoveEvent::SprintState { held } => self.sim.on_sprint_key(held),
+            MoveEvent::AimEcho { cell } => self.sim.on_aim_target(cell),
             MoveEvent::ActionStart {
                 kind, cell, target, ..
             } => match kind {
@@ -1903,6 +1904,10 @@ impl Mover for Locomotion {
 
     fn position(&self) -> (f32, f32) {
         self.sim.point()
+    }
+
+    fn facing(&self) -> f32 {
+        self.sim.facing()
     }
 
     fn grid(&self) -> Cell {

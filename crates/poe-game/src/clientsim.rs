@@ -968,7 +968,19 @@ impl ClientSim {
         let w = self.sprint_turn(w);
         let speed = self.speed();
         if self.following {
-            self.move_to_waypoint(w, speed, true, t);
+            // TEST: a WASD walk does not face its waypoints, a sprint and a server Move do (hook `FACE`
+            // rows, crazy-keys 2026-11-04: no `Positioned_SetFacing` from `0x141de39c6` in any plain key
+            // walk, Positioned `+0x1e3` = 1 meanwhile, so the request's `+0x9a`/`+0x99` override set by a
+            // listener of the path (`FUN_140ec6320` calls in `0x141dcc110`) turns it off; which listener
+            // and on what condition is unread). The facing stays the aim echo's (`on_aim_target`).
+            let sprinting = self.sprint || self.is_sprinting;
+            if !self.mv.is_some_and(|m| m.from_server) && !sprinting {
+                let orient = std::mem::replace(&mut self.orient, 0);
+                self.move_to_waypoint(w, speed, true, t);
+                self.orient = orient;
+            } else {
+                self.move_to_waypoint(w, speed, true, t);
+            }
         }
     }
 
@@ -1194,6 +1206,21 @@ impl ClientSim {
         }
     }
 
+    /// `0x1dc` SetAimTarget kind 0 (Actor handler `0x1421497c0` -> `0x141e50940`): stores the aim
+    /// cell (Actor `+0x1d4`) and faces it when the Actor is free: `+0x2a1` bits 0, 1 and 7 clear (never
+    /// set in play), and slot 0 (`+0x238`) empty or its vf `+0x338` true (a roll's is `0x140107b00`,
+    /// false: no turn while a roll, its sprint or its SprintEnd clip runs). Not ported: the `+0x380`
+    /// states `0x36a`/`0x36b`/`0x371`/`0x372` and object `0xe4fa`. A Move is not in slot 0, so a walk
+    /// turns too (the next waypoint sets the facing again). This is how a roll gets its facing towards
+    /// the cursor: the roll's own start does not turn (`0x14197e160` returns 2*pi for every roll, hook
+    /// `TOL` rows, crazy-keys 2026-11-03).
+    pub fn on_aim_target(&mut self, cell: Cell) {
+        if self.roll.is_some() || self.sprint_end.is_some() || cell == self.grid {
+            return;
+        }
+        self.facing = angle((cell.0 - self.grid.0) as f32, (cell.1 - self.grid.1) as f32);
+    }
+
     /// `0x2e7`: the sprint key (`0x141e5c1f0`).
     pub fn on_sprint_key(&mut self, held: bool) {
         self.sprint_key = held;
@@ -1279,17 +1306,13 @@ impl ClientSim {
         if start != self.grid {
             self.snap(start);
         }
-        // `0x141e4ea40`: an action whose vfunc `+0x340` answers true faces its target before anything
-        // else, so a key-held roll away from the cursor is a backward roll.
-        // TEST: a roll that cuts the SprintEnd clip keeps the sprint's facing (seg1 f3578 and user
-        // test 2 f2802 are backward rolls against it).
-        // The slot `+0x340` -> `+0x348` `0x14197e160` answers 0 when the skill equals `+0x2b4` of the
-        // action's component (cleared by a timer in `0x141e44634`; its writer is unread). Fitted by replay:
-        // a roll queued into a running roll keeps the facing (user test 4 f2319), as does one that cuts
-        // the SprintEnd clip.
-        if target != self.grid && self.sprint_end.is_none() && self.roll.is_none() {
-            self.facing = angle((target.0 - self.grid.0) as f32, (target.1 - self.grid.1) as f32);
-        }
+        // No turn at the start: `0x141e4ea40` faces the target only when the action's vf `+0x340`
+        // (`0x1413ca570`: `+0x348` != 2*pi) is true, and the roll's `+0x348` (`0x14197e160`) returns 2*pi
+        // in every roll (its `+0x142` bit 4 is set and it has no stat 18087
+        // `action_required_target_facing_angle_tolerance_degrees`; hook `TOL` rows, crazy-keys
+        // 2026-11-03). The facing a roll starts with comes from the aim echoes (`on_aim_target`), the
+        // steps of a roll or sprint, and a WASD walk keeps it (`step_along`). `DodgeRoll_InitHeading`
+        // then compares it with the heading: a roll away from the facing is backward.
         self.end_move(true, t);
         let heading = if self.axes != (0, 0) {
             angle(from_world(self.axes.0 as f32) as f32, from_world(self.axes.1 as f32) as f32)

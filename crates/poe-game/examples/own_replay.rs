@@ -47,6 +47,7 @@ fn input(v: &Value) -> Option<MoveInput> {
         "released" => MoveInput::SkillReleased { skill: i(v, "skill") as u32, flag: i(v, "flag") as u8 },
         "stance_request" => MoveInput::StanceRequest { value: i(v, "value") as u8 },
         "aim_mode" => MoveInput::AimMode { mode: i(v, "mode") as u8 },
+        "aim" => MoveInput::Aim { x: i(v, "x"), y: i(v, "y") },
         _ => return None,
     })
 }
@@ -78,6 +79,7 @@ fn apply(sim: &mut ClientSim, e: &MoveEvent, t: &dyn Walkable, skills: &SkillIds
             }
         }
         MoveEvent::TargetAck { skill, x, y } if skills.is_roll(skill) => sim.on_skill_target((x, y)),
+        MoveEvent::AimEcho { cell } => sim.on_aim_target(cell),
         _ => {}
     }
 }

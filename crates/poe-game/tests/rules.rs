@@ -253,3 +253,71 @@ fn a_roll_out_of_the_sprint_end_against_the_sprint_is_backward() {
     // (the client's, user test 2 f2803-2804: 3.5289, 3.3449; forward: 3.5283, 3.3310).
     assert!((steps[1] - 3.5289).abs() < 0.002 && (steps[2] - 3.3449).abs() < 0.002, "roll steps {steps:?}: not the backward curve");
 }
+
+/// Where a roll has got to after `frames`, with the key released and pressed again at the given
+/// frames of the roll (`None`: not at all).
+fn roll_with_key(release: Option<u32>, press: Option<u32>, frames: u32) -> (f32, f32) {
+    let rows: Vec<String> = (0..400).map(|_| ".".repeat(300)).collect();
+    let rows: Vec<&str> = rows.iter().map(|r| r.as_str()).collect();
+    let (mut w, p) = world(Arc::new(VecGrid::from_rows(&rows)), (150, 60));
+    w.input(p, MoveInput::SprintInput { held: true });
+    w.input(p, MoveInput::UseSkill(skill(ROLL, 0, 20)));
+    for f in 0..frames {
+        if release == Some(f) {
+            w.input(p, MoveInput::SprintInput { held: false });
+            w.input(p, MoveInput::SkillInputEnd);
+        }
+        if press == Some(f) {
+            w.input(p, MoveInput::SprintInput { held: true });
+        }
+        tick(&mut w);
+    }
+    w.entity(p).unwrap().movement.position()
+}
+
+/// Actor `+0x915` (user test 3 f1824-1837): the sprint switch at the roll's event needs the key held
+/// since the roll's start. A release and a new press before the event do not count as held.
+#[test]
+fn a_key_pressed_again_during_a_roll_does_not_make_it_sprint() {
+    const FRAMES: u32 = 26; // past the event (0.5 s), before the clip's end
+    let held = roll_with_key(None, None, FRAMES);
+    let released = roll_with_key(Some(3), None, FRAMES);
+    let again = roll_with_key(Some(3), Some(6), FRAMES);
+    assert_ne!(held, released, "holding the key must switch to the sprint curve");
+    assert_eq!(again, released, "a press during the roll must not switch to the sprint curve");
+}
+
+/// `act+0x461` is not set for a roll out of the SprintEnd clip (user test 3 f995-1002): a backward roll
+/// that goes on sprinting stays backward after the event, so reversing it turns the other way than
+/// a roll that turned around at the event: facing north, moving south, the keys north: through the west.
+#[test]
+fn a_backward_roll_out_of_the_sprint_end_stays_backward_after_the_event() {
+    let rows: Vec<String> = (0..400).map(|_| ".".repeat(300)).collect();
+    let rows: Vec<&str> = rows.iter().map(|r| r.as_str()).collect();
+    let (mut w, p) = world(Arc::new(VecGrid::from_rows(&rows)), (150, 300));
+    w.input(p, MoveInput::Direction { x: 0, y: -180 });
+    tick(&mut w);
+    w.input(p, MoveInput::SprintInput { held: true });
+    w.input(p, MoveInput::UseSkill(skill(ROLL, 0, -20)));
+    for _ in 0..60 {
+        tick(&mut w);
+    }
+    w.input(p, MoveInput::SprintInput { held: false });
+    w.input(p, MoveInput::SkillInputEnd);
+    tick(&mut w);
+    tick(&mut w);
+    w.input(p, MoveInput::Direction { x: 0, y: 180 });
+    tick(&mut w);
+    w.input(p, MoveInput::SprintInput { held: true });
+    w.input(p, MoveInput::UseSkill(skill(ROLL, 0, 20)));
+    for _ in 0..20 {
+        tick(&mut w);
+    }
+    let pos = |w: &World| w.entity(p).unwrap().movement.position();
+    let before = pos(&w);
+    w.input(p, MoveInput::Direction { x: 0, y: -180 });
+    tick(&mut w);
+    tick(&mut w);
+    let now = pos(&w);
+    assert!(now.0 < before.0 - 0.1, "reversal from {before:?} to {now:?}: must turn through the west");
+}

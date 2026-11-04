@@ -327,6 +327,15 @@ struct Roll {
     target: Cell,
     /// `part+0x38`: `movement_velocity_+permyriad` at the start.
     permyriad: i32,
+    /// Started while the SprintEnd clip played (it kept the sprint's facing): the action's stance
+    /// flag `act+0x461` (`Standing`) is not set, so a backward roll does not turn around at the
+    /// sprint event (`DodgeRoll_OnAnimationEvent`) nor at a non-sprint end (`DodgeRoll_OnEnd`), and
+    /// its sprint start turns it (`vfunc +0xa8(part+0x3f && !act+0x461)`).
+    from_sprint_end: bool,
+    /// Actor `+0x915`: the roll's key is held since its start. Set at the start, cleared when the key
+    /// is released; a press during the roll does not set it again (user test 3 f1824-1837). The
+    /// sprint switch `0x141b76f50` needs it.
+    key_held: bool,
 }
 
 /// Which animation refuses walks (`Actor + 0x380` in `0x36a`, `0x36b`).
@@ -1156,6 +1165,9 @@ impl ClientSim {
     /// `0x2e7`: the sprint key (`0x141e5c1f0`).
     pub fn on_sprint_key(&mut self, held: bool) {
         self.sprint_key = held;
+        if !held && let Some(r) = &mut self.roll {
+            r.key_held = false;
+        }
     }
 
     /// `0x1d3` `virtual_action_speed_+%`: the roll's clip rate follows it.
@@ -1202,7 +1214,7 @@ impl ClientSim {
     /// the sprint child (`DodgeRoll_StartSprint` `0x141aa92e0`) and the switch of curve
     /// (`DodgeRollMove_SwitchAnimation` `0x141b8cd50`, `DodgeRollMove_ReloadCurve` `0x141b8d440`).
     fn roll_event(&mut self) {
-        if !self.sprint_key {
+        if !self.sprint_key || !self.roll.as_ref().is_some_and(|r| r.key_held) {
             return;
         }
         if let (Some(r), Some(cs)) = (&mut self.roll, self.curves.clone()) {
@@ -1213,7 +1225,9 @@ impl ClientSim {
             self.line.curve.load(curve, 0.0, l);
             self.line.curve.set_time(e, l);
             // A backward roll that goes on sprinting turns around (`act + 0x461`: stance `Standing`).
-            if r.backward {
+            // Not for a roll out of the SprintEnd clip (no `act+0x461`): it stays backward (user test 3
+            // f995-1001: the client's facing stays the sprint's, the line's heading + pi).
+            if r.backward && !r.from_sprint_end {
                 self.orient = 1;
                 self.facing = wrap(self.facing + PI);
             }
@@ -1264,6 +1278,7 @@ impl ClientSim {
         let length = curve.length;
         // The new action ends the clip and its move event: the roll's line starts on the grid
         // (seg1 f3578: y exactly 635).
+        let from_sprint_end = self.sprint_end.is_some();
         if self.sprint_end.take().is_some() {
             self.stop_move();
             self.line.acc = 0.0;
@@ -1286,6 +1301,8 @@ impl ClientSim {
             pending_target: None,
             target,
             permyriad: self.permyriad,
+            from_sprint_end,
+            key_held: self.sprint_key,
         });
         self.line.curve.load(curve, 0.0, length);
         self.orient = if backward { 2 } else { 1 };
@@ -1508,8 +1525,13 @@ impl ClientSim {
         self.stop_next_tick(t);
         self.orient = 1;
         if r.sprints {
+            // A backward roll out of the SprintEnd clip did not turn around at the sprint event: the
+            // sprint start turns it (user test 2 f2398: 0.829 -> 3.970).
+            if r.backward && r.from_sprint_end {
+                self.facing = wrap(self.facing + PI);
+            }
             self.sprint_start(t);
-        } else if r.backward {
+        } else if r.backward && !r.from_sprint_end {
             // `DodgeRoll_OnEnd`, with `act + 0x461` (stance `Standing`).
             self.facing = wrap(self.facing + PI);
         }

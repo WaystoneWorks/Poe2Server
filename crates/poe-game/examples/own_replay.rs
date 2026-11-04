@@ -209,7 +209,7 @@ fn main() {
             if let Some((lo, hi)) = trace
                 && (lo..=hi).contains(&f)
             {
-                println!("f{f} grid {:?} point {:?} coast {} move {} end {:?} speed {:.3} wasd {:?} {:?}", client.grid(), client.point(), client.is_coasting(), client.has_move(), client.line_end(), client.speed(), client.axes(), events.iter().map(|e| (e.key, format!("{:?}", e.event).chars().take(40).collect::<String>())).collect::<Vec<_>>());
+                println!("f{f} facing {:.4} grid {:?} point {:?} coast {} move {} end {:?} speed {:.3} wasd {:?} {:?}", client.facing(), client.grid(), client.point(), client.is_coasting(), client.has_move(), client.line_end(), client.speed(), client.axes(), events.iter().map(|e| (e.key, format!("{:?}", e.event).chars().take(40).collect::<String>())).collect::<Vec<_>>());
             }
             if started && client.grid() != loco.grid() {
                 *c.entry("model_vs_client").or_default() += 1;

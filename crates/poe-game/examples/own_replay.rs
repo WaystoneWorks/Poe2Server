@@ -99,14 +99,19 @@ fn client_frame(sim: &mut ClientSim, events: &[Keyed], t: &dyn Walkable, skills:
     for comp in 0..=10u8 {
         // Later sequences of the Positioned component run after its tick.
         let after_tick = comp == 0;
-        if !after_tick {
+        if comp == 9 {
+            // The Actor's seqs from 4 run after its axes step.
+            run(sim, &|k| matches!(k, Drain::Component { comp: 9, seq } if seq < 4), snaps);
+            sim.actor_tick_axes(t);
+            run(sim, &|k| matches!(k, Drain::Component { comp: 9, seq } if seq >= 4), snaps);
+        } else if !after_tick {
             run(sim, &|k| matches!(k, Drain::Component { comp: c, .. } if c == comp), snaps);
         }
         match comp {
             0 => sim.positioned_tick(DT, t),
             2 => sim.pathfinding_tick(DT, t),
             5 => sim.animated_tick(DT, t),
-            9 => sim.actor_tick(DT, t),
+            9 => sim.actor_tick_actions(DT, t),
             _ => {}
         }
         if after_tick {

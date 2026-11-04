@@ -1092,6 +1092,15 @@ impl ClientSim {
 
     /// The Actor tick `0x141e42a00`, the steps that move the player.
     pub fn actor_tick(&mut self, dt: f32, t: &dyn Walkable) {
+        self.actor_tick_axes(t);
+        self.actor_tick_actions(dt, t);
+    }
+
+    /// Actor tick steps 1 to 5: the queued action and the axes (`0x141e42a00` up to the phase step
+    /// `0x141e43f05`). A message keyed `(9, 4)` or later runs after this part: the world's phase
+    /// reaches 4 no earlier than the re-aim's own step (`0x141e50488`, hub
+    /// `docs/re/movement-sprint.md`, "Keys of the sprint-off").
+    pub fn actor_tick_axes(&mut self, t: &dyn Walkable) {
         if self.roll.is_none()
             && let Some((start, target)) = self.queued_move.take()
         {
@@ -1104,6 +1113,10 @@ impl ClientSim {
                 self.reaim(t);
             }
         }
+    }
+
+    /// Actor tick steps 10 to 13: action update, the sprint's end check, timers.
+    pub fn actor_tick_actions(&mut self, dt: f32, t: &dyn Walkable) {
         self.roll_tick(dt, t);
         self.sprint_end_check(t);
         self.action_slow_tick(dt, t);
@@ -1238,6 +1251,8 @@ impl ClientSim {
         }
         if let (Some(r), Some(cs)) = (&mut self.roll, self.curves.clone()) {
             r.sprints = true;
+            // The cursor steers again from the sprint switch (user test 4 f4031, by replay; code unread).
+            r.axes_aimed = false;
             r.opt_len = Some(ROLL_SPRINT_LINE);
             r.steering = true;
             let curve = if r.backward { cs.roll_back_sprint.clone() } else { cs.roll_sprint.clone() };

@@ -71,6 +71,8 @@ const AT_RESTART: Drain = Drain::at(9, 1);
 const AT_SPRINT_END_MOVE: Drain = Drain::at(9, 4);
 const AT_SPRINT_END: Drain = Drain::at(9, 7);
 const AT_SPRINT_END_LATE: Drain = Drain::at(9, 10);
+/// The last key that runs before the Actor tick's axes step (see [`ClientSim::actor_tick_axes`]).
+const AT_ACTOR_AXES: Drain = Drain::at(9, 3);
 const AT_LAST_BEFORE_ACTOR: Drain = Drain::at(9, u16::MAX);
 const AT_LAST_BEFORE_ANIMATED: Drain = Drain::at(5, u16::MAX);
 
@@ -640,8 +642,10 @@ impl Locomotion {
             let no_ack = !out.items.iter().any(|k| matches!(k.event, MoveEvent::MoveAck { .. }));
             self.end_sprint(no_ack, ctx, &mut out);
         }
+        self.apply_up_to(AT_ACTOR_AXES, &mut out, ctx);
+        self.sim.actor_tick_axes(ctx.terrain);
         self.apply_up_to(AT_LAST_BEFORE_ACTOR, &mut out, ctx);
-        self.sim.actor_tick(ctx.dt, ctx.terrain);
+        self.sim.actor_tick_actions(ctx.dt, ctx.terrain);
         self.was_coasting = self.sim.is_coasting();
         out.finish()
     }

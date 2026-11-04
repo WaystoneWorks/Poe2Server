@@ -320,8 +320,6 @@ struct Roll {
     steering: bool,
     /// The action's `+0x24d`: the movement vector took over, `0x1af` no longer aims it.
     axes_aimed: bool,
-    /// The turn-around at the sprint switch closed the target window.
-    target_window_closed: bool,
     /// `+0x44`, `+0x48`.
     opt_len: Option<i32>,
     /// A sprint child was started (`act + 0x448`).
@@ -336,11 +334,6 @@ struct Roll {
     target: Cell,
     /// `part+0x38`: `movement_velocity_+permyriad` at the start.
     permyriad: i32,
-    /// Started while the SprintEnd clip played (it kept the sprint's facing): the action's stance
-    /// flag `act+0x461` (`Standing`) is not set, so a backward roll does not turn around at the
-    /// sprint event (`DodgeRoll_OnAnimationEvent`) nor at a non-sprint end (`DodgeRoll_OnEnd`), and
-    /// its sprint start turns it (`vfunc +0xa8(part+0x3f && !act+0x461)`).
-    from_sprint_end: bool,
     /// Actor `+0x915`: the roll's key is held since its start. Set at the start, cleared when the key
     /// is released; a press during the roll does not set it again (user test 3 f1824-1837). The
     /// sprint switch `0x141b76f50` needs it.
@@ -735,7 +728,7 @@ impl ClientSim {
             if let Some(ev) = ev
                 && new >= ev.target_update.0
             {
-                r.target_update = new < ev.target_update.1 && !r.target_window_closed;
+                r.target_update = new < ev.target_update.1;
             }
             // `AnimPlayer_Advance`: the clock stands at the event's time while the event runs.
             if let Some(ev) = ev
@@ -1259,19 +1252,6 @@ impl ClientSim {
             let (e, l) = (r.elapsed, r.length);
             self.line.curve.load(curve, 0.0, l);
             self.line.curve.set_time(e, l);
-            // A backward roll that goes on sprinting turns around (`act + 0x461`: stance `Standing`).
-            // Not for a roll out of the SprintEnd clip (no `act+0x461`): it stays backward (user test 3
-            // f995-1001: the client's facing stays the sprint's, the line's heading + pi).
-            // `DodgeRoll_OnAnimationEvent` also clears the target window (`act+0x240`, `+0x244`, `+0x258`,
-            // `+0x268`): the turned roll steers no more (crazy-keys f5885: the line runs on, away from
-            // the axes).
-            if r.backward && !r.from_sprint_end {
-                self.orient = 1;
-                self.facing = wrap(self.facing + PI);
-                r.target_window_closed = true;
-                r.target_update = false;
-                r.pending_target = None;
-            }
         }
     }
 
@@ -1323,7 +1303,6 @@ impl ClientSim {
         let length = curve.length;
         // The new action ends the clip and its move event: the roll's line starts on the grid
         // (seg1 f3578: y exactly 635).
-        let from_sprint_end = self.sprint_end.is_some();
         if self.sprint_end.take().is_some() {
             self.stop_move();
             self.line.acc = 0.0;
@@ -1346,7 +1325,6 @@ impl ClientSim {
             // The window opens with `+0x24d = 0` and `0x14197d060` at once (`0x14197a61b`), with the axes of
             // before a `0x64` later in the batch: the cursor stays locked out (user test 4 f4016-4030).
             axes_aimed: self.axes != (0, 0),
-            target_window_closed: false,
             opt_len: None,
             sprints: false,
             event_done: false,
@@ -1354,7 +1332,6 @@ impl ClientSim {
             pending_target: None,
             target,
             permyriad: self.permyriad,
-            from_sprint_end,
             key_held: self.sprint_key,
         });
         self.line.curve.load(curve, 0.0, length);
@@ -1587,15 +1564,14 @@ impl ClientSim {
         self.stop_next_tick(t);
         self.orient = 1;
         if r.sprints {
-            // A backward roll out of the SprintEnd clip did not turn around at the sprint event: the
-            // sprint start turns it (user test 2 f2398: 0.829 -> 3.970).
-            if r.backward && r.from_sprint_end {
+            // `act+0x461` (stance `Standing`, `DodgeRoll_OnStart` 0x141aa87ca) was false in every
+            // session: no turn-around at the sprint event or at a non-sprint end. A backward roll
+            // stays backward and the sprint start turns it (`vfunc +0xa8(part+0x3f && !act+0x461)`;
+            // user test 2 f2398: 0.829 -> 3.970).
+            if r.backward {
                 self.facing = wrap(self.facing + PI);
             }
             self.sprint_start(t);
-        } else if r.backward && !r.from_sprint_end {
-            // `DodgeRoll_OnEnd`, with `act + 0x461` (stance `Standing`).
-            self.facing = wrap(self.facing + PI);
         }
         // The end of the action in the Animated tick: a walk on the held axes starts at once (two
         // plans in the frame of a sprint start, seen in `PATHPLAN`: each makes its sprint turn).

@@ -58,6 +58,9 @@ fn wrap(a: f32) -> f32 {
     if a < 0.0 { a + TAU } else { a }
 }
 
+/// Clip time until which a roll's target turn has no rate limit: fitted, see `roll_turn_to_target`.
+const ROLL_TURN_UNLIMITED_TIME: f32 = 0.15;
+
 /// The facing convention of `atan2 + pi/2`.
 fn angle(dx: f32, dy: f32) -> f32 {
     wrap(dy.atan2(dx) + HALF_PI)
@@ -1355,7 +1358,12 @@ impl ClientSim {
             d -= TAU;
         }
         let max = dt * rate;
-        if max < d.abs() {
+        // TEST: the turn is not rate limited early in the clip. `+0x244` starts at 0 for the Player
+        // (`0x14197a5c7`, branch `0x141974b57`) and is set only in the frame update (`0x1419747f8`), when
+        // the event is in the current animation's list (`0x1419746e2`). The time is fitted (user test 5:
+        // f386, f802, f1223, f2506, f2550 unlimited at up to 0.132 s, f1005 limited at 0.165 s).
+        let limited = r.elapsed >= ROLL_TURN_UNLIMITED_TIME;
+        if limited && max < d.abs() {
             let a = facing + d.clamp(-max, max);
             let len = ((off.0 * off.0 + off.1 * off.1) as f32).sqrt();
             let v = rot(0.0, -len, a);

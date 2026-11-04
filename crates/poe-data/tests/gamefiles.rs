@@ -133,3 +133,14 @@ fn league_flags_and_mechanics() {
     let mechanics = league_mechanics(&data).unwrap();
     assert!(mechanics.iter().any(|m| m == "Breach") && mechanics.iter().any(|m| m == "Ritual"));
 }
+
+#[test]
+fn finds_the_town_of_an_area() {
+    let Some(data) = open() else { return };
+    let town = |id: &str| {
+        poe_data::views::WorldArea::find(&data, id).unwrap().unwrap().town(&data).unwrap().map(|t| t.id)
+    };
+    assert_eq!(town("G1_2").as_deref(), Some("G1_town"));
+    assert_eq!(town("G2_1").as_deref(), Some("G2_town"));
+    assert_eq!(town("P2_1").as_deref(), Some("P2_Town"));
+}

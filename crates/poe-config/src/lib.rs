@@ -525,12 +525,29 @@ pub struct TerrainConfig {
     /// and in the live wall tests, hub PLAN R2).
     #[serde(default = "default_true")]
     pub generated_grid: bool,
+    /// Seconds the client has to report its terrain hashes after the area load started. No
+    /// report in time counts as a mismatch ("client terrain generation failed": the client throws
+    /// `TerrainGenerationException` on some seeds and then never reports). 0: wait forever.
+    #[serde(default = "default_hash_timeout_secs")]
+    pub hash_timeout_secs: u64,
+    /// Every terrain mismatch (a kicked player) is appended to this TSV; `cargo xtask
+    /// terrain-matrix` reads it. Empty: off.
+    #[serde(default = "default_mismatch_log")]
+    pub mismatch_log: PathBuf,
 }
 
 impl Default for TerrainConfig {
     fn default() -> Self {
-        Self { force_layout: true, generate: true, generated_grid: true }
+        Self { force_layout: true, generate: true, generated_grid: true, hash_timeout_secs: default_hash_timeout_secs(), mismatch_log: default_mismatch_log() }
     }
+}
+
+fn default_hash_timeout_secs() -> u64 {
+    30
+}
+
+fn default_mismatch_log() -> PathBuf {
+    "runtime/terrain_mismatches.tsv".into()
 }
 
 /// Cluster identity. Login tokens carry the id of the cluster that issued them, so a token
@@ -1041,6 +1058,11 @@ pub struct DevConfig {
     /// does; official blobs send none).
     #[serde(default)]
     pub remote_animated_path: bool,
+    /// Test switch for the terrain check (`[terrain] generated_grid`): the server expects a wrong
+    /// tile hash for every generated (non-town, non-hideout) area, so every player entering one is
+    /// kicked as on a real mismatch. Only for agent tests; logs a warning at every entry.
+    #[serde(default)]
+    pub fake_terrain_hash: bool,
 }
 
 impl Default for DevConfig {
@@ -1056,6 +1078,7 @@ impl Default for DevConfig {
             sweep_results: default_sweep_results(),
             remote_blob_omit: Vec::new(),
             remote_animated_path: false,
+            fake_terrain_hash: false,
         }
     }
 }

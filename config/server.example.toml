@@ -100,6 +100,8 @@ sweep_results = "dumps/{version}/terrain/vectors/sweep-results.tsv"
 remote_blob_omit = []
 # Also send the class's animated object path in the remote blob (as the player's own blob does).
 remote_animated_path = false
+# Agent tests of the terrain check: expect a wrong tile hash in every generated area.
+fake_terrain_hash = false
 
 [terrain]
 # Send each new instance's layout (topology, region orientation) to the client as
@@ -119,6 +121,13 @@ generate = true
 # otherwise the log warns and the uploaded grid stands in. docs/architecture/instance-world.md
 # (hub). Off by default.
 generated_grid = false
+# Seconds the client has to report its terrain hashes after the area load started; no report counts
+# as a terrain mismatch. Needs generated_grid: a player whose tile or doodad hash differs from the
+# server's is kicked to the previous instance, else the act's town, else character select
+# (docs/protocol/instance.md in the hub). 0 = wait forever.
+hash_timeout_secs = 30
+# One row per kick (cargo xtask terrain-matrix reads it). Empty = off.
+mismatch_log = "runtime/terrain_mismatches.tsv"
 
 [cluster]
 # Identity of this cluster (docs/architecture/accounts.md). Login tokens carry it; a token

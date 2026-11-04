@@ -365,12 +365,17 @@ impl InstanceServer {
     }
 
     /// Issues a ticket for instance `id` and gives it to the account's login connection.
-    pub(crate) fn hand_off(&self, account_id: u32, mut character: poe_cluster::TicketCharacter, id: u32) -> anyhow::Result<()> {
+    pub(crate) fn hand_off(&self, account_id: u32, character: poe_cluster::TicketCharacter, id: u32) -> anyhow::Result<()> {
+        self.hand_off_at(account_id, character, id, None)
+    }
+
+    /// [`Self::hand_off`] to a place: `(seed, x, y)` is used when the instance has that seed.
+    /// Otherwise a saved position belongs to the old layout and is dropped.
+    pub(crate) fn hand_off_at(&self, account_id: u32, mut character: poe_cluster::TicketCharacter, id: u32, location: Option<(u32, i32, i32)>) -> anyhow::Result<()> {
         let Some(target) = self.instances.get(id) else {
             anyhow::bail!("no instance #{id}");
         };
-        // A saved position belongs to the old layout.
-        character.location = None;
+        character.location = location;
         let ticket = self.tickets.issue_for(account_id, character, &target.spec.area, Some(id));
         if !self.sessions.transfer(account_id, ticket) {
             anyhow::bail!("no login connection for this account (cannot hand off)");

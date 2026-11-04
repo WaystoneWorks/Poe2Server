@@ -69,6 +69,26 @@ impl WorldArea {
         (self.is_town || self.is_hideout).then_some(1)
     }
 
+    /// The town a player of this area is sent back to: the `IsTown` area of the same act whose
+    /// id starts like this area's (`G1_2` -> `G1_town`, `P2_3` -> `P2_Town`; act 6 has three
+    /// towns), else the first town of the act. The login scene is never one. `None` when the act
+    /// has no town.
+    pub fn town(&self, data: &GameData) -> Result<Option<Self>> {
+        let prefix = self.id.split('_').next().unwrap_or_default().to_ascii_lowercase();
+        let mut first = None;
+        for row in data.table("WorldAreas")?.rows() {
+            let id = row.str("Id")?;
+            if !row.bool("IsTown")? || row.int("Act")? != self.act || id == "G_login" {
+                continue;
+            }
+            if id.split('_').next().unwrap_or_default().to_ascii_lowercase() == prefix {
+                return Self::find(data, &id);
+            }
+            first.get_or_insert(id);
+        }
+        first.map(|id| Self::find(data, &id)).transpose().map(Option::flatten)
+    }
+
     pub fn find(data: &GameData, id: &str) -> Result<Option<Self>> {
         let areas = data.table("WorldAreas")?;
         let Some(row) = areas.find_by_str("Id", id)? else {

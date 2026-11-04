@@ -271,6 +271,11 @@ impl ClientReports {
             .filter(|r| r.at.elapsed() < FRESH)
     }
 
+    /// Whether the DLL of session `id` has sent a datagram, so `send_debug` can reach it.
+    pub fn has_peer(&self, id: u64) -> bool {
+        self.sessions.lock().unwrap().get(&id).is_some_and(|s| s.peer.is_some())
+    }
+
     /// Commands the client DLL sent for session `id` since the last call.
     pub fn take_commands(&self, id: u64) -> Vec<String> {
         self.sessions
@@ -352,6 +357,10 @@ impl ClientReports {
             }
             _ => {
                 let text = String::from_utf8_lossy(frame.payload).trim().to_owned();
+                // The DLL's `hello` only teaches the server its address (`peer`, set above).
+                if text == "hello" {
+                    return Ok(frame.kind);
+                }
                 info!(port = s.port, command = %text, "dev command from the client DLL");
                 s.commands.push(text);
             }

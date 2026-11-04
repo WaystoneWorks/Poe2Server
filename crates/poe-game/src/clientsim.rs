@@ -645,6 +645,7 @@ impl ClientSim {
             let (cell, done) = self.line.step();
             if self.step_blocked(cell, t) {
                 self.stop_move();
+                let wasd = self.mv.is_some_and(|m| !m.from_server);
                 if !self.stop_pending {
                     self.end_path(false, t);
                     if let Some(r) = self.roll.as_mut() {
@@ -653,9 +654,15 @@ impl ClientSim {
                 }
                 // Measured (official `0x1d3` keyed to component 0, no plan on the `0x64` that follows,
                 // no coast): a blocked step ends the sprint in the Positioned tick with the Bonk clip.
+                // Only when the re-aim of the "blocked" delegates kept the Move (22 of 25 in crazy-keys,
+                // `PH` rows ddcbee, de4bf0, e50488, 415ccb): when its search finds no path (f1068, f1625,
+                // f4716, count=0) the Move is over and the Actor tick's end check ends the sprint, with
+                // the sprint-off stats the server keys `(0, 4)` in both cases (SEND 9,x bonk 0).
                 if self.sprint && self.roll.is_none() {
                     self.bonked = true;
-                    self.sprint_part_end(true, t);
+                    if !wasd || self.mv.is_some() {
+                        self.sprint_part_end(true, t);
+                    }
                 }
             } else {
                 self.grid = cell;

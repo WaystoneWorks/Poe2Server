@@ -27,6 +27,10 @@ A failed run can be re-run from the Actions page; if the release already exists 
 
 The packages are `poe-server-v<version>-game-<game version>-<linux|windows>-x86_64.tar.gz` / `.zip` plus a `.sha256` each. The game version is in the file name so that the launcher can pick the release that matches its installed client without opening an archive; `release.json` inside repeats server version, game version, platform and commit. Contents (the repository layout, since the server's paths are relative to its working directory): `poe-server[.exe]`, `config/server.example.toml`, `modules/protocol/versions/`, `modules/protocol/opcodes/`, `third_party/dat-schema/schema-poe2.min.json`, `web-admin/`, `README.md`, `HOSTING.md`, `release.json` and any `LICENSE*` file at the repository root. No game files.
 
+### Without GitHub: a local release mirror
+
+From the hub, `cargo xtask release-mirror <dir>` runs this packaging (and the hook's) on your checkouts and writes `<dir>/Poe2Server/releases.json` with the archives, a static release source the launcher reads instead of GitHub ([launcher.md](https://github.com/WaystoneWorks/Poe2ModdingProject/blob/main/docs/guides/launcher.md#release-source)). The server itself downloads no releases.
+
 ### Checking a package locally
 
 ```sh

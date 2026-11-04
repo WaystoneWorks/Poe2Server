@@ -63,7 +63,11 @@ pub const USED: &[UsedTable] = &[
         &["Id", "Level", "HubArea", "Character"],
     ),
     t("Inventories", &["Id", "InventoryIdKey"]),
-    t("LeagueFlag", &["Id"]),
+    t(
+        "LeagueFlag",
+        &["Id", "Image", "Banner", "BannerArt", "LogoArt", "IsHC", "IsSSF", "IsRuthless"],
+    ),
+    t("CoreLeagues", &["Id"]),
     t("Stats", &["Id", "IsParty"]),
     // Key column by index: the skill id of a basic action is 0x20000000 | key.
     UsedTable {

@@ -23,6 +23,8 @@ pub struct LoginServer {
     pub config: Arc<Config>,
     pub protocol: Arc<Protocol>,
     pub store: Arc<dyn Store>,
+    /// Leagues (list, creation check, banners).
+    pub leagues: Arc<dyn poe_store::LeagueStore>,
     /// Usernames, passwords and login tokens.
     pub accounts: Arc<dyn AccountStore>,
     /// Password attempt limits (shared with the web API).

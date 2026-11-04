@@ -12,6 +12,7 @@ mod bans;
 mod configfile;
 mod dto;
 mod error;
+pub mod leagues;
 pub mod lifecycle;
 pub mod logs;
 mod metrics;

@@ -14,6 +14,7 @@ jiff = "0.2"
 poe-accounts.workspace = true
 poe-cluster.workspace = true
 poe-config.workspace = true
+poe-data.workspace = true
 poe-store.workspace = true
 rand.workspace = true
 serde.workspace = true

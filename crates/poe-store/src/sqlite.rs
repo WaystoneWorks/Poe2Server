@@ -14,6 +14,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0006_accounts_auth.sql"),
     include_str!("../migrations/0007_bans.sql"),
     include_str!("../migrations/0008_scheduled_tasks.sql"),
+    include_str!("../migrations/0009_leagues.sql"),
 ];
 
 pub struct SqliteStore {

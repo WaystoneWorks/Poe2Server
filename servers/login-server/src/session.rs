@@ -7,6 +7,7 @@ use std::time::Duration;
 use poe_accounts::ConnectionSlot;
 use poe_cluster::TicketCharacter;
 use poe_data::views::{StartState, WorldArea, league_flag_index};
+use poe_store::{League, LeagueClosed, LeagueState};
 use poe_net::{Connection, DecodeError, Reader, hexdump::hexdump};
 use poe_proto::{
     Direction, Message, Protocol,
@@ -243,8 +244,9 @@ pub async fn run(
                 }
                 info!(account_id = req.account_id, "character list requested");
                 send_character_list(&server, &mut conn, req.account_id).await?;
-                conn.send(&server.protocol.login.encode(&league_list(&server))?)
-                    .await?;
+                let leagues = league_list(&server)?;
+                info!(leagues = leagues.leagues.len(), "league list sent");
+                conn.send(&server.protocol.login.encode(&leagues)?).await?;
                 if let Some(ticket) = pending.take() {
                     info!(area = %ticket.area, instance = ?ticket.instance, "instance transfer: sending the client on");
                     send_instance_details(&server, &mut conn, &ticket).await?;
@@ -412,44 +414,69 @@ async fn send_authentication_result(
     Ok(())
 }
 
-/// League list from `[[leagues]]` in the server config.
-fn league_list(server: &LoginServer) -> LeagueList {
-    let now = std::time::SystemTime::now()
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs();
-    LeagueList {
-        server_time: now,
-        leagues: server
-            .config
-            .leagues
+        .as_secs() as i64
+}
+
+/// League list from the database (`poe_store::LeagueStore`). With no league the list is
+/// empty: the client logs in and refuses nothing until Create (docs/protocol/login.md).
+fn league_list(server: &LoginServer) -> anyhow::Result<LeagueList> {
+    let leagues = server.leagues.leagues()?;
+    let flag_row = |id: &str| league_flag_index(&server.data, id).ok().flatten();
+    Ok(LeagueList {
+        server_time: unix_now() as u64,
+        leagues: league_entries(&leagues, flag_row),
+        flags: 0,
+    })
+}
+
+/// The wire entries of the listed leagues (active ones; hidden and ended ones are not sent),
+/// the default family first. Field meanings: docs/protocol/login.md, "LeagueEntry"; the bits
+/// copy the official list.
+fn league_entries(leagues: &[League], flag_row: impl Fn(&str) -> Option<u32>) -> Vec<LeagueEntry> {
+    let mut listed: Vec<&League> = leagues.iter().filter(|l| l.state == LeagueState::Active).collect();
+    listed.sort_by_key(|l| !l.is_default);
+    let sibling = |l: &League, hardcore: bool, ssf: bool| {
+        leagues
             .iter()
-            .map(|l| LeagueEntry {
+            .find(|o| o.family == l.family && o.hardcore == hardcore && o.ssf == ssf)
+            .map(|o| o.id.clone())
+            .unwrap_or_default()
+    };
+    listed
+        .into_iter()
+        .map(|l| {
+            let start = l.starts_at.unwrap_or(0).max(0) as u64;
+            LeagueEntry {
                 id: l.id.clone(),
-                name: l.id.clone(),
-                text_60: l.id.clone(),
-                // A variant names its base league here (`0x140e7ca80` groups variants under
-                // the base league's banner at character creation).
-                text_80: l.variant_of.clone().unwrap_or_else(|| l.id.clone()),
-                text_a0: l.id.clone(),
-                time_d0: 0,
-                time_d8: 0,
-                time_c8: 0,
-                // +0xe0 bit 1: hardcore; bit 7: not offered in the "Join" list (permanent
-                // leagues). +0xe1 bit 1: a variant of another league. Character creation makes
-                // a banner for every league with +0xe0 bit 7 that is not a variant.
+                name: l.display_name.clone(),
+                // SSF variants name their non-SSF sibling, hardcore ones their softcore sibling
+                // (`0x140e7ca80` pairs the creation checkboxes through them).
+                text_60: if l.ssf { sibling(l, l.hardcore, false) } else { String::new() },
+                text_80: if l.hardcore { sibling(l, false, l.ssf) } else { String::new() },
+                text_a0: String::new(),
+                time_d0: start,
+                time_d8: start,
+                time_c8: l.ends_at.unwrap_or(0).max(0) as u64,
+                // +0xe0: bits 3, 5 and 7 as officially (7: gets a creation banner); bit 1
+                // hardcore; bit 4: has an end time (no banner once it passed).
+                // +0xe1 bit 1: a variant. +0xe2 bits 2 and 3: SSF.
                 raw_e0: [
-                    if l.hardcore { 0x02 } else { 0 } | if l.permanent { 0x80 } else { 0 },
-                    if l.variant_of.is_some() { 0x02 } else { 0 },
-                    0,
+                    0xa8 | if l.hardcore { 0x02 } else { 0 } | if l.ends_at.is_some() { 0x10 } else { 0 },
+                    if l.is_base() { 0 } else { 0x02 },
+                    if l.ssf { 0x0c } else { 0 },
                 ],
                 flag_c0: 0,
-                flag_c1: 0,
-                flag_c2: 0,
-            })
-            .collect(),
-        flags: 0,
-    }
+                // Category 1 preselects the banner at creation: the default league's.
+                flag_c1: u8::from(l.is_default && l.is_base()),
+                // LeagueFlag row + 1 of the creation banner.
+                flag_c2: l.flag.as_deref().and_then(&flag_row).map_or(0, |r| (r + 1).min(255) as u8),
+            }
+        })
+        .collect()
 }
 
 async fn send_character_list(
@@ -482,14 +509,9 @@ fn character_entry(server: &LoginServer, c: &Character) -> anyhow::Result<Charac
         .map(|a| a.hash16)
         .unwrap_or_default();
     // +0x4d: LeagueFlag row + 1 (banner; select screen `0x1406b9dc7` -> `0x140c7e460`).
-    let flag = server
-        .config
-        .leagues
-        .iter()
-        .find(|l| l.id == c.league)
-        .and_then(|l| l.flag.as_deref());
+    let flag = server.leagues.league(&c.league)?.and_then(|l| l.flag);
     let league_flag = match flag {
-        Some(id) => league_flag_index(&server.data, id)?.map_or(0, |i| (i + 1) as u8),
+        Some(id) => league_flag_index(&server.data, &id)?.map_or(0, |i| (i + 1) as u8),
         None => 0,
     };
     Ok(CharacterEntry {
@@ -522,22 +544,24 @@ fn validate_name(name: &str) -> Result<(), BackendError> {
 }
 
 /// The checks of character creation that need no game data, in the order the client's own
-/// flow suggests: name, league, free slot.
+/// flow suggests: name, league, free slot. `league` is the stored league of that id.
 fn create_refusal(
     name: &str,
-    league: &str,
-    leagues: &[poe_config::LeagueConfig],
+    league: Option<&League>,
+    now: i64,
     existing: usize,
     max_characters: usize,
 ) -> Option<BackendError> {
     if let Err(e) = validate_name(name) {
-        Some(e)
-    } else if !leagues.iter().any(|l| l.id == league) {
-        Some(be::LEAGUE_DOES_NOT_EXIST)
-    } else if existing >= max_characters {
-        Some(be::TOO_MANY_CHARACTERS)
-    } else {
-        None
+        return Some(e);
+    }
+    match league.map(|l| l.open_at(now)) {
+        None => Some(be::LEAGUE_DOES_NOT_EXIST),
+        Some(Err(LeagueClosed::Hidden)) => Some(be::LEAGUE_CLOSED_FOR_ENTRY),
+        Some(Err(LeagueClosed::NotStarted)) => Some(be::LEAGUE_NOT_YET_STARTED),
+        Some(Err(LeagueClosed::Ended)) => Some(be::LEAGUE_HAS_ENDED),
+        Some(Ok(())) if existing >= max_characters => Some(be::TOO_MANY_CHARACTERS),
+        Some(Ok(())) => None,
     }
 }
 
@@ -597,10 +621,14 @@ fn plan_create(
         warn!("create character: {e}");
         be::DATABASE_ERROR
     })?;
+    let league = server.leagues.league(&req.league).map_err(|e| {
+        warn!("create character: {e}");
+        be::DATABASE_ERROR
+    })?;
     if let Some(refusal) = create_refusal(
         &req.name,
-        &req.league,
-        &server.config.leagues,
+        league.as_ref(),
+        unix_now(),
         existing.len(),
         usize::from(server.config.accounts.max_characters),
     ) {
@@ -759,7 +787,6 @@ async fn send_instance_details(server: &LoginServer, conn: &mut Connection, tick
 
 #[cfg(test)]
 mod tests {
-    use poe_config::LeagueConfig;
     use poe_proto::login::{ClientKeyExchange, KeyExchange};
     use tokio::{
         io::AsyncWriteExt,
@@ -839,8 +866,23 @@ mod tests {
         Protocol::load(&poe_config::VersionFile::latest(&root).unwrap().opcodes_dir(&root)).unwrap()
     }
 
-    fn league(id: &str) -> LeagueConfig {
-        LeagueConfig { id: id.into(), hardcore: false, permanent: true, variant_of: None, flag: None }
+    fn leagues() -> Vec<League> {
+        use poe_store::{LeagueStore, NewLeagueFamily, SqliteStore, Variant};
+        let store = SqliteStore::in_memory().unwrap();
+        let new = |name: &str, flag: &str, default| NewLeagueFamily {
+            name: name.into(),
+            hardcore: true,
+            ssf: true,
+            permanent: name == "Standard",
+            flags: [(Variant::Base, flag.to_owned())].into(),
+            is_default: default,
+            starts_at: Some(100),
+            ends_at: (name == "Dawn").then_some(500),
+            ..Default::default()
+        };
+        store.create_family(&new("Dawn", "Expedition2Standard", false), 1).unwrap().unwrap();
+        store.create_family(&new("Standard", "StandardFlag", true), 1).unwrap().unwrap();
+        store.leagues().unwrap()
     }
 
     #[test]
@@ -858,14 +900,53 @@ mod tests {
 
     #[test]
     fn creation_refusals_in_order() {
-        let leagues = [league("Standard")];
-        let r = |name: &str, lg: &str, existing| create_refusal(name, lg, &leagues, existing, 3);
-        assert_eq!(r("Abc", "Standard", 2), None);
-        assert_eq!(r("A", "Standard", 0), Some(be::CHARACTER_NAME_TOO_SHORT));
-        assert_eq!(r("Abc", "Nope", 0), Some(be::LEAGUE_DOES_NOT_EXIST));
-        assert_eq!(r("Abc", "Standard", 3), Some(be::TOO_MANY_CHARACTERS));
-        assert_eq!(be::LEAGUE_DOES_NOT_EXIST.code, 26);
+        let all = leagues();
+        let find = |id: &str| all.iter().find(|l| l.id == id);
+        let r = |name: &str, lg: &str, now, existing| create_refusal(name, find(lg), now, existing, 3);
+        assert_eq!(r("Abc", "Standard", 200, 2), None);
+        assert_eq!(r("A", "Standard", 200, 0), Some(be::CHARACTER_NAME_TOO_SHORT));
+        assert_eq!(r("Abc", "Nope", 200, 0), Some(be::LEAGUE_DOES_NOT_EXIST));
+        assert_eq!(r("Abc", "HC Dawn", 50, 0), Some(be::LEAGUE_NOT_YET_STARTED));
+        assert_eq!(r("Abc", "HC Dawn", 500, 0), Some(be::LEAGUE_HAS_ENDED));
+        assert_eq!(r("Abc", "Standard", 200, 3), Some(be::TOO_MANY_CHARACTERS));
+        let mut hidden = find("SSF Dawn").unwrap().clone();
+        hidden.state = LeagueState::Hidden;
+        assert_eq!(create_refusal("Abc", Some(&hidden), 200, 0, 3), Some(be::LEAGUE_CLOSED_FOR_ENTRY));
+        assert_eq!(
+            [be::LEAGUE_DOES_NOT_EXIST.code, be::LEAGUE_HAS_ENDED.code, be::LEAGUE_CLOSED_FOR_ENTRY.code, be::LEAGUE_NOT_YET_STARTED.code],
+            [26, 55, 56, 139]
+        );
         assert_eq!(be::TOO_MANY_CHARACTERS.code, 49);
+    }
+
+    /// The entries follow the official list (`dumps/.../2026-11-03_13-16-29_336`, 0x001b):
+    /// Standard `a8 00 00`, Hardcore `2a 02 00` naming Standard at +0x80, SSF `28 02 0c`
+    /// naming Standard at +0x60, HC SSF `2a 02 0c` naming Hardcore SSF's siblings.
+    #[test]
+    fn league_entries_match_the_official_layout() {
+        let rows = |id: &str| match id {
+            "StandardFlag" => Some(1),
+            "Expedition2Standard" => Some(150),
+            _ => None,
+        };
+        let e = league_entries(&leagues(), rows);
+        let ids: Vec<_> = e.iter().map(|e| e.id.as_str()).collect();
+        // The default family first.
+        assert_eq!(ids, ["Standard", "Hardcore", "Solo Self-Found", "Hardcore SSF", "Dawn", "HC Dawn", "SSF Dawn", "HC SSF Dawn"]);
+        let f = |i: usize| (e[i].text_60.as_str(), e[i].text_80.as_str(), e[i].raw_e0, e[i].flag_c1, e[i].flag_c2);
+        assert_eq!(f(0), ("", "", [0xa8, 0, 0], 1, 2));
+        assert_eq!(f(1), ("", "Standard", [0xaa, 2, 0], 0, 2));
+        assert_eq!(f(2), ("Standard", "", [0xa8, 2, 0x0c], 0, 2));
+        assert_eq!(f(3), ("Hardcore", "Solo Self-Found", [0xaa, 2, 0x0c], 0, 2));
+        // Dawn has an end time (+0xe0 bit 4) and the Runes of Aldur banner (row 150 + 1).
+        assert_eq!(f(4), ("", "", [0xb8, 0, 0], 0, 151));
+        assert_eq!((e[4].time_d0, e[4].time_c8), (100, 500));
+        // Hidden and ended leagues are not listed.
+        let mut all = leagues();
+        all[1].state = LeagueState::Hidden;
+        all[2].state = LeagueState::Ended;
+        assert_eq!(league_entries(&all, rows).len(), 6);
+        assert!(league_entries(&[], rows).is_empty());
     }
 
     /// The failure replies as they go over the wire (opcodes from `login.toml`).

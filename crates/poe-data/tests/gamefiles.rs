@@ -114,3 +114,22 @@ fn movement_skills() {
         Some(46)
     );
 }
+
+#[test]
+fn league_flags_and_mechanics() {
+    use poe_data::views::{LeagueFlagRow, league_mechanics};
+    let Some(data) = open() else { return };
+    let rows = LeagueFlagRow::all(&data).unwrap();
+    // The official LeagueList sends these rows + 1 in LeagueEntry +0xc2 (docs/protocol/login.md).
+    assert_eq!(rows[1].id, "StandardFlag");
+    assert_eq!(rows[150].id, "Expedition2Standard");
+    let v = |base: &str, hc, ssf| LeagueFlagRow::variant_of(&rows, base, hc, ssf).map(|r| r.row);
+    assert_eq!(v("StandardFlag", true, false), Some(2));
+    assert_eq!(v("StandardFlag", false, true), Some(34));
+    assert_eq!(v("StandardFlag", true, true), Some(35));
+    assert_eq!(v("Expedition2Standard", true, false), Some(151));
+    assert_eq!(v("Expedition2Standard", true, true), Some(153));
+    assert_eq!(v("EventFlag", true, false), None);
+    let mechanics = league_mechanics(&data).unwrap();
+    assert!(mechanics.iter().any(|m| m == "Breach") && mechanics.iter().any(|m| m == "Ritual"));
+}

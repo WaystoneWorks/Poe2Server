@@ -1997,6 +1997,7 @@ name = "poe-store"
 version = "0.4.0"
 dependencies = [
  "rusqlite",
+ "serde_json",
  "thiserror",
 ]
 
@@ -2013,6 +2014,7 @@ dependencies = [
  "poe-accounts",
  "poe-cluster",
  "poe-config",
+ "poe-data",
  "poe-store",
  "rand 0.9.5",
  "serde",

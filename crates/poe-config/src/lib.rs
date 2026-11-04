@@ -101,8 +101,10 @@ pub struct Config {
     pub gateway: GatewayConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
-    #[serde(default)]
-    pub leagues: Vec<LeagueConfig>,
+    /// Removed: leagues live in the database and the web admin. A leftover `[[leagues]]` block
+    /// is ignored with a startup warning ([`Config::security_warnings`]).
+    #[serde(default, rename = "leagues")]
+    pub removed_leagues: Option<serde::de::IgnoredAny>,
     #[serde(default)]
     pub inventories: InventoriesConfig,
     #[serde(default)]
@@ -789,6 +791,13 @@ impl Config {
                     .into(),
             );
         }
+        if self.removed_leagues.is_some() {
+            out.push(
+                "[[leagues]] is ignored; leagues are in the web admin (Leagues page) or \
+                 `poe-server league` (remove the block from this config)"
+                    .into(),
+            );
+        }
         if !self.web.bind.ip().is_loopback() {
             out.push(format!(
                 "[web] bind {} is not loopback: passwords and admin actions travel in the clear \
@@ -1131,24 +1140,6 @@ impl Default for LoggingConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct LeagueConfig {
-    pub id: String,
-    #[serde(default)]
-    pub hardcore: bool,
-    /// Permanent league (Standard): has a banner at character creation and is not offered in
-    /// the character select "Join" list.
-    #[serde(default)]
-    pub permanent: bool,
-    /// Makes this league a variant (e.g. Hardcore) of another league: at character creation
-    /// it is an option on that league's banner instead of a banner of its own.
-    #[serde(default)]
-    pub variant_of: Option<String>,
-    /// `LeagueFlag.Id` for the league's banner and icon (e.g. "StandardFlag").
-    #[serde(default)]
-    pub flag: Option<String>,
-}
-
 impl Config {
     /// Loads the config from `POE_CONFIG` or [`DEFAULT_PATH`].
     pub fn load_default() -> Result<Self, ConfigError> {
@@ -1264,14 +1255,14 @@ mod tests {
     fn repo_config_parses() {
         let text = include_str!("../../../config/server.toml");
         let cfg = Config::parse(text).expect("config/server.toml must parse");
-        assert!(!cfg.leagues.is_empty());
+        assert!(cfg.removed_leagues.is_none(), "leagues are in the database");
     }
 
     #[test]
     fn example_config_parses() {
         let text = include_str!("../../../config/server.example.toml");
         let cfg = Config::parse(text).expect("config/server.example.toml must parse");
-        assert!(!cfg.leagues.is_empty());
+        assert!(cfg.removed_leagues.is_none(), "leagues are in the database");
     }
 
     #[test]

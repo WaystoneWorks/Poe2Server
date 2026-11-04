@@ -172,6 +172,79 @@ pub fn league_flag_index(data: &GameData, id: &str) -> Result<Option<u32>> {
     Ok(None)
 }
 
+/// A `LeagueFlag` row: a league's banner art. The client takes it by row + 1 from
+/// CharacterEntry +0x4d (select screen) and LeagueEntry +0xc2 (creation banner,
+/// `0x140e77810`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeagueFlagRow {
+    pub row: u32,
+    pub id: String,
+    /// Small icon (`Art/2DArt/UIImages/Common/League...`), may be empty.
+    pub image: String,
+    /// Login-screen banner, may be empty.
+    pub banner: String,
+    /// Creation-screen banner icon, may be empty.
+    pub banner_art: String,
+    /// League logo (`.dds`), may be empty.
+    pub logo_art: String,
+    pub hardcore: bool,
+    pub ssf: bool,
+    pub ruthless: bool,
+}
+
+impl LeagueFlagRow {
+    /// Every row, in table order.
+    pub fn all(data: &GameData) -> Result<Vec<Self>> {
+        let table = data.table("LeagueFlag")?;
+        table
+            .rows()
+            .enumerate()
+            .map(|(i, r)| {
+                Ok(Self {
+                    row: i as u32,
+                    id: r.str("Id")?,
+                    image: r.str("Image")?,
+                    banner: r.str("Banner")?,
+                    banner_art: r.str("BannerArt")?,
+                    logo_art: r.str("LogoArt")?,
+                    hardcore: r.bool("IsHC")?,
+                    ssf: r.bool("IsSSF")?,
+                    ruthless: r.bool("IsRuthless")?,
+                })
+            })
+            .collect()
+    }
+
+    /// The flag of the same set for a Hardcore and/or SSF variant, after the table's naming:
+    /// `<Set>Standard` / `<Set>Hardcore` / `<Set>StandardSSF` / `<Set>HardcoreSSF`, and
+    /// `StandardFlag` / `HardcoreFlag` / `StandardSSF` / `HardcoreSSF` for Standard. `None`
+    /// when the set has no such row.
+    pub fn variant_of<'a>(rows: &'a [Self], base: &str, hardcore: bool, ssf: bool) -> Option<&'a Self> {
+        let want = |id: &str| rows.iter().find(|r| r.id == id);
+        if !hardcore && !ssf {
+            return want(base);
+        }
+        let suffix = match (hardcore, ssf) {
+            (true, false) => "Hardcore",
+            (false, true) => "StandardSSF",
+            _ => "HardcoreSSF",
+        };
+        let id = if base == "StandardFlag" {
+            if suffix == "Hardcore" { "HardcoreFlag".to_owned() } else { suffix.to_owned() }
+        } else {
+            format!("{}{suffix}", base.strip_suffix("Standard")?)
+        };
+        want(&id).filter(|r| r.hardcore == hardcore && r.ssf == ssf)
+    }
+}
+
+/// League mechanics (`CoreLeagues.Id`: Breach, Delirium, Ritual, ...), for the league editor.
+/// Stored with a league only; none is implemented.
+pub fn league_mechanics(data: &GameData) -> Result<Vec<String>> {
+    let table = data.table("CoreLeagues")?;
+    table.rows().map(|r| r.str("Id")).collect()
+}
+
 /// Network key of a stat: `Stats.dat` row + 1 (the client queries e.g. `actor_scale_+%`,
 /// row 1913, as 1914).
 pub fn stat_key(data: &GameData, id: &str) -> Result<Option<u32>> {

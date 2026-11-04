@@ -763,14 +763,15 @@ impl ClientSim {
                 } else {
                     a.rate
                 };
+                self.sprint_end.as_mut().unwrap().rate = rate;
                 self.start_coast(rate, t);
             }
-            // The clip's rate follows the speed: at a wall the sprint-off's stats come right after
-            // the step that ended it (seg2 f800: walks are refused to f828, 30 frames at walking
-            // speed, not the 20 of the sprint's).
-            let rate = self.speed() * CELL / (self.sprint_end_base_speed() * self.offset_scale);
+            // The clip keeps the rate it was played at (`0x141e56ae0` sets the state's rate once): at a
+            // wall the sprint-off's stats come right after the step that ended it (seg2 f800: walks are
+            // refused to f828, 30 frames at walking speed); a Bonk of the Actor tick keeps the sprint's
+            // (game test crazy-keys f439: the walk starts at f460, 20 frames).
             let a = self.sprint_end.as_mut().unwrap();
-            a.left -= dt * rate;
+            a.left -= dt * a.rate;
             if a.left <= 0.0 {
                 self.sprint_end = None;
                 // The move event ends with the clip: its line stops where it is.

@@ -351,10 +351,11 @@ fn a_roll_queued_into_a_roll_keeps_the_facing() {
         steps.push(((now.0 - last.0).powi(2) + (now.1 - last.1).powi(2)).sqrt());
         last = now;
     }
-    // The queued roll's first big step and the next: forward curve 3.331, backward 3.345.
+    // The client's first steps of a queued roll (user test 4 f2320, f2321; test 3 f1852, f1853 agree):
+    // the forward curve, with the new clip at 0.023 s in the tick that plays the old clip out.
     let first = steps.iter().rposition(|s| *s > 3.6).expect("no second roll");
-    let second = steps[first + 1];
-    assert!((second - 3.331).abs() < 0.005, "steps {:?}: not the forward curve", &steps[first..first + 3]);
+    assert!((steps[first] - 3.8068).abs() < 0.005, "steps {:?}: first step", &steps[first..first + 3]);
+    assert!((steps[first + 1] - 3.3921).abs() < 0.005, "steps {:?}: not the forward curve", &steps[first..first + 3]);
 }
 
 /// `0x14197a61b` (user test 4 f4016): the roll's target window opens with the axes of before a `0x64`

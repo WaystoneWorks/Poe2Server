@@ -490,6 +490,11 @@ impl ClientSim {
         (if l.swap { (l.p.1, l.p.0) } else { l.p }, l.len, l.acc)
     }
 
+    /// Replay tool: the line's length, time, the curve's time and the roll's clip time.
+    pub fn line_debug(&self) -> (f32, f32, f32, Option<f32>) {
+        (self.line.len, self.line.t_total, self.line.curve.t, self.roll.as_ref().map(|r| r.elapsed))
+    }
+
     /// The line's end while one runs.
     pub fn line_end(&self) -> Option<Cell> {
         (self.line.thr != 0.0).then(|| self.line.unswap(self.line.end))
@@ -1290,8 +1295,12 @@ impl ClientSim {
             self.line.acc = 0.0;
             self.line.pending = 0.0;
         }
+        // TEST: a roll queued into a running roll, at that clip's end in this frame's Animated tick:
+        // the tick plays the old clip out and only the rest of its time goes to the new clip (user
+        // tests 3 f1851, 4 f2319: line time 0.977 = 1.0 - (0.99 + 0.033 - 1.0)). The code is unread.
+        let elapsed = self.roll.as_ref().map_or(0.0, |r| (r.elapsed - r.length).min(0.0));
         self.roll = Some(Roll {
-            elapsed: 0.0,
+            elapsed,
             length,
             rate: self.controller_rate(),
             heading,

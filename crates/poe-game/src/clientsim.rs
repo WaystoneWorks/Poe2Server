@@ -320,6 +320,8 @@ struct Roll {
     steering: bool,
     /// The action's `+0x24d`: the movement vector took over, `0x1af` no longer aims it.
     axes_aimed: bool,
+    /// The turn-around at the sprint switch closed the target window.
+    target_window_closed: bool,
     /// `+0x44`, `+0x48`.
     opt_len: Option<i32>,
     /// A sprint child was started (`act + 0x448`).
@@ -733,7 +735,7 @@ impl ClientSim {
             if let Some(ev) = ev
                 && new >= ev.target_update.0
             {
-                r.target_update = new < ev.target_update.1;
+                r.target_update = new < ev.target_update.1 && !r.target_window_closed;
             }
             // `AnimPlayer_Advance`: the clock stands at the event's time while the event runs.
             if let Some(ev) = ev
@@ -1236,8 +1238,6 @@ impl ClientSim {
         }
         if let (Some(r), Some(cs)) = (&mut self.roll, self.curves.clone()) {
             r.sprints = true;
-            // The cursor steers again from the sprint switch (user test 4 f4031, by replay; code unread).
-            r.axes_aimed = false;
             r.opt_len = Some(ROLL_SPRINT_LINE);
             r.steering = true;
             let curve = if r.backward { cs.roll_back_sprint.clone() } else { cs.roll_sprint.clone() };
@@ -1247,9 +1247,15 @@ impl ClientSim {
             // A backward roll that goes on sprinting turns around (`act + 0x461`: stance `Standing`).
             // Not for a roll out of the SprintEnd clip (no `act+0x461`): it stays backward (user test 3
             // f995-1001: the client's facing stays the sprint's, the line's heading + pi).
+            // `DodgeRoll_OnAnimationEvent` also clears the target window (`act+0x240`, `+0x244`, `+0x258`,
+            // `+0x268`): the turned roll steers no more (crazy-keys f5885: the line runs on, away from
+            // the axes).
             if r.backward && !r.from_sprint_end {
                 self.orient = 1;
                 self.facing = wrap(self.facing + PI);
+                r.target_window_closed = true;
+                r.target_update = false;
+                r.pending_target = None;
             }
         }
     }
@@ -1325,6 +1331,7 @@ impl ClientSim {
             // The window opens with `+0x24d = 0` and `0x14197d060` at once (`0x14197a61b`), with the axes of
             // before a `0x64` later in the batch: the cursor stays locked out (user test 4 f4016-4030).
             axes_aimed: self.axes != (0, 0),
+            target_window_closed: false,
             opt_len: None,
             sprints: false,
             event_done: false,
@@ -1353,9 +1360,11 @@ impl ClientSim {
         let g = self.grid;
         let rate = self.curves.as_ref().map_or(0.0, |c| c.roll_events.target_turn_rate);
         let (moving, stop) = (self.line.thr != 0.0, self.stop_pending);
-        let sign = if self.orient == 2 { -1 } else { 1 };
         let facing = self.facing;
         let r = self.roll.as_mut().unwrap();
+        // vf `+0x530` is `part+0x3f`, which stays set after the sprint switch turned the roll around
+        // (crazy-keys f5885: the heading goes to the wall behind, no line, the old line runs on).
+        let sign = if r.backward { -1 } else { 1 };
         let Some(off) = r.pending_target else { return };
         let mut e = (g.0 + off.0, g.1 + off.1);
         if e == r.target && (!moving || stop) {

@@ -637,7 +637,8 @@ impl Locomotion {
             }
         }
         if end_sprint {
-            self.end_sprint(zero_after_off, ctx, &mut out);
+            let no_ack = !out.items.iter().any(|k| matches!(k.event, MoveEvent::MoveAck { .. }));
+            self.end_sprint(no_ack, ctx, &mut out);
         }
         self.apply_up_to(AT_LAST_BEFORE_ACTOR, &mut out, ctx);
         self.sim.actor_tick(ctx.dt, ctx.terrain);
@@ -1609,7 +1610,10 @@ impl Locomotion {
     /// back to walking. The stream's last message was scaled and the next frame sends the
     /// unscaled direction.
     ///
-    /// `first`: no `0x64` goes out in this frame, and the sprint-off has `(player, 9, 4)`.
+    /// `first`: no `0x64` goes out in this frame, so the sprint-off has `(player, 9, 4)`. Its seq is
+    /// the phase at which the client's `SprintPart_End` runs (world `+0x67e`; hub
+    /// `docs/re/movement-sprint.md`, "Keys of the sprint-off"): a later seq runs after the end, and
+    /// the `SprintEnd` clip takes the sprint's rate (game test crazy-keys, 8 of 8).
     fn end_sprint(&mut self, first: bool, ctx: &mut StepCtx, out: &mut Out) {
         let frame = ctx.frame;
         let Some(run) = self.sprint().copied() else {

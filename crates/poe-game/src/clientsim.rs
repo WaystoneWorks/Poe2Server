@@ -314,6 +314,10 @@ struct Roll {
     total: i32,
     /// `+0x3e`.
     waiting: bool,
+    /// `part+0x3d`: the per-frame step runs. A blocked step clears it (Positioned "blocked" delegates
+    /// `0x141defd50` -> listener vtable `0x143453ce0` `+0x10` `0x141b8d4e0`), so the roll makes no more lines
+    /// until a reload (`DodgeRollMove_ReloadCurve` `0x141b8d440`).
+    steering: bool,
     /// The action's `+0x24d`: the movement vector took over, `0x1af` no longer aims it.
     axes_aimed: bool,
     /// `+0x44`, `+0x48`.
@@ -648,6 +652,9 @@ impl ClientSim {
                 self.stop_move();
                 if !self.stop_pending {
                     self.end_path(false, t);
+                    if let Some(r) = self.roll.as_mut() {
+                        r.steering = false;
+                    }
                 }
                 // Measured (official `0x1d3` keyed to component 0, no plan on the `0x64` that follows,
                 // no coast): a blocked step ends the sprint in the Positioned tick with the Bonk clip.
@@ -1124,8 +1131,9 @@ impl ClientSim {
             self.queued_move = Some((start, target));
             return;
         }
+        // Move vf `+0x1f0` `0x1419850f0`: `0x140163990` is the squared length, so the limit is 3 cells.
         let d = (self.grid.0 - target.0, self.grid.1 - target.1);
-        if (((d.0 * d.0 + d.1 * d.1) as f32).sqrt()) < 9.0 {
+        if d.0 * d.0 + d.1 * d.1 < 9 {
             return;
         }
         if self.sprint_end.is_some() {
@@ -1230,6 +1238,7 @@ impl ClientSim {
             // The cursor steers again from the sprint switch (user test 4 f4031, by replay; code unread).
             r.axes_aimed = false;
             r.opt_len = Some(ROLL_SPRINT_LINE);
+            r.steering = true;
             let curve = if r.backward { cs.roll_back_sprint.clone() } else { cs.roll_sprint.clone() };
             let (e, l) = (r.elapsed, r.length);
             self.line.curve.load(curve, 0.0, l);
@@ -1311,6 +1320,7 @@ impl ClientSim {
             // `sqrt(1 + stat(0xec) / 10000) * stat(0x57fa)`.
             total: ((1.0 + self.permyriad as f32 / 10000.0).sqrt() * travel) as i32,
             waiting: false,
+            steering: true,
             // The window opens with `+0x24d = 0` and `0x14197d060` at once (`0x14197a61b`), with the axes of
             // before a `0x64` later in the batch: the cursor stays locked out (user test 4 f4016-4030).
             axes_aimed: self.axes != (0, 0),
@@ -1487,9 +1497,11 @@ impl ClientSim {
                 self.line.curve.load(c, 0.0, l);
                 self.line.curve.set_time(e, l);
             }
-            self.roll.as_mut().unwrap().waiting = false;
+            let r = self.roll.as_mut().unwrap();
+            r.waiting = false;
+            r.steering = true;
         }
-        if self.line.curve.curve.is_some() && self.roll_left() > 1.0 {
+        if self.roll.as_ref().unwrap().steering && self.line.curve.curve.is_some() && self.roll_left() > 1.0 {
             self.roll_step(t);
         }
     }

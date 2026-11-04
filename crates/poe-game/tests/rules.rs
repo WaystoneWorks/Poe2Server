@@ -321,3 +321,63 @@ fn a_backward_roll_out_of_the_sprint_end_stays_backward_after_the_event() {
     let now = pos(&w);
     assert!(now.0 < before.0 - 0.1, "reversal from {before:?} to {now:?}: must turn through the west");
 }
+
+/// `0x14197e160` (user test 4 f2319): a roll queued into a running roll does not face its target
+/// first, so keys along the running roll with the cursor behind give a forward roll, not a backward one.
+#[test]
+fn a_roll_queued_into_a_roll_keeps_the_facing() {
+    let rows: Vec<String> = (0..400).map(|_| ".".repeat(300)).collect();
+    let rows: Vec<&str> = rows.iter().map(|r| r.as_str()).collect();
+    let (mut w, p) = world(Arc::new(VecGrid::from_rows(&rows)), (150, 350));
+    w.input(p, MoveInput::Direction { x: 0, y: -180 });
+    tick(&mut w);
+    w.input(p, MoveInput::SprintInput { held: true });
+    w.input(p, MoveInput::UseSkill(skill(ROLL, 0, -20)));
+    for _ in 0..3 {
+        tick(&mut w);
+    }
+    w.input(p, MoveInput::SprintInput { held: false });
+    w.input(p, MoveInput::SkillInputEnd);
+    tick(&mut w);
+    // Pressed again during the roll, with the cursor behind the player: it waits for the roll's end.
+    w.input(p, MoveInput::SprintInput { held: true });
+    w.input(p, MoveInput::UseSkill(skill(ROLL, 0, 20)));
+    let pos = |w: &World| w.entity(p).unwrap().movement.position();
+    let mut steps = Vec::new();
+    let mut last = pos(&w);
+    for _ in 0..45 {
+        tick(&mut w);
+        let now = pos(&w);
+        steps.push(((now.0 - last.0).powi(2) + (now.1 - last.1).powi(2)).sqrt());
+        last = now;
+    }
+    // The queued roll's first big step and the next: forward curve 3.331, backward 3.345.
+    let first = steps.iter().rposition(|s| *s > 3.6).expect("no second roll");
+    let second = steps[first + 1];
+    assert!((second - 3.331).abs() < 0.005, "steps {:?}: not the forward curve", &steps[first..first + 3]);
+}
+
+/// `0x14197a61b` (user test 4 f4016): the roll's target window opens with the axes of before a `0x64`
+/// later in the batch, so a roll out of a cursor walk is locked against the cursor until the sprint switch.
+#[test]
+fn a_roll_started_with_the_axes_still_set_ignores_the_cursor_until_the_sprint() {
+    let rows: Vec<String> = (0..400).map(|_| ".".repeat(400)).collect();
+    let rows: Vec<&str> = rows.iter().map(|r| r.as_str()).collect();
+    let (mut w, p) = world(Arc::new(VecGrid::from_rows(&rows)), (100, 200));
+    w.input(p, MoveInput::Direction { x: 180, y: 0 });
+    for _ in 0..4 {
+        tick(&mut w);
+    }
+    w.input(p, MoveInput::SprintInput { held: true });
+    w.input(p, MoveInput::UseSkill(skill(ROLL, 20, 0)));
+    w.input(p, MoveInput::Direction { x: 0, y: 0 });
+    let pos = |w: &World| w.entity(p).unwrap().movement.position();
+    tick(&mut w);
+    let start = pos(&w);
+    for _ in 0..10 {
+        w.input(p, MoveInput::UpdateSkillTarget { x: -20, y: 0, skill: ROLL });
+        tick(&mut w);
+    }
+    let now = pos(&w);
+    assert!(now.0 > start.0 + 5.0, "from {start:?} to {now:?}: the cursor must not turn the roll");
+}

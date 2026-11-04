@@ -1219,6 +1219,8 @@ impl ClientSim {
         }
         if let (Some(r), Some(cs)) = (&mut self.roll, self.curves.clone()) {
             r.sprints = true;
+            // The cursor steers again from the sprint switch (user test 4 f4031, by replay; code unread).
+            r.axes_aimed = false;
             r.opt_len = Some(ROLL_SPRINT_LINE);
             let curve = if r.backward { cs.roll_back_sprint.clone() } else { cs.roll_sprint.clone() };
             let (e, l) = (r.elapsed, r.length);
@@ -1255,7 +1257,11 @@ impl ClientSim {
         // else, so a key-held roll away from the cursor is a backward roll.
         // TEST: a roll that cuts the SprintEnd clip keeps the sprint's facing (seg1 f3578 and user
         // test 2 f2802 are backward rolls against it).
-        if target != self.grid && self.sprint_end.is_none() {
+        // The slot `+0x340` -> `+0x348` `0x14197e160` answers 0 when the skill equals `+0x2b4` of the
+        // action's component (cleared by a timer in `0x141e44634`; its writer is unread). Fitted by replay:
+        // a roll queued into a running roll keeps the facing (user test 4 f2319), as does one that cuts
+        // the SprintEnd clip.
+        if target != self.grid && self.sprint_end.is_none() && self.roll.is_none() {
             self.facing = angle((target.0 - self.grid.0) as f32, (target.1 - self.grid.1) as f32);
         }
         self.end_move(true, t);
@@ -1293,7 +1299,9 @@ impl ClientSim {
             // `sqrt(1 + stat(0xec) / 10000) * stat(0x57fa)`.
             total: ((1.0 + self.permyriad as f32 / 10000.0).sqrt() * travel) as i32,
             waiting: false,
-            axes_aimed: false,
+            // The window opens with `+0x24d = 0` and `0x14197d060` at once (`0x14197a61b`), with the axes of
+            // before a `0x64` later in the batch: the cursor stays locked out (user test 4 f4016-4030).
+            axes_aimed: self.axes != (0, 0),
             opt_len: None,
             sprints: false,
             event_done: false,

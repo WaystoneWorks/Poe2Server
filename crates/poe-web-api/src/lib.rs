@@ -7,11 +7,13 @@
 //! registry as the in-game chat.
 
 mod admin;
+mod art;
 mod auth;
 mod bans;
 mod configfile;
 mod dto;
 mod error;
+mod league_api;
 pub mod leagues;
 pub mod lifecycle;
 pub mod logs;
@@ -35,7 +37,7 @@ use axum::{
 use poe_accounts::{AccountStore, LoginLimiter};
 use poe_cluster::{AdminControl, InstanceDirectory, Metrics, ModDirectory};
 use poe_config::Config;
-use poe_store::Store;
+use poe_store::{LeagueStore, Store};
 use tower_http::{
     cors::CorsLayer,
     services::{ServeDir, ServeFile},
@@ -61,6 +63,11 @@ pub struct WebState {
     /// Password attempt limits (shared with the login server).
     pub limiter: Arc<LoginLimiter>,
     pub store: Arc<dyn Store>,
+    /// Leagues (`/leagues`, `/admin/leagues`); the same store as `store` in the server.
+    pub leagues: Arc<dyn LeagueStore>,
+    /// The game data, for league banners, flags, mechanics and `/art`; `None` in unit tests
+    /// (those endpoints answer 503).
+    pub data: Option<Arc<poe_data::GameData>>,
     pub instances: Arc<dyn InstanceDirectory>,
     pub admin: Arc<dyn AdminControl>,
     pub logs: Arc<LogBuffer>,
@@ -158,6 +165,17 @@ pub fn router(state: WebState) -> Router {
         .route("/admin/characters/{id}", get(admin::character))
         .route("/admin/logs/ws-ticket", post(admin::logs_ws_ticket))
         .route("/admin/logs/ws", get(admin::logs_ws))
+        .route("/leagues", get(league_api::list))
+        .route("/art/{*path}", get(art::get))
+        .route(
+            "/admin/leagues",
+            get(league_api::admin_list).post(league_api::create),
+        )
+        .route("/admin/leagues/{id}", post(league_api::update))
+        .route("/admin/leagues/{id}/end", post(league_api::end))
+        .route("/admin/leagues/{id}/delete", post(league_api::delete))
+        .route("/admin/data/league-flags", get(league_api::flags))
+        .route("/admin/data/league-mechanics", get(league_api::mechanics))
         .route("/openapi.json", get(openapi::serve))
         .fallback(|| async { ApiError::not_found("no such endpoint") });
     let mut app = Router::new().nest("/api/v1", api);
@@ -233,5 +251,7 @@ pub async fn serve(state: WebState) -> anyhow::Result<()> {
 mod tests;
 #[cfg(test)]
 mod tests_features;
+#[cfg(test)]
+mod tests_leagues;
 #[cfg(test)]
 mod tests_mods;

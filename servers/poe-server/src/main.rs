@@ -118,6 +118,7 @@ async fn main() -> anyhow::Result<()> {
         data: data.clone(),
         stats: Arc::new(poe_game::stats::StatRegistry::load(&data)?),
         store: store.clone(),
+        leagues: store.clone(),
         accounts: accounts.clone(),
         seeds: Arc::new(instance_server::seeds::KnownSeeds::load(
             &config.dev.known_seeds,
@@ -174,6 +175,8 @@ async fn main() -> anyhow::Result<()> {
         accounts: accounts.clone(),
         limiter,
         store: store.clone(),
+        leagues: store.clone(),
+        data: Some(data.clone()),
         instances: instances.clone(),
         admin: instance.clone(),
         logs: logs.clone(),

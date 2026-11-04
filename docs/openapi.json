@@ -1208,6 +1208,124 @@
         ]
       }
     },
+    "/api/v1/admin/data/league-flags": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "The `LeagueFlag` rows (banners to pick from).",
+        "operationId": "league_flags",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LeagueFlagView"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/data/league-mechanics": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "The league mechanics of the game data.",
+        "operationId": "league_mechanics",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MechanicView"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/admin/instances": {
       "get": {
         "tags": [
@@ -1373,6 +1491,443 @@
             }
           },
           "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/leagues": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Every league with its state, character count and art.",
+        "operationId": "admin_list_leagues",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AdminLeague"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Creates a family: the base and the variants the flags ask for. `400` for a bad name, dates,\nunknown flag or mechanic or a bad `migrate_to`; `409` when a name is taken.",
+        "operationId": "create_league",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateLeagueRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AdminLeague"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/leagues/{id}": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Changes a league. `400` for a bad value, `404` unknown league, `409` an ended league.",
+        "operationId": "update_league",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "league id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateLeagueRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminLeague"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/leagues/{id}/delete": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Deletes a variant, or a whole family for a base league; only while no character is in it.\n`400` when `confirm` is not the id, `404` unknown, `409` with characters.",
+        "operationId": "delete_league",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "league id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteLeagueRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteLeagueResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/leagues/{id}/end": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Ends the family `{id}` belongs to and moves its characters into `target`. `400` for a bad\ntarget, `404` unknown league, `409` already ended.",
+        "operationId": "end_league",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "any league id of the family",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EndLeagueRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EndLeagueResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
             "description": "",
             "content": {
               "application/json": {
@@ -2882,6 +3437,73 @@
         ]
       }
     },
+    "/api/v1/art/{path}": {
+      "get": {
+        "tags": [
+          "public"
+        ],
+        "summary": "A game image (a `.dds` file or a UI image id under `Art/`) as a PNG. Cached for a day.",
+        "operationId": "get_art",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "description": "game path under Art/: a .dds file, or a UI image id without extension",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "image/png": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/game-token": {
       "post": {
         "tags": [
@@ -2927,6 +3549,30 @@
             "bearer": []
           }
         ]
+      }
+    },
+    "/api/v1/leagues": {
+      "get": {
+        "tags": [
+          "public"
+        ],
+        "summary": "The active leagues, defaults first as the store orders them.",
+        "operationId": "list_leagues",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PublicLeague"
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/local/metrics": {
@@ -3528,6 +4174,102 @@
           }
         }
       },
+      "AdminLeague": {
+        "type": "object",
+        "description": "A league in the admin list.",
+        "required": [
+          "id",
+          "display_name",
+          "family",
+          "hardcore",
+          "ssf",
+          "permanent",
+          "is_default",
+          "state",
+          "characters",
+          "mechanics",
+          "sort",
+          "created_at",
+          "art"
+        ],
+        "properties": {
+          "art": {
+            "$ref": "#/components/schemas/FlagArt"
+          },
+          "characters": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "ends_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "family": {
+            "type": "string"
+          },
+          "flag": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hardcore": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "is_default": {
+            "type": "boolean"
+          },
+          "mechanics": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`CoreLeagues` ids (stored only; none is implemented)."
+          },
+          "migrate_to": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The family characters move to when this one ends."
+          },
+          "permanent": {
+            "type": "boolean"
+          },
+          "sort": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "ssf": {
+            "type": "boolean"
+          },
+          "starts_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "state": {
+            "type": "string",
+            "description": "`active`, `hidden` or `ended`."
+          }
+        }
+      },
       "AnnounceRequest": {
         "type": "object",
         "description": "`POST /admin/announce`.",
@@ -3988,6 +4730,72 @@
           }
         }
       },
+      "CreateLeagueRequest": {
+        "type": "object",
+        "description": "`POST /admin/leagues`: a new family.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "default": {
+            "type": "boolean",
+            "description": "Make this the default family."
+          },
+          "ends_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix seconds; absent: never."
+          },
+          "flag": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`LeagueFlag.Id` of the base; the variants get the set's own banners."
+          },
+          "hardcore": {
+            "type": "boolean",
+            "description": "Also create \"HC <name>\"."
+          },
+          "mechanics": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`CoreLeagues` ids."
+          },
+          "migrate_to": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Family characters move to when this one ends."
+          },
+          "name": {
+            "type": "string",
+            "description": "The base league's id and display name."
+          },
+          "permanent": {
+            "type": "boolean",
+            "description": "A permanent family (no end; a target for ended leagues)."
+          },
+          "ssf": {
+            "type": "boolean",
+            "description": "Also create the SSF variants (\"SSF <name>\", and \"HC SSF <name>\" with `hardcore`)."
+          },
+          "starts_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix seconds; absent: open now."
+          }
+        }
+      },
       "CreatedInstance": {
         "type": "object",
         "required": [
@@ -3998,6 +4806,75 @@
             "type": "integer",
             "format": "int32",
             "minimum": 0
+          }
+        }
+      },
+      "DeleteLeagueRequest": {
+        "type": "object",
+        "description": "`POST /admin/leagues/{id}/delete`.",
+        "required": [
+          "confirm"
+        ],
+        "properties": {
+          "confirm": {
+            "type": "string",
+            "description": "Must equal the league id in the path."
+          }
+        }
+      },
+      "DeleteLeagueResponse": {
+        "type": "object",
+        "required": [
+          "deleted"
+        ],
+        "properties": {
+          "deleted": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The ids deleted: the league, or its whole family for a base."
+          }
+        }
+      },
+      "EndLeagueRequest": {
+        "type": "object",
+        "description": "`POST /admin/leagues/{id}/end`.",
+        "required": [
+          "target"
+        ],
+        "properties": {
+          "target": {
+            "type": "string",
+            "description": "The family (a league id) the characters move to."
+          }
+        }
+      },
+      "EndLeagueResponse": {
+        "type": "object",
+        "required": [
+          "family",
+          "target",
+          "moved",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "family": {
+            "type": "string",
+            "description": "The base id of the ended family."
+          },
+          "moved": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LeagueMoveView"
+            }
+          },
+          "target": {
+            "type": "string"
           }
         }
       },
@@ -4062,6 +4939,40 @@
           "values": {
             "type": "object",
             "description": "The form values of that text (as `GET /admin/config` reports them), so the form can be\nfilled from any text; empty when the text does not parse."
+          }
+        }
+      },
+      "FlagArt": {
+        "type": "object",
+        "description": "Art of a `LeagueFlag` row as URLs (`null` when the row has none).",
+        "properties": {
+          "banner_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Login-screen banner."
+          },
+          "creation_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Character-creation banner icon."
+          },
+          "icon_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Small icon."
+          },
+          "logo_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "League logo."
           }
         }
       },
@@ -4132,6 +5043,66 @@
             "format": "int32",
             "description": "Forced topology (1-based); absent: the client's choice.",
             "minimum": 0
+          }
+        }
+      },
+      "LeagueFlagView": {
+        "type": "object",
+        "description": "A `LeagueFlag` row.",
+        "required": [
+          "row",
+          "id",
+          "hardcore",
+          "ssf",
+          "ruthless",
+          "art"
+        ],
+        "properties": {
+          "art": {
+            "$ref": "#/components/schemas/FlagArt"
+          },
+          "hardcore": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "row": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "ruthless": {
+            "type": "boolean"
+          },
+          "ssf": {
+            "type": "boolean"
+          }
+        }
+      },
+      "LeagueMoveView": {
+        "type": "object",
+        "description": "One character moved when a family ended.",
+        "required": [
+          "character_id",
+          "name",
+          "from",
+          "to"
+        ],
+        "properties": {
+          "character_id": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "from": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
           }
         }
       },
@@ -4329,6 +5300,28 @@
           "token": {
             "type": "string",
             "description": "64 hex characters: send as `Authorization: Bearer <token>`. Shown only once."
+          }
+        }
+      },
+      "MechanicView": {
+        "type": "object",
+        "description": "A league mechanic (`CoreLeagues` row).",
+        "required": [
+          "id",
+          "name",
+          "implemented"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "implemented": {
+            "type": "boolean",
+            "description": "Always false for now: leagues store mechanics, none is implemented."
+          },
+          "name": {
+            "type": "string",
+            "description": "The id split into words."
           }
         }
       },
@@ -4900,6 +5893,72 @@
           },
           "timezone": {
             "type": "string"
+          }
+        }
+      },
+      "PublicLeague": {
+        "type": "object",
+        "description": "A league in the public list.",
+        "required": [
+          "id",
+          "display_name",
+          "family",
+          "hardcore",
+          "ssf",
+          "permanent",
+          "is_default"
+        ],
+        "properties": {
+          "banner_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`/api/v1/art/...` URL of the banner; null without a flag or game data."
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "ends_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "family": {
+            "type": "string",
+            "description": "The base league's id."
+          },
+          "flag": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`LeagueFlag.Id` of the banner."
+          },
+          "hardcore": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "is_default": {
+            "type": "boolean"
+          },
+          "permanent": {
+            "type": "boolean"
+          },
+          "ssf": {
+            "type": "boolean"
+          },
+          "starts_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix seconds."
           }
         }
       },
@@ -5541,6 +6600,79 @@
             ],
             "format": "int32",
             "minimum": 0
+          }
+        }
+      },
+      "UpdateLeagueRequest": {
+        "type": "object",
+        "description": "`POST /admin/leagues/{id}`: absent fields stay, `null` clears the nullable ones.",
+        "properties": {
+          "default": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Family-wide."
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ends_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Family-wide, unix seconds; `null` clears."
+          },
+          "flag": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`LeagueFlag.Id`; `null` clears."
+          },
+          "mechanics": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Family-wide."
+          },
+          "migrate_to": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Family-wide; `null` clears."
+          },
+          "permanent": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Family-wide."
+          },
+          "starts_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Family-wide, unix seconds; `null` clears."
+          },
+          "state": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`active` or `hidden` (ending is `POST /admin/leagues/{id}/end`)."
           }
         }
       },

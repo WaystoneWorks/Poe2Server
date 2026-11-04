@@ -222,8 +222,42 @@ impl InstanceServer {
                 }
                 Err(e) => Outcome::err(e),
             },
+            "league" => self.league_command(actor, p),
             _ => return None,
         }))
+    }
+
+    /// `league list` and `league end <league> <target>` (admins; the web admin does the rest).
+    fn league_command(&self, actor: &str, p: &Parsed) -> Outcome {
+        let store = &*self.leagues;
+        match p.get("action").unwrap_or_default() {
+            "list" => match (store.leagues(), store.character_counts()) {
+                (Ok(rows), Ok(counts)) => {
+                    let rows: Vec<String> = rows
+                        .iter()
+                        .map(|l| format!("{} [{}] {} chars", l.id, l.state.as_str(), counts.get(&l.id).copied().unwrap_or(0)))
+                        .collect();
+                    Outcome::ok(format!("{} leagues: {}", rows.len(), rows.join("; ")))
+                }
+                (Err(e), _) | (_, Err(e)) => Outcome::err(format!("league list failed: {e}")),
+            },
+            "end" => {
+                let (Some(league), Some(target)) = (p.get("league"), p.get("target")) else {
+                    return Outcome::err("usage: league end <league> <target>");
+                };
+                let family = match store.league(league) {
+                    Ok(Some(l)) => l.family,
+                    Ok(None) => return Outcome::err(format!("no league {league:?}")),
+                    Err(e) => return Outcome::err(format!("league lookup failed: {e}")),
+                };
+                match poe_web_api::leagues::end_family(store, &family, target, actor) {
+                    Ok(Ok(moves)) => Outcome::ok(format!("ended {family}: {} characters moved to {target}", moves.len())),
+                    Ok(Err(refused)) => Outcome::err(refused.to_string()),
+                    Err(e) => Outcome::err(format!("league end failed: {e}")),
+                }
+            }
+            other => Outcome::err(format!("unknown league action {other:?}")),
+        }
     }
 
     fn execute(&self, ctx: &SessionCtx<'_>, player: &mut player::Player, p: &Parsed) -> anyhow::Result<Outcome> {

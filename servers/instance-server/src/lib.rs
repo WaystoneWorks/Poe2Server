@@ -69,6 +69,8 @@ pub struct InstanceServer {
     /// Stat ids -> network keys (built once from Stats.dat).
     pub stats: Arc<StatRegistry>,
     pub store: Arc<dyn Store>,
+    /// Leagues (the `league` command).
+    pub leagues: Arc<dyn poe_store::LeagueStore>,
     /// Account roles (admin commands) and the `account` command.
     pub accounts: Arc<dyn poe_accounts::AccountStore>,
     /// Seeds the client is known to generate (`dev.known_seeds`).

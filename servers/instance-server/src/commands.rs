@@ -97,6 +97,7 @@ pub const COMMANDS: &[Spec] = &[
     Spec { name: "mute", group: "admin", admin: true, args: &[arg("player", Kind::Player), opt("minutes", Kind::Minutes)], help: "Stops a player's chat (for good without minutes)." },
     Spec { name: "unmute", group: "admin", admin: true, args: &[arg("player", Kind::Player)], help: "Lets a muted player chat again." },
     Spec { name: "announce", group: "admin", admin: true, args: &[arg("message", Kind::Rest)], help: "A server message to every player." },
+    Spec { name: "league", group: "accounts", admin: true, args: &[arg("action", Kind::Choice(&["list", "end"])), opt("league", Kind::Text), opt("target", Kind::Text)], help: "Leagues: list, or end <league> <target> (moves the family's characters into the target family)." },
     Spec { name: "instances", group: "instances", admin: true, args: &[], help: "Lists the instances (id, area, seed, layout, players)." },
     Spec { name: "instance_new", group: "instances", admin: true, args: &LAYOUT, help: "Creates an instance without entering it." },
     Spec { name: "transfer", group: "instances", admin: true, args: &LAYOUT, help: "Creates an instance and moves you into it." },

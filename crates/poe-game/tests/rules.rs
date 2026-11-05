@@ -17,6 +17,10 @@ const ROLL: u32 = 0x8000_0040;
 const ATTACK: u32 = 0x8040_0040;
 
 fn world(grid: Arc<dyn GridSource>, cell: (i32, i32)) -> (World, EntityId) {
+    world_with(grid, cell, |_| {})
+}
+
+fn world_with(grid: Arc<dyn GridSource>, cell: (i32, i32), edit: impl FnOnce(&mut MovementConfig)) -> (World, EntityId) {
     let mut cfg = MovementConfig::new(
         SkillIds {
             move_skill: MOVE,
@@ -28,6 +32,7 @@ fn world(grid: Arc<dyn GridSource>, cell: (i32, i32)) -> (World, EntityId) {
     let (curves, offset_scale) = poe_game::motion_data::hub_motion_or_panic();
     cfg.curves = Some(curves);
     cfg.offset_scale = offset_scale;
+    edit(&mut cfg);
     let mut w = World::new(WorldConfig::new(cfg), Arc::new(ClientModel), grid);
     let p = w.spawn_player(cell);
     w.entity_mut(p).unwrap().movement.set_stance(false);
@@ -182,6 +187,65 @@ fn entity_target_skills_use_absolute_cells() {
     );
 }
 
+
+const INTERACT: u32 = 0x2000_c266;
+
+fn interact_world(cell: (i32, i32)) -> (World, EntityId) {
+    world_with(Arc::new(Open), cell, |c| {
+        c.interact_skill = INTERACT;
+        c.interact_range = 26;
+    })
+}
+
+fn click_object(w: &mut World, p: EntityId, at: (i32, i32)) {
+    let mut s = skill(INTERACT, at.0, at.1);
+    s.entity = Some(500);
+    s.target_flags = 8;
+    w.input(p, MoveInput::UseSkill(s));
+}
+
+/// An object in reach acts at once (official: clicks from up to 25.5 cells).
+#[test]
+fn a_click_on_an_object_in_reach_interacts_at_once() {
+    let (mut w, p) = interact_world((100, 100));
+    tick(&mut w);
+    click_object(&mut w, p, (110, 115));
+    let ev = tick(&mut w);
+    assert!(ev.iter().any(|e| matches!(e, MoveEvent::Interact { entity: 500, .. })), "{ev:?}");
+    assert_eq!(cell(&w, p), (100, 100));
+}
+
+/// A far object: walk under the click until about 26 cells away, then act (official: a click from
+/// 41.4 cells acted at 26.0).
+#[test]
+fn a_far_object_click_walks_into_reach_then_interacts() {
+    let (mut w, p) = interact_world((100, 100));
+    tick(&mut w);
+    click_object(&mut w, p, (160, 100));
+    let first = tick(&mut w);
+    assert!(first.iter().any(|e| matches!(e, MoveEvent::ActionStart { kind: ActionKind::Move, .. })), "{first:?}");
+    assert!(!first.iter().any(|e| matches!(e, MoveEvent::Interact { .. })), "{first:?}");
+    let mut done = None;
+    for frame in 0..200 {
+        if tick(&mut w).iter().any(|e| matches!(e, MoveEvent::Interact { entity: 500, .. })) {
+            done = Some(frame);
+            break;
+        }
+    }
+    assert!(done.is_some(), "never interacted, at {:?}", cell(&w, p));
+    let (x, y) = cell(&w, p);
+    let d = (((160 - x).pow(2) + (100 - y).pow(2)) as f64).sqrt();
+    assert!((20.0..=26.5).contains(&d), "acted {d:.1} cells away at ({x},{y})");
+}
+
+/// Without `interact_skill` set the click is an ordinary skill: no interaction.
+#[test]
+fn other_skills_never_interact() {
+    let (mut w, p) = world(Arc::new(Open), (100, 100));
+    tick(&mut w);
+    click_object(&mut w, p, (110, 115));
+    assert!(!tick(&mut w).iter().any(|e| matches!(e, MoveEvent::Interact { .. })));
+}
 
 /// The sprint end's clip values come from the game data (`base_sprint.atl`, `Character.act`).
 #[test]

@@ -35,6 +35,13 @@ pub fn object_type_key(metadata_path: &str) -> u32 {
 mod tests {
     use super::*;
 
+    /// The fog gate's key in the capture (`AddObject` `0x41012847`, docs/re/world-travel.md).
+    #[test]
+    fn fog_gate_type_key_matches_the_capture() {
+        assert_eq!(object_type_key("Metadata/MiscellaneousObjects/AreaTransition_Animate"), 0x4101_2847);
+        assert_eq!(object_type_key("Metadata/MiscellaneousObjects/Waypoint"), 0x20e8_d38a);
+    }
+
     #[test]
     fn ranger_type_key() {
         assert_eq!(

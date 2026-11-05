@@ -477,7 +477,10 @@ impl InstanceServer {
                 let m = WarpRequest::decode(r)?;
                 let cell = ctx.travel.state.lock().unwrap().warps.iter().find(|(i, _)| *i == m.index).map(|(_, c)| *c);
                 match cell {
-                    Some(cell) => player.teleport(cell),
+                    Some(cell) => {
+                        info!(index = m.index, ?cell, "warp request");
+                        player.teleport(cell)
+                    }
                     None => warn!(index = m.index, "warp request: no such button"),
                 }
                 Ok(Some(Handled::Continue))

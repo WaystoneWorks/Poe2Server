@@ -8,7 +8,7 @@
 //! - the character's level.
 //!
 //! The derived totals come from the calculator (`poe-stats`, [`derive`]); items, passives and
-//! buffs reach it with the stats pipeline of P9.
+//! buffs reach it with the stats pipeline of P10.
 
 use std::collections::{BTreeMap, HashMap};
 

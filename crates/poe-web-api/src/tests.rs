@@ -933,6 +933,13 @@ async fn admin_actions_run_through_the_command_registry() {
             .0,
         StatusCode::OK
     );
+    for body in [None, Some(json!({"what": "act", "value": "2"})), Some(json!({"what": "waypoint", "value": "G1_4", "lock": true}))] {
+        assert_eq!(f.call("POST", "/api/v1/admin/players/Bob/unlock", t, body).await.0, StatusCode::OK);
+    }
+    assert_eq!(
+        f.call("POST", "/api/v1/admin/players/Bob/unlock", t, Some(json!({"what": "act 2"}))).await.0,
+        StatusCode::BAD_REQUEST
+    );
     assert_eq!(
         f.call("POST", "/api/v1/admin/players/B%20ob/kick", t, None)
             .await
@@ -1057,6 +1064,9 @@ async fn admin_actions_run_through_the_command_registry() {
             "root: mute Bob",
             "root: mute Bob 15",
             "root: unmute Bob",
+            "root: unlock Bob all",
+            "root: unlock Bob act 2",
+            "root: lock Bob waypoint G1_4",
             "root: announce restart in 5 minutes",
             "root: close 17",
             "root: close 999",
@@ -1172,6 +1182,7 @@ async fn openapi_lists_every_endpoint() {
         "/api/v1/admin/instances/{id}/close",
         "/api/v1/admin/players/{name}/kick",
         "/api/v1/admin/players/{name}/mute",
+        "/api/v1/admin/players/{name}/unlock",
         "/api/v1/admin/players/{name}/transfer",
         "/api/v1/admin/announce",
         "/api/v1/admin/accounts",

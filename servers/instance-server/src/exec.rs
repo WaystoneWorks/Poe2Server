@@ -404,7 +404,7 @@ impl InstanceServer {
             }
             ["tp"] => return self.teleport_command(ctx, player, p),
             ["waypoint", "unlock"] => {
-                let n = self.unlock_command(ctx.ticket.character.id, true, "all", None)?;
+                let n = self.unlock_command(ctx.ticket.character.id, true, p.get("what").unwrap_or("all"), p.get("value"))?;
                 Outcome::ok(format!("{n} waypoints unlocked"))
             }
             ["checkpoint", "unlock"] => {

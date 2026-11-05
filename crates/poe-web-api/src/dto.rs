@@ -338,6 +338,18 @@ pub struct MuteRequest {
     pub minutes: Option<u32>,
 }
 
+/// `POST /admin/players/{name}/unlock`: the `unlock` command's choices.
+#[derive(Debug, Default, Deserialize, ToSchema)]
+pub struct UnlockRequest {
+    /// `all` (default, every act and interlude), `act` (with `value` the `WorldAreas.Act`, the
+    /// interludes are 6) or `waypoint` (with `value` an area id).
+    pub what: Option<String>,
+    pub value: Option<String>,
+    /// Locks instead.
+    #[serde(default)]
+    pub lock: bool,
+}
+
 /// `POST /admin/announce`.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct AnnounceRequest {

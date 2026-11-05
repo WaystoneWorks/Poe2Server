@@ -2585,6 +2585,84 @@
         ]
       }
     },
+    "/api/v1/admin/players/{name}/unlock": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Unlocks (or locks) waypoints and act maps of an online character: the `unlock` command.",
+        "operationId": "unlock",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "character name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "optional",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UnlockRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/admin/players/{name}/unmute": {
       "post": {
         "tags": [
@@ -6714,6 +6792,29 @@
             ],
             "format": "int32",
             "minimum": 0
+          }
+        }
+      },
+      "UnlockRequest": {
+        "type": "object",
+        "description": "`POST /admin/players/{name}/unlock`: the `unlock` command's choices.",
+        "properties": {
+          "lock": {
+            "type": "boolean",
+            "description": "Locks instead."
+          },
+          "value": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "what": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`all` (default, every act and interlude), `act` (with `value` the `WorldAreas.Act`, the\ninterludes are 6) or `waypoint` (with `value` an area id)."
           }
         }
       },

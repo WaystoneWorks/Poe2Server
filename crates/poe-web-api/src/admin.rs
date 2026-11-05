@@ -188,6 +188,34 @@ pub async fn mute(
     done(s.admin.run_command(&who.account.username, &line))
 }
 
+/// Unlocks (or locks) waypoints and act maps of an online character: the `unlock` command.
+#[utoipa::path(post, path = "/api/v1/admin/players/{name}/unlock", tag = "admin", security(("bearer" = [])),
+    params(("name" = String, Path, description = "character name")), request_body(content = UnlockRequest, description = "optional"),
+    responses((status = 200, body = CommandResult), (status = 400, body = crate::ErrorBody), (status = 401, body = crate::ErrorBody), (status = 403, body = crate::ErrorBody)))]
+pub async fn unlock(
+    State(s): State<WebState>,
+    AdminAuth(who): AdminAuth,
+    Path(name): Path<String>,
+    body: axum::body::Bytes,
+) -> Result<Json<CommandResult>, ApiError> {
+    word("player name", &name)?;
+    let req: UnlockRequest = if body.iter().all(u8::is_ascii_whitespace) {
+        UnlockRequest::default()
+    } else {
+        serde_json::from_slice(&body)
+            .map_err(|e| ApiError::bad_request(format!("bad JSON body: {e}")))?
+    };
+    let what = req.what.as_deref().unwrap_or("all");
+    word("what", what)?;
+    let mut line = format!("{} {name} {what}", if req.lock { "lock" } else { "unlock" });
+    if let Some(v) = &req.value {
+        word("value", v)?;
+        line.push(' ');
+        line.push_str(v);
+    }
+    done(s.admin.run_command(&who.account.username, &line))
+}
+
 /// Lets a muted player chat again.
 #[utoipa::path(post, path = "/api/v1/admin/players/{name}/unmute", tag = "admin", security(("bearer" = [])),
     params(("name" = String, Path, description = "character name")),

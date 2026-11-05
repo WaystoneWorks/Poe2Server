@@ -449,10 +449,10 @@ pub const COMMANDS: &[Spec] = &[
     Spec {
         path: &["waypoint", "unlock"],
         category: Category::World,
-        args: &[opt("scope", Kind::Choice(&["all"]))],
-        summary: "Unlocks every waypoint of the acts and interludes for you.",
-        help: "The same as unlock with your character's name.",
-        examples: &["waypoint unlock all"],
+        args: &[opt("what", Kind::Choice(&["acts", "waypoints", "all", "act", "waypoint"])), opt("value", Kind::Text)],
+        summary: "Unlocks waypoints and act maps for you.",
+        help: "The same as unlock with your character's name: all (default), act <n>, waypoint <area>.",
+        examples: &["waypoint unlock all", "waypoint unlock act 2", "waypoint unlock waypoint G1_4"],
         overlay: WORLD_PAGE,
         ..BASE
     },

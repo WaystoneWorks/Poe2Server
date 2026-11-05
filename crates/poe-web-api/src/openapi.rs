@@ -40,7 +40,7 @@ impl Modify for BearerAuth {
         public::server, public::register, public::login, public::logout, public::password,
         public::game_token, public::me, public::web_token, public::redeem_web_token, setup::status, setup::create,
         admin::sessions, admin::instances, admin::create_instance, admin::close_instance,
-        admin::kick, admin::mute, admin::unmute, admin::transfer, admin::announce,
+        admin::kick, admin::mute, admin::unmute, admin::unlock, admin::transfer, admin::announce,
         admin::server_stop, admin::server_restart, admin::server_cancel, admin::server_shutdown,
         admin::accounts, admin::create_account, admin::disable_account, admin::enable_account, admin::set_role,
         admin::characters, admin::character, admin::logs_ws_ticket, admin::logs_ws,
@@ -56,7 +56,7 @@ impl Modify for BearerAuth {
     components(schemas(
         error::ErrorBody, dto::ServerInfo, dto::ModInfo, dto::ModSource, dto::ModsAdminInfo, dto::ModStatusInfo, dto::AccountInfo, dto::RegisterRequest, dto::SetupStatus, dto::CreateAccountRequest, dto::LoginRequest,
         dto::LoginResponse, dto::WsTicketResponse, dto::WebTokenResponse, dto::WebTokenRedeemRequest, dto::PasswordRequest, dto::OnlinePlayerInfo, dto::InstanceView,
-        dto::NewInstanceRequest, dto::CreatedInstance, dto::TransferRequest, dto::MuteRequest,
+        dto::NewInstanceRequest, dto::CreatedInstance, dto::TransferRequest, dto::MuteRequest, dto::UnlockRequest,
         dto::AnnounceRequest, dto::RoleRequest, dto::CommandResult, dto::LocationInfo,
         dto::ShutdownRequest, dto::ShutdownStatus, lifecycle::PendingShutdown, lifecycle::ShutdownKind,
         dto::CharacterInfo, logs::LogEvent, logs::LogFilter, logs::LogLevel,

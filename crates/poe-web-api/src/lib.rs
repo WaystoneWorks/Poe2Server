@@ -119,6 +119,7 @@ pub fn router(state: WebState) -> Router {
         .route("/admin/players/{name}/kick", post(admin::kick))
         .route("/admin/players/{name}/mute", post(admin::mute))
         .route("/admin/players/{name}/unmute", post(admin::unmute))
+        .route("/admin/players/{name}/unlock", post(admin::unlock))
         .route("/admin/players/{name}/transfer", post(admin::transfer))
         .route("/admin/bans", get(bans::list).post(bans::create))
         .route("/admin/bans/{id}/lift", post(bans::lift))

@@ -14,6 +14,8 @@ use crate::{
 
 /// The session a command runs in.
 pub struct SessionCtx<'a> {
+    /// The session's travel objects and unlock state.
+    pub travel: &'a crate::travel::Travel,
     pub ticket: &'a Ticket,
     pub account: String,
     pub instance: Option<u32>,
@@ -220,6 +222,26 @@ impl InstanceServer {
                 let n = self.live.broadcast(ChatOut { sender: SERVER_NAME.into(), text }, |_| true);
                 Outcome::ok(format!("sent to {n} players"))
             }
+            ["unlock"] | ["lock"] => {
+                let unlock = p.spec.path == ["unlock"];
+                let name = p.get("character").unwrap_or_default();
+                let what = p.get("what").unwrap_or("all");
+                let found = self.live.online().into_iter().find(|o| o.character.eq_ignore_ascii_case(name));
+                let Some(online) = found else {
+                    return Some(Ok(Outcome::err(format!("{name} is not online"))));
+                };
+                let id = match self.store.characters(online.account_id) {
+                    Ok(list) => list.into_iter().find(|c| c.name.eq_ignore_ascii_case(name)).map(|c| c.id),
+                    Err(e) => return Some(Err(e.into())),
+                };
+                let Some(id) = id else {
+                    return Some(Ok(Outcome::err(format!("{name} is not in the database"))));
+                };
+                match self.unlock_command(id, unlock, what, p.get("value")) {
+                    Ok(n) => Outcome::ok(format!("{} {n} waypoints for {name}", if unlock { "unlocked" } else { "locked" })),
+                    Err(e) => Outcome::err(e.to_string()),
+                }
+            }
             ["area", "list"] => {
                 let (query, page) = commands::split_page(p.get("search"));
                 match self.area_lines(query) {
@@ -381,6 +403,20 @@ impl InstanceServer {
                 Outcome { leave: true, ..Outcome::ok(format!("moving to fresh instance #{id}")) }
             }
             ["tp"] => return self.teleport_command(ctx, player, p),
+            ["waypoint", "unlock"] => {
+                let n = self.unlock_command(ctx.ticket.character.id, true, "all", None)?;
+                Outcome::ok(format!("{n} waypoints unlocked"))
+            }
+            ["checkpoint", "unlock"] => {
+                let n = self.unlock_instance_checkpoints(ctx)?;
+                Outcome::ok(format!("{n} checkpoints of this instance unlocked"))
+            }
+            ["travel", "status"] => {
+                let id = ctx.ticket.character.id;
+                let (waypoints, checkpoints) = (self.store.waypoints(id)?, self.store.checkpoints(id, &ctx.ticket.area, ctx.seed)?);
+                let respawn = self.store.respawn(id)?.map_or("none".to_string(), |r| format!("{} {} {} {}", r.area, r.seed, r.x, r.y));
+                Outcome::ok(format!("waypoints {} checkpoints here {} of {} objects, respawn {respawn}", waypoints.len(), checkpoints.len(), ctx.travel.objects.len()))
+            }
             ["summon"] => return self.summon(ctx, player, p),
             ["time", "scale"] => return self.time_scale(ctx, player, p),
             ["speed"] => {
@@ -511,6 +547,7 @@ impl InstanceServer {
             level: found.level,
             intro_done: found.intro_done,
             location: None,
+            arrive: None,
         };
         self.hand_off_at(account_id, character, id, location)?;
         // Ends the player's instance session; the client falls back to character selection on

@@ -33,6 +33,7 @@ mod spawn;
 pub mod sync;
 mod terrain_check;
 pub mod terrain_store;
+mod travel;
 
 #[cfg(test)]
 mod actor_tests;
@@ -328,7 +329,7 @@ impl InstanceServer {
         // With `generated_grid` the server's own generation gives the grid and the spawn layout
         // and is the terrain check: tile and doodad hash must equal the client's, or the player
         // is kicked (`terrain_check`). Without it, `generate` only logs a tile hash comparison.
-        let generated = match self.config.terrain.generated_grid {
+        let mut generated = match self.config.terrain.generated_grid {
             true => match self.generated_terrain(&ticket.area, seed, instance).await {
                 Ok(g) => Some(g),
                 Err(e) => {
@@ -361,6 +362,7 @@ impl InstanceServer {
                 kick = Some(m);
             }
         }
+        let objects = Arc::new(generated.as_mut().map_or(Vec::new(), |g| std::mem::take(&mut g.objects)));
         let generated = generated.map(|g| (g.grid, g.layout));
         // Where the character left this layout, if it did; else the area's start.
         let saved = ticket
@@ -370,7 +372,9 @@ impl InstanceServer {
             .map(|(_, x, y)| (x, y));
         // The client's tile hash authorises its terrain upload for that hash only.
         self.terrain.reported(side.id, hashes.hash_a);
-        let spawn = match (spawn_override().or(saved), &generated) {
+        // Through a gate or waypoint: at the matching object.
+        let arrival = ticket.character.arrive.and_then(|a| travel::arrival_cell(&objects, a));
+        let spawn = match (spawn_override().or(arrival).or(saved), &generated) {
             (Some(p), _) => Some(p),
             (None, Some((grid, layout))) => spawn::from_layout(layout, Some(grid), &self.config.spawn, &ticket.area, "generated"),
             (None, None) => {
@@ -427,7 +431,9 @@ impl InstanceServer {
         // New characters wash up on their first visit to an intro area.
         let washed_up =
             !ticket.character.intro_done && self.config.spawn.intro_areas.contains(&ticket.area);
-        let appearance = self.appearance(&ticket.character, &class, cell, &setup.skills, washed_up)?;
+        let unlocked = self.store.waypoints(ticket.character.id)?;
+        let quest_flags = travel::quest_flags(&self.data, &unlocked.iter().cloned().collect())?;
+        let appearance = self.appearance(&ticket.character, &class, cell, &setup.skills, washed_up, quest_flags)?;
         let (frames_tx, mut frames) = tokio::sync::mpsc::unbounded_channel();
         let grid: Option<Arc<dyn poe_game::grid::GridSource>> = grid.map(|g| Arc::new(g) as _);
         let request = actor::JoinRequest {
@@ -441,6 +447,7 @@ impl InstanceServer {
             appearance,
             want_debug: self.config.dev.drift_check || self.config.dev.debug_link,
             out: frames_tx,
+            objects,
         };
         let (handle, joined) = self
             .actors
@@ -451,7 +458,12 @@ impl InstanceServer {
         if washed_up {
             self.store.set_intro_done(ticket.character.id)?;
         }
-        self.enter_world(&mut conn, &ticket, &class, washed_up, &joined, &player).await?;
+        let touched = self.store.checkpoints(ticket.character.id, &ticket.area, seed)?;
+        let travel = travel::Travel::new(joined.objects.clone(), unlocked, touched);
+        let table = &self.protocol.instance;
+        let mut entry = table.encode(&poe_proto::instance::WaypointMask { unk: 0, entity: 0, mask: travel::waypoint_mask(&self.data, &travel.waypoints())? })?;
+        entry.extend(table.encode(&travel.warp_list(&ticket.area))?);
+        self.enter_world(&mut conn, &ticket, &class, washed_up, &joined, &player, &entry).await?;
         if let Some(m) = kick {
             // Neither remembered as a previous place nor saved as the character's location.
             let result = self.kick_for_terrain(&mut conn, &ticket, side.id, m, true).await;
@@ -465,6 +477,7 @@ impl InstanceServer {
         }
 
         let ctx = exec::SessionCtx {
+            travel: &travel,
             ticket: &ticket,
             account: account.clone(),
             instance,
@@ -651,6 +664,16 @@ impl InstanceServer {
                     ticks += 1;
                     player.apply(frame.own.clone());
                     self.live.set_cell(&ctx.ticket.character.name, player.cell());
+                    let mut world = self.touch_objects(ctx, player.cell())?;
+                    if ticks.is_multiple_of(30) {
+                        world.extend(self.refresh_unlocks(ctx, player.entity_id)?);
+                    }
+                    let mut handed_off = false;
+                    for &(entity, flags) in &frame.interactions {
+                        let (bytes, leave) = self.interact(ctx, player, entity, flags)?;
+                        world.extend(bytes);
+                        handed_off |= leave;
+                    }
                     if let Some(t) = self.reports.trace() {
                         t.line(client_port, "tick", format_args!("{ticks}"));
                         if ticks.is_multiple_of(30) {
@@ -684,8 +707,8 @@ impl InstanceServer {
                             );
                         }
                     }
-                    let mut leave = false;
-                    let mut out = Vec::new();
+                    let mut leave = handed_off;
+                    let mut out = world;
                     if self.config.dev.debug_link {
                         // Overlay commands: the same registry as chat commands.
                         for command in self.reports.take_commands(ctx.side) {
@@ -768,10 +791,21 @@ impl InstanceServer {
             // entity the server sends (`0x141d0ce70`). This server sends none of the `server_only`
             // static objects yet, so the grid it must agree with is the client side one; a
             // `Side::Server` grid would block cells (healing wells, benches) the client walks through.
-            let grid = poe_world::collision::build(&g.map, data.files(), g.doodads.iter().chain(&g.tile_objects), poe_world::doodads::Side::Client).map_err(|e| e.to_string())?;
+            let objects = poe_world::objects::travel_objects(&data, &area, &g).map_err(|e| e.to_string())?;
+            // The objects this server sends with a hull change the client's grid: its wells.
+            let wells: std::collections::BTreeSet<(i32, i32)> = objects.iter().filter(|o| o.class == poe_world::objects::Class::Well).map(|o| (o.x, o.y)).collect();
+            let sent: Vec<poe_world::doodads::Doodad> = g
+                .doodads
+                .iter()
+                .chain(&g.tile_objects)
+                .filter(|d| d.solid && d.exists(poe_world::doodads::Side::Server) && !d.exists(poe_world::doodads::Side::Client) && wells.contains(&(d.x, d.y)))
+                .map(|d| poe_world::doodads::Doodad { side: 0, ..d.clone() })
+                .collect();
+            let grid = poe_world::collision::build(&g.map, data.files(), g.doodads.iter().chain(&g.tile_objects).chain(&sent), poe_world::doodads::Side::Client).map_err(|e| e.to_string())?;
             let grid = spawn::Grid::parse(&grid.pwg1()).ok_or_else(|| "generated grid is not PWG1".to_string())?;
             let layout = spawn::Layout::parse(&g.map.layout_tsv()).ok_or_else(|| "generated layout does not parse".to_string())?;
-            Ok::<_, String>(GeneratedTerrain { grid, layout, hashes })
+            let objects = travel::prepare(objects, &grid);
+            Ok::<_, String>(GeneratedTerrain { grid, layout, hashes, objects })
         })
         .await
         .map_err(|e| format!("generation task: {e}"))?;
@@ -1209,7 +1243,7 @@ pub(crate) async fn is_upload(stream: &TcpStream) -> bool {
 }
 
 /// Outcome of handling one client message.
-enum Handled {
+pub(crate) enum Handled {
     Continue,
     /// Not a message the server decodes yet: the rest of the batch is skipped.
     Unknown,
@@ -1241,6 +1275,9 @@ impl InstanceServer {
             self.trace(port, &format!("in-{name}"), format_args!("{input:?}"));
             player.input(input);
             return Ok(Handled::Continue);
+        }
+        if let Some(handled) = self.travel_message(conn, ctx, player, name, r).await? {
+            return Ok(handled);
         }
         match name {
             // Frame report: answer with a ping reply carrying idle HNC bytes.
@@ -1517,6 +1554,10 @@ impl InstanceServer {
             sprint_bonus,
         );
         movement.sprint_clearance_level = sprint_clearance;
+        if let Some(key) = poe_data::views::action_type_key(&self.data, "Interaction")? {
+            movement.interact_skill = player::BASIC_ACTION_SKILL | u32::from(key);
+        }
+        movement.interact_range = self.config.travel.interact_range;
         let template_stat = |key: &str| {
             template.component("Stats").iter().find(|(k, _)| k == key).and_then(|(_, v)| v.parse::<f32>().ok())
         };
@@ -1552,6 +1593,7 @@ impl InstanceServer {
         washed_up: bool,
         joined: &actor::Joined,
         player: &player::Player,
+        travel_state: &[u8],
     ) -> anyhow::Result<()> {
         let table = &self.protocol.instance;
         let character = &ticket.character;
@@ -1615,6 +1657,8 @@ impl InstanceServer {
             out.extend(npc_experiment(table, &path, spawn)?);
         }
         out.extend(table.encode(&SimulationTick)?);
+        // Official: the waypoint mask at every entry, before InitialState.
+        out.extend_from_slice(travel_state);
         conn.send(&out).await?;
 
         // InitialState must follow 0x24 and the player entity (its handler uses the entity).
@@ -1754,6 +1798,7 @@ struct GeneratedTerrain {
     grid: spawn::Grid,
     layout: spawn::Layout,
     hashes: terrain_check::Hashes,
+    objects: Vec<travel::PreparedObject>,
 }
 
 /// See [`InstanceServer::layout_request`].

@@ -264,6 +264,7 @@ impl Codec {
                     cell.0, cell.1, target.0, target.1, skill, action
                 ),
             )?),
+            MoveEvent::Interact { .. } => {}
             MoveEvent::ActionEvent => {
                 let table = &self.protocol.instance;
                 if table.id(ActionEvent::DIRECTION, ActionEvent::NAME).is_ok() {

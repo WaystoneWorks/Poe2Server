@@ -277,6 +277,7 @@ const LAYOUT: [Arg; 4] = [
 
 const HELP_PAGE: Option<&str> = Some("Debug>Help");
 const WORLD_PAGE: Option<&str> = Some("Debug>World");
+const UNLOCK_ARGS: [Arg; 3] = [arg("character", Kind::Player), opt("what", Kind::Choice(&["acts", "waypoints", "all", "act", "waypoint"])), opt("value", Kind::Text)];
 const PLAYERS_PAGE: Option<&str> = Some("Debug>Players");
 const CHARACTER_PAGE: Option<&str> = Some("Debug>Character");
 
@@ -422,6 +423,55 @@ pub const COMMANDS: &[Spec] = &[
         summary: "Creates an instance without entering it.",
         help: "Seed: a number or random. Topology (1-based in the area's list) and orientation (0-7): a number or natural, the client's own choice.",
         examples: &["instance new G1_1", "instance new G1_1 1001 2 3"],
+        overlay: WORLD_PAGE,
+        ..BASE
+    },
+    Spec {
+        path: &["unlock"],
+        category: Category::World,
+        args: &UNLOCK_ARGS,
+        summary: "Unlocks act maps and waypoints for an online character.",
+        help: "Without a choice, or with acts, waypoints or all: every waypoint of the acts and interludes. act <n>: one act of WorldAreas.Act (the interludes are act 6). waypoint <area>: one area. The world map follows at once.",
+        examples: &["unlock Ann", "unlock Ann all", "unlock Ann act 2", "unlock Ann waypoint G1_2"],
+        overlay: WORLD_PAGE,
+        ..BASE
+    },
+    Spec {
+        path: &["lock"],
+        category: Category::World,
+        args: &UNLOCK_ARGS,
+        summary: "Locks act maps and waypoints of an online character again.",
+        help: "The same choices as unlock.",
+        examples: &["lock Ann", "lock Ann act 2", "lock Ann waypoint G1_2"],
+        overlay: WORLD_PAGE,
+        ..BASE
+    },
+    Spec {
+        path: &["waypoint", "unlock"],
+        category: Category::World,
+        args: &[opt("scope", Kind::Choice(&["all"]))],
+        summary: "Unlocks every waypoint of the acts and interludes for you.",
+        help: "The same as unlock with your character's name.",
+        examples: &["waypoint unlock all"],
+        overlay: WORLD_PAGE,
+        ..BASE
+    },
+    Spec {
+        path: &["checkpoint", "unlock"],
+        category: Category::World,
+        args: &[opt("scope", Kind::Choice(&["all"]))],
+        summary: "Unlocks every checkpoint of the instance you are in.",
+        help: "The area map then offers travel to each of them.",
+        examples: &["checkpoint unlock all"],
+        overlay: WORLD_PAGE,
+        ..BASE
+    },
+    Spec {
+        path: &["travel", "status"],
+        category: Category::World,
+        summary: "Your unlocked waypoints, this layout's checkpoints and your respawn point.",
+        help: "Also lists how many travel objects this instance has.",
+        examples: &["travel status"],
         overlay: WORLD_PAGE,
         ..BASE
     },

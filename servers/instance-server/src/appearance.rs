@@ -268,6 +268,7 @@ impl InstanceServer {
         cell: (i32, i32),
         skills: &[OwnedSkill],
         washed_up: bool,
+        quest_flags: Vec<(u8, u64)>,
     ) -> anyhow::Result<Appearance> {
         let template = ObjectTemplate::load(&self.data, &class.metadata_id)?;
         let stats = poe_game::stats::character_defaults(&template, class, character.level);
@@ -303,6 +304,7 @@ impl InstanceServer {
                 name: character.name.clone(),
                 class: class.integer_id as u8,
                 washed_up,
+                quest_flags: quest_flags.clone(),
                 ..Default::default()
             }),
             Component::Inventories,

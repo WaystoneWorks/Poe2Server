@@ -212,6 +212,7 @@ pub(crate) fn join_request(
     });
     (
         JoinRequest {
+            objects: Default::default(),
             session,
             name: name.to_owned(),
             account: format!("acc-{name}"),

@@ -1046,6 +1046,11 @@ impl ClientSim {
         }
     }
 
+    /// An interaction's walk reached the object: the Move slot ends and the walk stops.
+    pub fn end_interaction_walk(&mut self, t: &dyn Walkable) {
+        self.end_move(true, t);
+    }
+
     /// `Actor_EndMoveAction` `0x141e45da0`.
     fn end_move(&mut self, stop: bool, t: &dyn Walkable) {
         self.mv = None;

@@ -303,6 +303,8 @@ pub struct Locomotion {
     aim_combat: bool,
     teleport: Option<Cell>,
     /// A roll asked for while the previous roll's action still runs: it starts when that ends.
+    /// The object an interaction walks to: (entity, its cell, the request's flags).
+    interact_walk: Option<(u32, Cell, u16)>,
     queued_roll: Option<(UseSkill, Cell)>,
     /// Events that follow this frame's `MoveAck`.
     deferred: Vec<(Drain, MoveEvent)>,
@@ -364,6 +366,7 @@ impl Locomotion {
         sim.sprint_turn_rate = config.sprint_turn_rate;
         sim.set_speed_stats(&config.speed_stats);
         Self {
+            interact_walk: None,
             sim,
             was_coasting: false,
             state: MoveState::Idle,
@@ -555,6 +558,7 @@ impl Locomotion {
         if matches!(self.state, MoveState::Walking(Walk::Target { .. })) && !self.sim.has_move() {
             self.state = MoveState::Idle;
         }
+        self.step_interact_walk(ctx, &mut out);
         self.apply_up_to(Drain::at(1, 0), &mut out, ctx);
         self.sim.pathfinding_tick(ctx.dt, ctx.terrain);
         // The timeline: the model's clock tells what happens in this Animated tick.
@@ -916,8 +920,69 @@ impl Locomotion {
         }
     }
 
+    /// A click on an object in reach acts now; from farther the player walks into reach under
+    /// the interaction's own action (official: `StartAction` and the ack at the click, the
+    /// `ActionEvent` on arrival, no `0x64`). Rolling or sprinting: acked like any other action.
+    fn start_interaction(&mut self, req: UseSkill, entity: u32, target: Cell, ctx: &mut StepCtx, out: &mut Out) {
+        let cell = self.sim.grid();
+        let (dx, dy) = (i64::from(target.0 - cell.0), i64::from(target.1 - cell.1));
+        let range = i64::from(ctx.config.interact_range);
+        let flags = req.flags;
+        let free = matches!(self.state, MoveState::Idle | MoveState::Walking(_));
+        if dx * dx + dy * dy <= range * range || !free {
+            self.interact_walk = None;
+            self.start_other(req, target, ctx, out);
+            out.push(MoveEvent::Interact { entity, flags });
+            return;
+        }
+        self.state = MoveState::Walking(Walk::Target { goal: target });
+        self.facing = (target.0 - cell.0, target.1 - cell.1);
+        self.sprint_end = None;
+        self.bonk = false;
+        self.move_start_frame = Some(ctx.frame);
+        self.interact_walk = Some((entity, target, flags));
+        out.push(MoveEvent::ActionStart {
+            kind: ActionKind::Move,
+            skill: req.skill,
+            flags: req.flags | ACTION_INPUT_FLAG,
+            action: Self::alloc_action(ctx),
+            cell,
+            target,
+            entity: req.entity,
+            unk: req.unk,
+        });
+        out.push(Self::skill_ack(&req, target));
+    }
+
+    /// Ends an interaction's walk in reach of the object; another input took over: forgets it.
+    fn step_interact_walk(&mut self, ctx: &mut StepCtx, out: &mut Out) {
+        let Some((entity, target, flags)) = self.interact_walk else {
+            return;
+        };
+        if !matches!(self.state, MoveState::Walking(Walk::Target { .. })) {
+            self.interact_walk = None;
+            return;
+        }
+        let cell = self.sim.grid();
+        let (dx, dy) = (i64::from(target.0 - cell.0), i64::from(target.1 - cell.1));
+        let range = i64::from(ctx.config.interact_range);
+        if dx * dx + dy * dy <= range * range {
+            self.interact_walk = None;
+            self.sim.end_interaction_walk(ctx.terrain);
+            self.state = MoveState::Idle;
+            out.push(MoveEvent::ActionEvent);
+            out.push(MoveEvent::Interact { entity, flags });
+        }
+    }
+
     fn on_use_skill(&mut self, req: UseSkill, ctx: &mut StepCtx, out: &mut Out) {
         let target = self.target_of(&req);
+        if req.skill == ctx.config.interact_skill
+            && let Some(entity) = req.entity
+        {
+            self.start_interaction(req, entity, target, ctx, out);
+            return;
+        }
         let busy = matches!(self.state, MoveState::Rolling(_) | MoveState::Sprinting(_));
         if ctx.config.skills.is_roll(req.skill) {
             match self.state {

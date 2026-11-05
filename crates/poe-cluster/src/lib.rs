@@ -39,6 +39,17 @@ pub struct TicketCharacter {
     pub intro_done: bool,
     /// Where the character left the game in the ticket's area: (terrain seed, grid x, grid y).
     pub location: Option<(u32, i32, i32)>,
+    /// How the character arrives by a gate or waypoint (`None`: by its saved location or start).
+    pub arrive: Option<Arrive>,
+}
+
+/// The place in the ticket's area the character arrives at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arrive {
+    /// At the gate leading back to the area it came from.
+    Gate { from_hash: u16, index: u8 },
+    /// On the area's waypoint.
+    Waypoint,
 }
 
 /// A pending hand-off to an instance server.
@@ -182,6 +193,7 @@ mod tests {
         let reg = MemoryTickets::new(Duration::from_secs(60));
         let character = TicketCharacter {
             location: None,
+            arrive: None,
             id: 2,
             name: "test".into(),
             league: "Standard".into(),

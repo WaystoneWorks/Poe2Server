@@ -2,7 +2,7 @@ use std::{path::Path, sync::Mutex};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::{Account, Character, Location, NewCharacter, Result, Store, StoreError};
+use crate::{Account, Character, Location, NewCharacter, Respawn, Result, Store, StoreError};
 
 /// Ordered schema migrations; `user_version` records how many were applied.
 const MIGRATIONS: &[&str] = &[
@@ -16,6 +16,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0008_scheduled_tasks.sql"),
     include_str!("../migrations/0009_leagues.sql"),
     include_str!("../migrations/0010_league_migration.sql"),
+    include_str!("../migrations/0011_world_travel.sql"),
 ];
 
 pub struct SqliteStore {
@@ -161,6 +162,67 @@ impl Store for SqliteStore {
         conn.execute(
             "UPDATE characters SET intro_done = 1 WHERE id = ?1",
             params![character_id],
+        )?;
+        Ok(())
+    }
+
+    fn waypoints(&self, character_id: u32) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT area FROM character_waypoints WHERE character_id = ?1 ORDER BY area")?;
+        let rows = stmt.query_map(params![character_id], |r| r.get(0))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    fn unlock_waypoints(&self, character_id: u32, areas: &[String]) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        for area in areas {
+            conn.execute("INSERT OR IGNORE INTO character_waypoints (character_id, area) VALUES (?1, ?2)", params![character_id, area])?;
+        }
+        Ok(())
+    }
+
+    fn lock_waypoints(&self, character_id: u32, areas: Option<&[String]>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        match areas {
+            None => {
+                conn.execute("DELETE FROM character_waypoints WHERE character_id = ?1", params![character_id])?;
+            }
+            Some(areas) => {
+                for area in areas {
+                    conn.execute("DELETE FROM character_waypoints WHERE character_id = ?1 AND area = ?2", params![character_id, area])?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn checkpoints(&self, character_id: u32, area: &str, seed: u32) -> Result<Vec<(i32, i32)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT x, y FROM character_checkpoints WHERE character_id = ?1 AND area = ?2 AND seed = ?3 ORDER BY x, y")?;
+        let rows = stmt.query_map(params![character_id, area, seed], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    fn unlock_checkpoints(&self, character_id: u32, area: &str, seed: u32, cells: &[(i32, i32)]) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        for (x, y) in cells {
+            conn.execute("INSERT OR IGNORE INTO character_checkpoints (character_id, area, seed, x, y) VALUES (?1, ?2, ?3, ?4, ?5)", params![character_id, area, seed, x, y])?;
+        }
+        Ok(())
+    }
+
+    fn respawn(&self, character_id: u32) -> Result<Option<Respawn>> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row("SELECT area, seed, x, y FROM character_respawn WHERE character_id = ?1", params![character_id], |r| Ok(Respawn { area: r.get(0)?, seed: r.get(1)?, x: r.get(2)?, y: r.get(3)? }))
+            .optional()?)
+    }
+
+    fn set_respawn(&self, character_id: u32, respawn: &Respawn) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO character_respawn (character_id, area, seed, x, y) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![character_id, respawn.area, respawn.seed, respawn.x, respawn.y],
         )?;
         Ok(())
     }

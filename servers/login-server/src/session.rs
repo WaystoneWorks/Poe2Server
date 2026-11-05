@@ -771,6 +771,7 @@ async fn play_character(
             level: character.level,
             intro_done: character.intro_done,
             // The saved position only applies to the area it was saved in.
+            arrive: None,
             location: character
                 .location
                 .filter(|_| area.id == character.area)

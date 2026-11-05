@@ -22,6 +22,7 @@ pub mod lattice;
 pub mod map_dirs;
 pub mod map_pins;
 pub mod outer_buffer;
+pub mod objects;
 pub mod overlay;
 pub mod postunique;
 pub mod region;

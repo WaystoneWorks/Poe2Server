@@ -122,6 +122,8 @@ pub struct Frame {
     /// Trace lines of the movement messages (empty unless tracing is on).
     pub trace: Arc<Vec<TraceLine>>,
     pub own: Own,
+    /// Objects the session's player clicked and reached in this frame: (entity, request flags).
+    pub interactions: Vec<(u32, u16)>,
 }
 
 /// How other players' clients see a character.
@@ -161,6 +163,8 @@ pub struct JoinRequest {
     pub want_debug: bool,
     /// The session's output channel.
     pub out: mpsc::UnboundedSender<Frame>,
+    /// The layout's travel objects; the first session that brings some spawns them.
+    pub objects: Arc<Vec<crate::travel::PreparedObject>>,
 }
 
 /// The actor's answer to a join: the session builds the entry batch from it.
@@ -175,6 +179,8 @@ pub struct Joined {
     /// Players in the instance, including this one.
     pub players: usize,
     pub own: Own,
+    /// The instance's travel objects.
+    pub objects: Arc<Vec<crate::travel::SpawnedObject>>,
 }
 
 /// Session to actor.
@@ -279,6 +285,9 @@ struct Member {
 pub struct Actor {
     init: ActorInit,
     world: World,
+    /// The instance's travel objects with their `AddObject` messages.
+    objects: Arc<Vec<crate::travel::SpawnedObject>>,
+    object_messages: Vec<u8>,
     /// The grid is the placeholder `Open` (no session had one yet).
     open_grid: bool,
     members: Vec<Member>,
@@ -300,6 +309,8 @@ impl Actor {
         let grid: Arc<dyn GridSource> = init.grid.clone().unwrap_or_else(|| Arc::new(Open));
         let tick_marker = init.codec.protocol.instance.encode(&SimulationTick)?;
         Ok(Self {
+            objects: Arc::new(Vec::new()),
+            object_messages: Vec::new(),
             world: World::new(config, init.model.clone(), grid),
             open_grid,
             members: Vec::new(),
@@ -589,6 +600,21 @@ impl Actor {
                 blob: (member.appearance.local_blob)(cell),
             },
         );
+        // Official order: the players, then the objects. Sent once per instance, at the first
+        // session that has a generated layout.
+        if self.objects.is_empty() && !req.objects.is_empty() {
+            let mut spawned = Vec::with_capacity(req.objects.len());
+            let mut messages = Vec::new();
+            for o in req.objects.iter() {
+                let entity = self.world.reserve_entity().0;
+                self.put(&mut messages, &crate::travel::add_objects(entity, o.type_key, o.blob.clone(), AFTER_ALL));
+                spawned.push(crate::travel::SpawnedObject { entity, object: o.object.clone(), arrival: o.arrival });
+            }
+            self.objects = Arc::new(spawned);
+            self.object_messages = messages;
+            info!(instance = self.init.instance, objects = self.objects.len(), "spawned the travel objects");
+        }
+        add_objects.extend_from_slice(&self.object_messages);
         // Everyone already here gets one AddObject for the newcomer in the next frame.
         let mut remote = Vec::new();
         self.add_remote(&member, &mut remote);
@@ -622,6 +648,7 @@ impl Actor {
             add_objects,
             players: self.members.len(),
             own,
+            objects: self.objects.clone(),
         };
         if reply.send(joined).is_err() {
             // The session gave up while waiting.
@@ -778,11 +805,16 @@ impl Actor {
         // (they differ for stat updates that carry owner-only stats).
         let mut segments: Vec<(u32, Vec<u8>, Vec<u8>)> = Vec::new();
         let mut trace = Vec::new();
+        let mut interactions: Vec<(u32, (u32, u16))> = Vec::new();
         for e in &events {
             let Event::Movement(m) = &e.event else {
                 continue;
             };
             let entity = e.entity.0;
+            if let poe_game::movement::MoveEvent::Interact { entity: object, flags } = m {
+                interactions.push((entity, (*object, *flags)));
+                continue;
+            }
             let (owner, others) = match (
                 self.init.codec.encode_keyed(entity, e.key, m),
                 self.init.codec.encode_others_keyed(entity, e.key, m),
@@ -850,6 +882,7 @@ impl Actor {
                 events,
                 trace: trace.clone(),
                 own,
+                interactions: interactions.iter().filter(|(e, _)| *e == entity).map(|(_, i)| *i).collect(),
             };
             if m.out.send(frame).is_err() {
                 dead.push(m.session);

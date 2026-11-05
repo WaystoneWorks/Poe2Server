@@ -123,6 +123,8 @@ pub struct Config {
     /// Movement simulation tuning.
     #[serde(default)]
     pub movement: MovementConfig,
+    #[serde(default)]
+    pub travel: TravelConfig,
     /// Development and research tools (debug link, position sync, traces, seed sweep).
     #[serde(default)]
     pub dev: DevConfig,
@@ -989,6 +991,24 @@ pub struct MovementConfig {
     /// 2853).
     #[serde(default = "default_sprint_buff_rows")]
     pub sprint_buff_rows: [u16; 3],
+}
+
+/// `[travel]`: reaches of the world's travel objects (docs/re/world-travel.md).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct TravelConfig {
+    /// A click on an object acts from this many cells; from farther the player walks there first.
+    pub interact_range: i32,
+    /// A waypoint or checkpoint within this many cells counts as touched.
+    pub touch_range: i32,
+    /// The `WorldAreas.Act` values `unlock` means by all (acts 1-4, the interludes are 6).
+    pub acts: Vec<i64>,
+}
+
+impl Default for TravelConfig {
+    fn default() -> Self {
+        Self { interact_range: 26, touch_range: 40, acts: vec![1, 2, 3, 4, 6] }
+    }
 }
 
 impl Default for MovementConfig {

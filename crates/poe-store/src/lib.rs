@@ -59,6 +59,15 @@ pub struct Location {
     pub y: i32,
 }
 
+/// Where a character respawns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Respawn {
+    pub area: String,
+    pub seed: u32,
+    pub x: i32,
+    pub y: i32,
+}
+
 /// Fields supplied when creating a character.
 #[derive(Debug, Clone)]
 pub struct NewCharacter {
@@ -87,6 +96,17 @@ pub trait Store: Send + Sync {
     fn delete_character(&self, account_id: u32, name: &str) -> Result<bool>;
     /// Marks the start area's intro as played.
     fn set_intro_done(&self, character_id: u32) -> Result<()>;
+    /// The waypoints the character has unlocked (`WorldAreas.Id`).
+    fn waypoints(&self, character_id: u32) -> Result<Vec<String>>;
+    fn unlock_waypoints(&self, character_id: u32, areas: &[String]) -> Result<()>;
+    /// `None`: all of them.
+    fn lock_waypoints(&self, character_id: u32, areas: Option<&[String]>) -> Result<()>;
+    /// The checkpoint cells the character has unlocked in one layout of an area.
+    fn checkpoints(&self, character_id: u32, area: &str, seed: u32) -> Result<Vec<(i32, i32)>>;
+    fn unlock_checkpoints(&self, character_id: u32, area: &str, seed: u32, cells: &[(i32, i32)]) -> Result<()>;
+    /// Where the character respawns (the checkpoint it touched last).
+    fn respawn(&self, character_id: u32) -> Result<Option<Respawn>>;
+    fn set_respawn(&self, character_id: u32, respawn: &Respawn) -> Result<()>;
     /// Saves the area the character is in and where (when it leaves the game).
     fn save_location(
         &self,

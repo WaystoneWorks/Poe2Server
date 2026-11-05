@@ -160,6 +160,13 @@ impl World {
     /// Like [`spawn_player`](Self::spawn_player) with the entity's own movement configuration
     /// (`None`: the world's). Players of different classes share one world, so the
     /// class-dependent values live on the entity.
+    /// An entity id for something the world does not simulate (a travel object).
+    pub fn reserve_entity(&mut self) -> EntityId {
+        let id = EntityId(self.next_entity);
+        self.next_entity += 1;
+        id
+    }
+
     pub fn spawn_player_with_config(
         &mut self,
         cell: Cell,

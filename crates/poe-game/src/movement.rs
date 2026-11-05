@@ -217,6 +217,9 @@ pub enum MoveEvent {
     },
     /// `0x1ca`, no body (with every roll start and when an attack ends a sprint).
     ActionEvent,
+    /// No message: the player clicked an object and is in reach (the session acts on it).
+    /// `flags` are the request's (bit `0x0004`: ctrl).
+    Interact { entity: u32, flags: u16 },
     /// `0x1d3` StatsUpdate (set 0).
     Stats(Vec<(MoveStat, i32)>),
     /// `0x1ae` UseSkillAck: the request echoed with the absolute target; the session sets the
@@ -327,6 +330,11 @@ pub struct MovementConfig {
     /// The larger of the class's `Positioned` `object_size` and `secondary_object_size`: the
     /// entity's path clearance from the end of a roll until the sprint ends.
     pub sprint_clearance_level: i32,
+    /// The `Interaction` basic action (`u32::MAX`: none): a click on an object.
+    pub interact_skill: u32,
+    /// From this distance (cells) an interaction acts; from farther the player walks there first
+    /// (the capture's click from 41 cells ended 26 cells from the waypoint).
+    pub interact_range: i32,
     /// `BuffDefinitions` rows of the three buffs a sprint adds (`[movement] sprint_buff_rows`).
     pub sprint_buff_rows: [u16; 3],
     /// The roll and sprint-end curves (required at player setup; `None` in tests).
@@ -350,6 +358,8 @@ impl MovementConfig {
             roll_travel_distance: 46.0,
             sprint_bonus_percent: Some(50.0),
             sprint_clearance_level: 0,
+            interact_skill: u32::MAX,
+            interact_range: 26,
             sprint_buff_rows,
             curves: None,
             offset_scale: 1.0,

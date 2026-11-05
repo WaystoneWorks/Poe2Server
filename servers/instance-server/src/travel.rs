@@ -360,6 +360,7 @@ impl InstanceServer {
                     info!(%area, cell = ?at, "checkpoint unlocked");
                 }
                 self.store.set_respawn(character, &poe_store::Respawn { area: area.clone(), seed: ctx.seed, x: o.arrival.0, y: o.arrival.1 })?;
+                info!(%area, cell = ?o.arrival, "respawn point set");
             }
             _ => {}
         }

@@ -1371,7 +1371,7 @@ dependencies = [
 
 [[package]]
 name = "instance-server"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "poe-accounts",
@@ -1570,7 +1570,7 @@ dependencies = [
 
 [[package]]
 name = "login-server"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "hex",
@@ -1922,7 +1922,7 @@ dependencies = [
 
 [[package]]
 name = "poe-accounts"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "argon2",
  "hex",
@@ -1936,7 +1936,7 @@ dependencies = [
 
 [[package]]
 name = "poe-cluster"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "rand 0.9.5",
  "tokio",
@@ -1944,7 +1944,7 @@ dependencies = [
 
 [[package]]
 name = "poe-config"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -1954,7 +1954,7 @@ dependencies = [
 
 [[package]]
 name = "poe-data"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "bytes",
  "poe_data_tools",
@@ -1966,7 +1966,7 @@ dependencies = [
 
 [[package]]
 name = "poe-game"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "poe-data",
  "poe-stats",
@@ -1976,11 +1976,11 @@ dependencies = [
 
 [[package]]
 name = "poe-hook-mod-api"
-version = "0.5.0"
+version = "0.5.3"
 
 [[package]]
 name = "poe-hook-mods"
-version = "0.5.0"
+version = "0.5.3"
 dependencies = [
  "poe-hook-mod-api",
  "semver",
@@ -1992,7 +1992,7 @@ dependencies = [
 
 [[package]]
 name = "poe-hook-shared"
-version = "0.5.0"
+version = "0.5.3"
 dependencies = [
  "hmac",
  "log",
@@ -2007,7 +2007,7 @@ dependencies = [
 
 [[package]]
 name = "poe-hook-sig"
-version = "0.5.0"
+version = "0.5.3"
 dependencies = [
  "iced-x86",
  "serde",
@@ -2021,7 +2021,7 @@ source = "git+https://github.com/WaystoneWorks/Poe2ModSDK?tag=v0.1.0#31f827af5ca
 
 [[package]]
 name = "poe-mod-host"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "libloading",
  "poe-cluster",
@@ -2059,7 +2059,7 @@ dependencies = [
 
 [[package]]
 name = "poe-server"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "instance-server",
@@ -2083,14 +2083,14 @@ dependencies = [
 
 [[package]]
 name = "poe-stats"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "poe-store"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "rusqlite",
  "serde_json",
@@ -2099,7 +2099,7 @@ dependencies = [
 
 [[package]]
 name = "poe-web-api"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2130,7 +2130,7 @@ dependencies = [
 
 [[package]]
 name = "poe-world"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "poe-data",
  "poe_data_tools",
@@ -3792,7 +3792,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
 name = "xtask"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "poe-web-api",

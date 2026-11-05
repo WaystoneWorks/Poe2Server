@@ -10,6 +10,7 @@ mod error;
 mod files;
 pub mod hash;
 pub mod rooms;
+pub mod stat_desc;
 mod schema;
 pub mod template;
 pub mod used;

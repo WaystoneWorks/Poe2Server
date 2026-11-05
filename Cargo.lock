@@ -2081,6 +2081,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "poe-stats"
+version = "0.5.1"
+
+[[package]]
 name = "poe-store"
 version = "0.5.1"
 dependencies = [

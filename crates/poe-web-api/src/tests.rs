@@ -40,7 +40,6 @@ pub(crate) const CONFIG: &str = r#"
     [database]
     path = "d"
     [accounts]
-    name_prefix = "Exile"
     max_characters = 4
     remember_days = 7
     [gateway]

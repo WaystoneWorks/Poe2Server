@@ -1996,7 +1996,6 @@ version = "0.5.3"
 dependencies = [
  "hmac",
  "log",
- "miniz_oxide 0.8.9",
  "poe-hook-sig",
  "serde",
  "sha2",

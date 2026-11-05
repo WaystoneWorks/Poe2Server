@@ -477,7 +477,7 @@ mod tests {
     fn machine_hash_accounts_have_no_password() {
         let (a, _) = accounts("c1");
         use poe_store::Store;
-        let old = a.store.create_account("k", "Exile").unwrap();
+        let old = a.store.create_account("k").unwrap();
         let rec = a.find_by_id(old.id).unwrap().unwrap();
         assert!(!rec.has_password && rec.role == Role::Player);
         let name = rec.username;

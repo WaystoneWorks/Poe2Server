@@ -1007,7 +1007,7 @@ mod tests {
     fn delete_decides_between_missing_and_foreign() {
         use poe_store::{SqliteStore, Store};
         let store = SqliteStore::in_memory().unwrap();
-        let (a, b) = (store.create_account("a", "Exile").unwrap(), store.create_account("b", "Exile").unwrap());
+        let (a, b) = (store.create_account("a").unwrap(), store.create_account("b").unwrap());
         let new = |account_id, name: &str| NewCharacter {
             account_id,
             name: name.into(),

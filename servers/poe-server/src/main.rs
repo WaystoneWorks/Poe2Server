@@ -112,11 +112,7 @@ async fn main() -> anyhow::Result<()> {
         store: store.clone(),
         leagues: store.clone(),
         accounts: accounts.clone(),
-        seeds: Arc::new(instance_server::seeds::KnownSeeds::load(
-            &config.dev.known_seeds,
-        )),
         reports: Default::default(),
-        terrain: Arc::new(instance_server::terrain_store::TerrainStore::new(&config.spawn)),
         sessions: sessions.clone(),
         instances: instances.clone(),
         live: Default::default(),

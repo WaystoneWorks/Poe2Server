@@ -7,7 +7,7 @@
 //!    ticket's key material,
 //! 3. server `AreaInfo` (area + seed): the client generates the terrain and loads the area.
 
-use std::{path::PathBuf, sync::Arc, time::{Duration, Instant}};
+use std::{sync::Arc, time::{Duration, Instant}};
 
 use poe_cluster::{Ticket, TicketRegistry};
 use poe_config::Config;
@@ -27,12 +27,11 @@ pub mod names;
 pub mod modlink;
 mod movement;
 mod player;
-pub mod seeds;
 pub mod social;
+pub mod side_stream;
 mod spawn;
 pub mod sync;
 mod terrain_check;
-pub mod terrain_store;
 mod travel;
 
 #[cfg(test)]
@@ -76,8 +75,6 @@ pub struct InstanceServer {
     pub leagues: Arc<dyn poe_store::LeagueStore>,
     /// Account roles (admin commands) and the `account` command.
     pub accounts: Arc<dyn poe_accounts::AccountStore>,
-    /// Seeds the client is known to generate (`dev.known_seeds`).
-    pub seeds: Arc<seeds::KnownSeeds>,
     /// Client position reports (drift checker and debug link, see [`sync`]).
     pub reports: Arc<sync::ClientReports>,
     /// Ends the account's login connection when the client leaves the game.
@@ -86,14 +83,12 @@ pub struct InstanceServer {
     pub instances: Arc<dyn poe_cluster::InstanceDirectory>,
     /// Sessions in game (who, kick, chat delivery, mutes).
     pub live: Arc<live::Live>,
-    /// Terrain layouts and grids: the cache in `[spawn] layout_dir`, fed by client uploads.
-    pub terrain: Arc<terrain_store::TerrainStore>,
     /// The instance actors (one per instance with players, started by the first join).
     pub actors: Arc<actor::Actors>,
     /// The server's mods (events, commands, the login check of the client's mods).
     pub mods: Arc<poe_mod_host::ModHost>,
-    /// Layouts the server chose (`[terrain] force_layout`), by area, seed and what the instance
-    /// forces.
+    /// Layouts the server chose (it always forces its layout), by area, seed and what the
+    /// instance forces.
     pub layouts: LayoutCache,
     /// Where each character left last and its recent kicks (the terrain check's destinations).
     pub terrain_memory: terrain_check::Memory,
@@ -107,16 +102,6 @@ impl InstanceServer {
     pub async fn run(self: Arc<Self>) -> anyhow::Result<()> {
         let listener = TcpListener::bind(self.config.network.instance.bind).await?;
         info!(addr = %self.config.network.instance.bind, "instance server listening");
-        let trace_path = &self.config.dev.movement_trace;
-        if !trace_path.as_os_str().is_empty() {
-            match sync::MovementTrace::open(trace_path) {
-                Ok(t) => {
-                    info!(path = %trace_path.display(), "movement trace on");
-                    self.reports.set_trace(Arc::new(t));
-                }
-                Err(e) => warn!(path = %trace_path.display(), "movement trace: {e}"),
-            }
-        }
         if self.config.dev.position_sync {
             let reports = self.reports.clone();
             let addr = self.config.network.instance.bind;
@@ -158,11 +143,11 @@ impl InstanceServer {
             let server = self.clone();
             tokio::spawn(
                 async move {
-                    // A terrain upload (side channel) shares the port: its first bytes are
-                    // not a game opcode.
-                    if is_upload(&stream).await {
-                        if let Err(e) = terrain_store::serve_upload(stream, &server.reports, &server.terrain).await {
-                            warn!("terrain upload: {e}");
+                    // The side channel's TCP stream (the hook's mod report) shares the port: its
+                    // first bytes are not a game opcode.
+                    if side_stream::is_side_stream(&stream).await {
+                        if let Err(e) = side_stream::serve(stream, &server.reports).await {
+                            warn!("side stream: {e}");
                         }
                         return;
                     }
@@ -230,12 +215,11 @@ impl InstanceServer {
             "ticket redeemed"
         );
 
-        // Side channel (position reports, debug link, terrain upload): the DLL derives the same
+        // Side channel (position reports, debug link): the DLL derives the same
         // keys from the key material it gets in InstanceDetails (docs/protocol/side-channel.md).
         let side = SideSession {
             id: self.reports.register(&ticket.keys, client_port),
             reports: &self.reports,
-            terrain: &self.terrain,
         };
         info!(session = format_args!("{:016x}", side.id), "side-channel session");
         conn.send(
@@ -253,72 +237,26 @@ impl InstanceServer {
         // HNC side channel (see PingReply): server-to-client keystream for idle bytes.
         let mut hnc = KeyMaterial(self.protocol.hnc.derive(&ticket.keys)).server_to_client();
 
-        // Terrain seed sweep: this session generates the next listed layout only.
-        let sweep = sweep_list(&self.config.dev.sweep).and_then(|list| {
-            let i = SWEEP_NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let entry = list.get(i).cloned()?;
-            Some((i, list.len(), entry))
-        });
         let loading = Instant::now();
-        let (instance, seed, layout) = match &sweep {
-            Some((_, _, (area, seed))) => {
-                conn.send(&self.area_info_command(&format!("{area} {seed}"), &ticket)?)
-                    .await?;
-                (None, *seed, None)
-            }
-            None => {
-                let (instance, seed, layout) = self.send_area(&mut conn, &ticket).await?;
-                (Some(instance), seed, layout)
-            }
-        };
-
-        let hashes = match &sweep {
-            // A layout the client cannot generate never gets an answer.
-            Some((_, _, (area, seed))) => {
-                match tokio::time::timeout(Duration::from_secs(60), self.await_hashes(&mut conn))
-                    .await
-                {
+        let (instance, seed, layout) = self.send_area(&mut conn, &ticket).await?;
+        let instance = Some(instance);
+        let hashes = match self.config.terrain.hash_timeout_secs {
+            0 => self.await_hashes(&mut conn).await?,
+            secs => {
+                let left = Duration::from_secs(secs).saturating_sub(loading.elapsed());
+                match tokio::time::timeout(left, self.await_hashes(&mut conn)).await {
                     Ok(h) => h?,
                     Err(_) => {
-                        self.record_sweep(area, *seed, None);
-                        warn!(area, seed, "terrain sweep: no hashes within 60 s");
-                        return Ok(());
+                        let m = self.mismatch(&ticket, instance, seed, layout, None, None, terrain_check::Reason::NoHashes { secs });
+                        return self.kick_for_terrain(&mut conn, &ticket, side.id, m, false).await;
                     }
                 }
             }
-            None => match self.config.terrain.hash_timeout_secs {
-                0 => self.await_hashes(&mut conn).await?,
-                secs => {
-                    let left = Duration::from_secs(secs).saturating_sub(loading.elapsed());
-                    match tokio::time::timeout(left, self.await_hashes(&mut conn)).await {
-                        Ok(h) => h?,
-                        Err(_) => {
-                            let m = self.mismatch(&ticket, instance, seed, layout, None, None, terrain_check::Reason::NoHashes { secs });
-                            return self.kick_for_terrain(&mut conn, &ticket, side.id, m, false).await;
-                        }
-                    }
-                }
-            },
         };
         let Some(hashes) = hashes else {
             info!("client disconnected during terrain generation");
             return Ok(());
         };
-        if let Some((i, n, (area, seed))) = sweep {
-            self.record_sweep(&area, seed, Some(&hashes));
-            info!(
-                entry = i + 1,
-                of = n,
-                area,
-                seed,
-                tile_hash = hashes.hash_a,
-                "terrain sweep entry done"
-            );
-            if i + 1 == n {
-                info!("terrain sweep finished");
-            }
-            return Ok(());
-        }
         // hash_a is the tile hash, hash_b the doodad hash (as in the client log).
         info!(
             unk = hashes.unk,
@@ -326,37 +264,23 @@ impl InstanceServer {
             doodad_hash = hashes.hash_b,
             "terrain generated by client"
         );
-        // With `generated_grid` the server's own generation gives the grid and the spawn layout
+        // The server's own generation gives the grid, the spawn layout and the travel objects
         // and is the terrain check: tile and doodad hash must equal the client's, or the player
-        // is kicked (`terrain_check`). Without it, `generate` only logs a tile hash comparison.
-        let mut generated = match self.config.terrain.generated_grid {
-            true => match self.generated_terrain(&ticket.area, seed, instance).await {
-                Ok(g) => Some(g),
-                Err(e) => {
-                    info!(area = %ticket.area, seed, "terrain check skipped: no generated layout ({e})");
-                    None
-                }
-            },
-            false => {
-                if self.config.terrain.generate {
-                    self.generate_terrain(&ticket.area, seed, hashes.hash_a, instance);
-                }
+        // is kicked (`terrain_check`). An area the generator cannot make runs without a grid,
+        // check or travel objects.
+        let mut generated = match self.generated_terrain(&ticket.area, seed, instance).await {
+            Ok(g) => Some(g),
+            Err(e) => {
+                warn!(area = %ticket.area, seed, "no generated terrain, the area runs without a server grid, terrain check or travel objects: {e}");
                 None
             }
         };
         let mut kick = None;
         if let Some(g) = &generated {
-            let mut server = g.hashes;
-            let mut fake = false;
-            if self.config.dev.fake_terrain_hash && !WorldArea::find(&self.data, &ticket.area)?.is_some_and(|a| a.is_town || a.is_hideout) {
-                warn!("[dev] fake_terrain_hash: expecting a wrong tile hash");
-                server.tile ^= 1;
-                fake = true;
-            }
+            let server = g.hashes;
             let client = terrain_check::Hashes { tile: hashes.hash_a, doodad: hashes.hash_b };
             if let Some(reason) = terrain_check::compare(server, client) {
-                let mut m = self.mismatch(&ticket, instance, seed, layout, Some(client), Some(server), reason);
-                m.fake = fake;
+                let m = self.mismatch(&ticket, instance, seed, layout, Some(client), Some(server), reason);
                 // The kick happens in the world: a client still on its loading screen ignores the
                 // hand-off and reports an abnormal disconnect (game test, 2026-11-04).
                 kick = Some(m);
@@ -370,29 +294,15 @@ impl InstanceServer {
             .location
             .filter(|&(s, _, _)| s == seed)
             .map(|(_, x, y)| (x, y));
-        // The client's tile hash authorises its terrain upload for that hash only.
-        self.terrain.reported(side.id, hashes.hash_a);
         // Through a gate or waypoint: at the matching object.
         let arrival = ticket.character.arrive.and_then(|a| travel::arrival_cell(&objects, a));
         let spawn = match (spawn_override().or(arrival).or(saved), &generated) {
             (Some(p), _) => Some(p),
-            (None, Some((grid, layout))) => spawn::from_layout(layout, Some(grid), &self.config.spawn, &ticket.area, "generated"),
-            (None, None) => {
-                spawn::from_client_layout(
-                    &self.terrain,
-                    &self.config.spawn,
-                    &ticket.area,
-                    hashes.hash_a,
-                    side.id,
-                )
-                .await
-            }
+            (None, Some((grid, layout))) => spawn::from_layout(layout, grid, &self.config.spawn, &ticket.area),
+            (None, None) => None,
         }
         .unwrap_or((0, 0));
-        let grid = match generated {
-            Some((grid, _)) => Some(grid),
-            None => spawn::client_grid(&self.config.spawn, hashes.hash_a),
-        };
+        let grid = generated.map(|(grid, _)| grid);
         let mut cell = spawn;
         if saved.is_some() {
             // Same layout, so the saved cell is normally walkable; otherwise use the nearest
@@ -510,9 +420,6 @@ impl InstanceServer {
         // Leaving tells the other players in the instance (removal sequence) and returns the
         // cell the character stood on.
         let (x, y) = player.leave().await;
-        if let Some(t) = self.reports.trace() {
-            t.flush();
-        }
         // Save where the character is, however the session ended.
         self.terrain_memory.remember(
             ticket.character.id,
@@ -583,7 +490,6 @@ impl InstanceServer {
             },
             directory: self.instances.clone(),
             idle: Duration::from_secs(self.config.instance.idle_minutes * 60),
-            trace: self.reports.trace().is_some(),
             player_spacing: self.config.spawn.player_spacing,
             mods: self.mods.clone(),
             sink: Arc::new(modlink::LiveSink(self.live.clone())),
@@ -674,16 +580,6 @@ impl InstanceServer {
                         world.extend(bytes);
                         handed_off |= leave;
                     }
-                    if let Some(t) = self.reports.trace() {
-                        t.line(client_port, "tick", format_args!("{ticks}"));
-                        if ticks.is_multiple_of(30) {
-                            t.flush();
-                        }
-                        // Only this player's own messages, as before.
-                        for line in frame.trace.iter().filter(|l| l.entity == player.entity_id) {
-                            t.line(client_port, line.kind, format_args!("{}", line.fields));
-                        }
-                    }
                     if let Some(check) = drift.as_mut() {
                         let report = self.reports.fresh(ctx.side);
                         report_seen |= report.is_some();
@@ -760,7 +656,7 @@ impl InstanceServer {
     }
 
     /// What instance `instance` forces itself (`transfer ... topology orientation`) and whether
-    /// the server completes it with its own choice (`[terrain] force_layout`); resolve it with
+    /// the server completes it with its own choice; resolve it with
     /// [`resolve_layout`] off the async threads.
     fn layout_request(&self, instance: Option<u32>) -> LayoutRequest {
         let spec = instance.and_then(|id| self.instances.get(id)).map(|i| i.spec);
@@ -768,15 +664,14 @@ impl InstanceServer {
             data: self.data.clone(),
             cache: self.layouts.clone(),
             given: poe_world::area::Forced { topology: spec.as_ref().and_then(|s| s.topology), orientation: spec.as_ref().and_then(|s| s.orientation) },
-            choose: self.config.terrain.force_layout,
         }
     }
 
     /// The collision grid and spawn layout the server generates for the instance's layout
-    /// (`[terrain] generated_grid`) with the hashes of that layout: `poe-world` makes the `PWG1`
+    /// with the hashes of that layout: `poe-world` makes the `PWG1`
     /// bytes and the layout TSV, `poe-game` and `spawn` read them, so the crates stay independent
     /// (docs/architecture/instance-world.md in the hub). `Err` when the generator fails (no
-    /// check is made then and the client's files stand in).
+    /// check is made then and the area has no server grid).
     async fn generated_terrain(&self, area: &str, seed: u32, instance: Option<u32>) -> Result<GeneratedTerrain, String> {
         let data = self.data.clone();
         let area = area.to_string();
@@ -822,7 +717,7 @@ impl InstanceServer {
         result
     }
 
-    /// Server-side terrain (`[terrain] generate`, `terrain` command): generates the layout in
+    /// Server-side terrain (`terrain` command): generates the layout in
     /// the background and logs whether its tile hash matches the client's.
     pub(crate) fn generate_terrain(&self, area: &str, seed: u32, client_hash: u32, instance: Option<u32>) {
         // At most `GENERATE_LIMIT` generations at once (on by default, so a burst of new
@@ -883,27 +778,6 @@ impl InstanceServer {
                 TerrainHashes::decode(r)
             })
             .await?)
-    }
-
-    /// Appends a sweep result line (`area, seed, tile hash, doodad hash`).
-    fn record_sweep(&self, area: &str, seed: u32, hashes: Option<&TerrainHashes>) {
-        use std::io::Write;
-        let path = &self.config.dev.sweep_results;
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).ok();
-        }
-        let line = match hashes {
-            Some(h) => format!("{area}\t{seed}\t{}\t{}\n", h.hash_a, h.hash_b),
-            None => format!("{area}\t{seed}\tFAILED\t\n"),
-        };
-        let written = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .and_then(|mut f| f.write_all(line.as_bytes()));
-        if let Err(e) = written {
-            warn!(path = %path.display(), "sweep results: {e}");
-        }
     }
 
     /// The `area <id> <seed>` dev command's AreaInfo message.
@@ -968,13 +842,11 @@ impl InstanceServer {
                 .or(spec_seed)
                 .or(area.fixed_seed())
                 .or(saved)
-                .or_else(|| self.seeds.pick(&area.id, rng.next_u32()))
                 .unwrap_or_else(|| rng.next_u32());
             // The first player decides an instance's seed; later ones share it.
             self.instances.settle_seed(instance_id, seed).unwrap_or(seed)
         };
-        // The layout (`transfer ... topology orientation`, else the server's own choice with
-        // `[terrain] force_layout`): the generator reads `map_force_topology` (1-based) and
+        // The layout (`transfer ... topology orientation`, else the server's own choice): the generator reads `map_force_topology` (1-based) and
         // `map_force_orientation` (orientation + 1).
         let layout = {
             let (request, area_id) = (self.layout_request(Some(instance_id)), area.id.clone());
@@ -1209,45 +1081,17 @@ fn spawn_override() -> Option<(i32, i32)> {
     Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
 }
 
-impl InstanceServer {
-    fn trace(&self, port: u16, kind: &str, fields: std::fmt::Arguments<'_>) {
-        if let Some(t) = self.reports.trace() {
-            t.line(port, kind, fields);
-        }
-    }
-}
-
 /// A registered side-channel session; dropped (however the connection ends) it removes the
-/// session from the report registry and the terrain store.
+/// session from the report registry.
 struct SideSession<'a> {
     id: u64,
     reports: &'a sync::ClientReports,
-    terrain: &'a terrain_store::TerrainStore,
 }
 
 impl Drop for SideSession<'_> {
     fn drop(&mut self) {
         self.reports.forget(self.id);
-        self.terrain.forget(self.id);
     }
-}
-
-/// Whether a new connection starts with the terrain upload magic (peeked, nothing consumed).
-pub(crate) async fn is_upload(stream: &TcpStream) -> bool {
-    let mut magic = [0u8; 4];
-    let peeking = async {
-        loop {
-            match stream.peek(&mut magic).await {
-                Ok(n) if n >= magic.len() => return true,
-                Ok(0) | Err(_) => return false,
-                Ok(_) => tokio::time::sleep(Duration::from_millis(20)).await,
-            }
-        }
-    };
-    tokio::time::timeout(Duration::from_secs(10), peeking)
-        .await
-        .unwrap_or(false)
-        && magic == poe_hook_shared::sidechannel::UPLOAD_MAGIC
 }
 
 /// Outcome of handling one client message.
@@ -1272,7 +1116,6 @@ impl InstanceServer {
         r: &mut poe_net::Reader<'_>,
     ) -> anyhow::Result<Handled> {
         let account_id = ctx.ticket.account_id;
-        let port = ctx.port;
         let table = &self.protocol.instance;
         let Some(name) = table.name(poe_proto::Direction::Client, opcode) else {
             return Ok(Handled::Unknown);
@@ -1280,7 +1123,6 @@ impl InstanceServer {
         // Movement input (WASD, skills, sprint, aim): queued in the simulation, answered by the
         // next tick (docs/protocol/movement.md).
         if let Some(input) = movement::client_input(name, r)? {
-            self.trace(port, &format!("in-{name}"), format_args!("{input:?}"));
             player.input(input);
             return Ok(Handled::Continue);
         }
@@ -1681,17 +1523,14 @@ impl InstanceServer {
             frame_ms: self.config.instance.tick_ms as u32,
             flags: if town { 0x04 } else { 0x07 },
             characters: vec![CharacterState {
-                stash_tabs: (self.config.accounts.stash_tabs.iter().enumerate())
+                stash_tabs: (NEW_ACCOUNT_STASH_TABS.iter().enumerate())
                     .map(|(i, name)| StashTab::plain(i as u16, name))
                     .collect(),
                 flags: [
                     // Bits 3 and 5 (+0x3ece, +0x3ed0); bit 6: account mode 0 (else 3).
                     0x68,
-                    if self.config.accounts.full_access {
-                        poe_proto::instance::CHARACTER_FULL_ACCESS
-                    } else {
-                        0
-                    },
+                    // Full game access: no "Get Full Access" button in the escape menu.
+                    poe_proto::instance::CHARACTER_FULL_ACCESS,
                     0,
                 ],
                 ..Default::default()
@@ -1720,40 +1559,9 @@ impl InstanceServer {
     }
 }
 
-/// Next sweep entry (shared by all sessions of this server process).
-static SWEEP_NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-/// The sweep list (`<WorldAreas.Id> <seed> [count]` lines, `#` comments); `POE_SWEEP`
-/// overrides the configured path. None when off or unreadable.
-fn sweep_list(configured: &std::path::Path) -> Option<Vec<(String, u32)>> {
-    let path = std::env::var_os("POE_SWEEP")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| configured.to_path_buf());
-    if path.as_os_str().is_empty() {
-        return None;
-    }
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(e) => {
-            warn!(path = %path.display(), "sweep list: {e}");
-            return None;
-        }
-    };
-    let mut list = Vec::new();
-    for line in text.lines().map(str::trim) {
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let w: Vec<&str> = line.split_whitespace().collect();
-        let (Some(area), Some(Ok(seed))) = (w.first(), w.get(1).map(|s| s.parse::<u32>())) else {
-            warn!(line, "sweep list: bad line");
-            continue;
-        };
-        let count = w.get(2).and_then(|c| c.parse::<u32>().ok()).unwrap_or(1);
-        list.extend((0..count).map(|i| (area.to_string(), seed.wrapping_add(i))));
-    }
-    Some(list)
-}
+/// The stash tabs every account has (InitialState), as an official new account gets them until
+/// stashes are stored.
+const NEW_ACCOUNT_STASH_TABS: [&str; 4] = ["1", "2", "3", "4"];
 
 /// What the session knows about its character before it joins the instance.
 struct PlayerSetup {
@@ -1814,19 +1622,15 @@ struct LayoutRequest {
     data: Arc<GameData>,
     cache: LayoutCache,
     given: poe_world::area::Forced,
-    choose: bool,
 }
 
 /// The layout an instance loads with, as AreaInfo forces it (WP7.13): what the instance forces,
 /// completed with the generator's natural choice (`poe_world::area::choose_layout`, equal to the
-/// client's own) when `[terrain] force_layout` is on. `None` when nothing is forced (the client
-/// chooses). The choice is the same with and without forcing it, so this only makes client and
-/// server agree by construction.
+/// client's own). `None` only when the generator cannot choose (the client chooses then). The
+/// choice is the same with and without forcing it, so this only makes client and server agree by
+/// construction.
 fn resolve_layout(r: &LayoutRequest, area: &str, seed: u32) -> Option<poe_world::area::Forced> {
     let given = (r.given.topology.is_some() || r.given.orientation.is_some()).then_some(r.given);
-    if !r.choose {
-        return given;
-    }
     let key = (area.to_string(), seed, r.given);
     if let Some(f) = r.cache.lock().unwrap().get(&key) {
         return *f;

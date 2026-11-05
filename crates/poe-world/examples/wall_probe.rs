@@ -1,11 +1,11 @@
 //! Finds test spots on an area's generated collision grid (client side, as the instance server
-//! builds it with `[terrain] generated_grid`) for the in-game wall scenarios (hub PLAN R2,
+//! builds it) for the in-game wall scenarios (hub PLAN R2,
 //! `scripts/game-test/`):
 //!
 //! `cargo run --release -p poe-world --example wall_probe -- <area id> <seed> [--count N] [--runs] [--layout FILE]`
 //! (`--layout` also writes the generated layout in the DLL's `terrain_layout_<hash>.tsv` format)
 //! (`POE_FORCE=<topology>:<orientation>` as in `area_gen`; unset = the natural layout, which is
-//! what `transfer <area> <seed>` gets with `[terrain] force_layout`)
+//! what `transfer <area> <seed>` gets, since the server forces its layout)
 //!
 //! Prints the tile hash and grid size, then per kind up to N spots in grid cells (the units of
 //! the `teleport` command and of the DLL state file's `player.grid`):

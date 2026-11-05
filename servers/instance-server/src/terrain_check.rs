@@ -9,10 +9,8 @@
 
 use std::{
     collections::HashMap,
-    io::Write,
-    path::Path,
     sync::Mutex,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 /// Two kicks of one character within this time end at character selection (a destination that
@@ -103,8 +101,6 @@ pub struct Mismatch {
     /// What the generator made; `None` when no generation was made (the client never reported).
     pub server: Option<Hashes>,
     pub reason: Reason,
-    /// The server's expectation was changed by `[dev] fake_terrain_hash`.
-    pub fake: bool,
     pub server_build: String,
     pub client_build: String,
 }
@@ -128,14 +124,6 @@ fn clean(s: &str) -> String {
 }
 
 impl Mismatch {
-    /// The reason, marked when the dev switch faked the server's hash.
-    pub fn reason_text(&self) -> String {
-        match self.fake {
-            true => format!("{} (dev fake_terrain_hash)", self.reason.text()),
-            false => self.reason.text(),
-        }
-    }
-
     fn tile_cmp(&self) -> (Option<u32>, Option<u32>) {
         (self.client.map(|c| c.tile), self.server.map(|s| s.tile))
     }
@@ -155,7 +143,7 @@ impl Mismatch {
             bare(st),
             bare(self.client.map(|c| c.doodad)),
             bare(self.server.map(|s| s.doodad)),
-            self.reason_text().replace(' ', "_"),
+            self.reason.text().replace(' ', "_"),
         )
     }
 
@@ -173,56 +161,11 @@ impl Mismatch {
             hex(st),
             hex(self.client.map(|c| c.doodad)),
             hex(self.server.map(|s| s.doodad)),
-            clean(&self.reason_text()),
+            clean(&self.reason.text()),
             clean(dest),
             clean(&self.report()),
         )
     }
-
-    /// The row of `terrain_mismatches.tsv` ([`TSV_HEADER`]).
-    pub fn tsv_row(&self, dest: &str) -> String {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        let cols = [
-            now.to_string(),
-            clean(&self.account),
-            clean(&self.character),
-            opt(self.instance),
-            clean(&self.area),
-            clean(&self.area_name),
-            self.seed.to_string(),
-            opt(self.topology),
-            opt(self.orientation),
-            self.client.map_or("none".into(), |c| c.tile.to_string()),
-            self.server.map_or("none".into(), |s| s.tile.to_string()),
-            self.client.map_or("none".into(), |c| c.doodad.to_string()),
-            self.server.map_or("none".into(), |s| s.doodad.to_string()),
-            clean(&self.reason_text()),
-            clean(dest),
-            clean(&self.server_build),
-            clean(&self.client_build),
-        ];
-        cols.join("\t")
-    }
-}
-
-/// Columns of `terrain_mismatches.tsv`; `cargo xtask terrain-matrix` reads `area`, `seed`,
-/// `topology`, `orientation` and the hashes.
-pub const TSV_HEADER: &str = "time\taccount\tcharacter\tinstance\tarea\tarea_name\tseed\ttopology\torientation\tclient_tile\tserver_tile\tclient_doodad\tserver_doodad\treason\tdest\tserver_build\tclient_build";
-
-/// Appends a mismatch row to `path` (a header first when the file is new). Empty path: off.
-pub fn append_row(path: &Path, row: &str) -> std::io::Result<()> {
-    if path.as_os_str().is_empty() {
-        return Ok(());
-    }
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let fresh = !path.exists();
-    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
-    if fresh {
-        writeln!(f, "{TSV_HEADER}")?;
-    }
-    writeln!(f, "{row}")
 }
 
 /// Per character: the place it left last, and when it was last kicked.
@@ -286,13 +229,12 @@ impl InstanceServer {
             client,
             server,
             reason,
-            fake: false,
             server_build: env!("POE_SERVER_BUILD").to_string(),
             client_build: self.config.game.version.clone(),
         }
     }
 
-    /// Ends the session of a client whose terrain does not match: logs and records it, tells the
+    /// Ends the session of a client whose terrain does not match: logs it, tells the
     /// DLL (popup, layout export) and moves the player to its [`Destination`]. The player has
     /// not entered the world yet, so there is nothing to leave.
     pub(crate) async fn kick_for_terrain(&self, conn: &mut Connection, ticket: &Ticket, side: u64, m: Mismatch, in_world: bool) -> anyhow::Result<()> {
@@ -323,9 +265,6 @@ impl InstanceServer {
             "terrain mismatch: {}",
             m.report()
         );
-        if let Err(e) = append_row(&self.config.terrain.mismatch_log, &m.tsv_row(&dest_text)) {
-            warn!(path = %self.config.terrain.mismatch_log.display(), "terrain mismatch log: {e}");
-        }
         // The DLL exports the client's layout while the client still has the area loaded, then
         // acknowledges. In the world its position reports (the first datagram tells the server
         // where to send) start within a moment; without a DLL a chat line tells the player.
@@ -357,7 +296,7 @@ impl InstanceServer {
             }
         } else if in_world {
             info!("terrain mismatch: no DLL on the debug link, telling the player in chat");
-            let text = format!("Your terrain does not match the server's ({}). You are being moved to: {dest_text}.", m.reason_text());
+            let text = format!("Your terrain does not match the server's ({}). You are being moved to: {dest_text}.", m.reason.text());
             let line = crate::live::ChatOut { sender: crate::SERVER_NAME.into(), text };
             conn.send(&self.protocol.instance.encode(&crate::chat_line(&line))?).await?;
             tokio::time::sleep(Duration::from_secs(2)).await;
@@ -406,7 +345,6 @@ mod tests {
             client: Some(Hashes { tile: 0x1a2b3c4d, doodad: 0x11111111 }),
             server: Some(Hashes { tile: 0x5e6f7081, doodad: 0x11111111 }),
             reason: Reason::Tile,
-            fake: false,
             server_build: "abc123".into(),
             client_build: "0.5.5e.hotfix1".into(),
         }
@@ -437,8 +375,6 @@ mod tests {
         m.client = None;
         m.reason = Reason::NoHashes { secs: 30 };
         assert!(m.alert("character select").contains("tile\tclient none  server 0x5e6f7081"));
-        assert!(m.tsv_row("x").contains("\tnone\t"));
-        assert_eq!(m.tsv_row("x").split('\t').count(), TSV_HEADER.split('\t').count());
     }
 
     fn prev(instance: u32) -> Previous {

@@ -112,7 +112,7 @@ impl Store for SqliteStore {
             .optional()?)
     }
 
-    fn create_account(&self, login_key: &str, name_prefix: &str) -> Result<Account> {
+    fn create_account(&self, login_key: &str) -> Result<Account> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         // Insert with a placeholder name, then name it after the assigned id.
@@ -121,7 +121,7 @@ impl Store for SqliteStore {
             params![login_key],
         )?;
         let id = tx.last_insert_rowid();
-        let name = format!("{name_prefix}{id}");
+        let name = format!("account{id}");
         tx.execute(
             "UPDATE accounts SET name = ?1 WHERE id = ?2",
             params![name, id],
@@ -290,7 +290,7 @@ mod character_tests {
     #[test]
     fn creates_and_lists_characters() {
         let store = SqliteStore::in_memory().unwrap();
-        let a = store.create_account("k", "Exile").unwrap();
+        let a = store.create_account("k").unwrap();
         let new = NewCharacter {
             account_id: a.id,
             name: "Tester".into(),
@@ -388,8 +388,8 @@ mod tests {
     fn creates_and_finds_accounts() {
         let store = SqliteStore::in_memory().unwrap();
         assert!(store.account_by_login_key("abc").unwrap().is_none());
-        let a = store.create_account("abc", "Exile").unwrap();
-        assert_eq!(a.name, format!("Exile{}", a.id));
+        let a = store.create_account("abc").unwrap();
+        assert_eq!(a.name, format!("account{}", a.id));
         assert_eq!(store.account_by_login_key("abc").unwrap(), Some(a));
     }
 }

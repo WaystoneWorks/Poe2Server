@@ -67,8 +67,6 @@ pub struct Out {
     pub name: &'static str,
     /// Opcode and body.
     pub bytes: Vec<u8>,
-    /// Movement trace line (`runtime/movement-trace.tsv`): kind and tab-separated fields.
-    pub trace: (&'static str, String),
 }
 
 /// Client packet to simulation input. `name` is the packet's name in the client opcode table and
@@ -231,11 +229,7 @@ impl Codec {
         };
         let mut out = Vec::new();
         match event {
-            MoveEvent::MoveAck { dir, cell } => out.push(self.pack(
-                &ack(*dir, *cell),
-                "out-dir",
-                format!("{}\t{}\t{}\t{}", dir.0, dir.1, cell.0, cell.1),
-            )?),
+            MoveEvent::MoveAck { dir, cell } => out.push(self.pack(&ack(*dir, *cell))?),
             MoveEvent::ActionStart {
                 kind: _,
                 skill,
@@ -245,8 +239,7 @@ impl Codec {
                 target,
                 entity: target_entity,
                 unk,
-            } => out.push(self.pack(
-                &StartAction {
+            } => out.push(self.pack(&StartAction {
                     header: plain,
                     flags: *flags,
                     target_entity: *target_entity,
@@ -257,22 +250,12 @@ impl Codec {
                     skill: *skill,
                     action_id: *action,
                     unk_3c: *unk,
-                },
-                "out-start",
-                format!(
-                    "{}\t{}\t{}\t{}\t{:#x}\t{}",
-                    cell.0, cell.1, target.0, target.1, skill, action
-                ),
-            )?),
+                })?),
             MoveEvent::Interact { .. } => {}
             MoveEvent::ActionEvent => {
                 let table = &self.protocol.instance;
                 if table.id(ActionEvent::DIRECTION, ActionEvent::NAME).is_ok() {
-                    out.push(self.pack(
-                        &ActionEvent { header: plain },
-                        "out-event",
-                        String::new(),
-                    )?);
+                    out.push(self.pack(&ActionEvent { header: plain })?);
                 } else {
                     debug!("ActionEvent (0x1ca) is not in instance.toml: not sent");
                 }
@@ -291,19 +274,14 @@ impl Codec {
                         None => {}
                     }
                 }
-                let fields = format!("{keyed:?}");
                 if keyed.is_empty() && !owner {
                     return Ok(out);
                 }
-                out.push(self.pack(
-                    &StatsUpdate {
+                out.push(self.pack(&StatsUpdate {
                         header: plain,
                         set: 0,
                         stats: keyed,
-                    },
-                    "out-stats",
-                    fields,
-                )?);
+                    })?);
             }
             MoveEvent::SkillAck {
                 skill,
@@ -313,8 +291,7 @@ impl Codec {
                 entity: target_entity,
                 x,
                 y,
-            } => out.push(self.pack(
-                &UseSkillAck {
+            } => out.push(self.pack(&UseSkillAck {
                     header: plain,
                     params: SkillUseParams {
                         skill: *skill,
@@ -325,102 +302,62 @@ impl Codec {
                         x: *x,
                         y: *y,
                     },
-                },
-                "out-skill-ack",
-                format!("{skill:#x}\t{target_flags:#x}\t{x}\t{y}"),
-            )?),
-            MoveEvent::TargetAck { skill, x, y } => out.push(self.pack(
-                &UpdateSkillTargetAck {
+                })?),
+            MoveEvent::TargetAck { skill, x, y } => out.push(self.pack(&UpdateSkillTargetAck {
                     header: plain,
                     x: *x,
                     y: *y,
                     skill: *skill,
-                },
-                "out-target",
-                format!("{x}\t{y}\t{skill:#x}"),
-            )?),
-            MoveEvent::InputEndAck => out.push(self.pack(
-                &SkillInputEndAck { header: plain },
-                "out-input-end",
-                String::new(),
-            )?),
-            MoveEvent::ReleasedAck { skill, flag } => out.push(self.pack(
-                &SkillReleasedAck {
+                })?),
+            MoveEvent::InputEndAck => out.push(self.pack(&SkillInputEndAck { header: plain })?),
+            MoveEvent::ReleasedAck { skill, flag } => out.push(self.pack(&SkillReleasedAck {
                     header: plain,
                     skill: *skill,
                     flag: *flag,
-                },
-                "out-released",
-                format!("{skill:#x}\t{flag}"),
-            )?),
-            MoveEvent::SprintState { held } => out.push(self.pack(
-                &SprintState {
+                })?),
+            MoveEvent::SprintState { held } => out.push(self.pack(&SprintState {
                     header: plain,
                     held: *held,
-                },
-                "out-sprint",
-                held.to_string(),
-            )?),
+                })?),
             MoveEvent::BuffAdded { index, row, fade } => out.push(
-                self.pack(
-                    &BuffAdded {
+                self.pack(&BuffAdded {
                         header: plain,
                         index: *index,
                         buff: *row,
                         flag_02: fade.map(f32::to_bits),
                         ..Default::default()
                     }
-                    .with_flags(),
-                    "out-buff-added",
-                    format!("{index}\t{row}\t{fade:?}"),
-                )?,
+                    .with_flags())?,
             ),
-            MoveEvent::BuffRemoved { index } => out.push(self.pack(
-                &BuffRemoved {
+            MoveEvent::BuffRemoved { index } => out.push(self.pack(&BuffRemoved {
                     header: plain,
                     index: *index,
-                },
-                "out-buff-removed",
-                index.to_string(),
-            )?),
-            MoveEvent::AimEcho { cell } => out.push(self.pack(
-                &SetAimTarget {
+                })?),
+            MoveEvent::AimEcho { cell } => out.push(self.pack(&SetAimTarget {
                     header: plain,
                     kind: 0,
                     x: cell.0,
                     y: cell.1,
-                },
-                "out-aim",
-                format!("0\t{}\t{}", cell.0, cell.1),
-            )?),
-            MoveEvent::OrientationLerp { value } => out.push(self.pack(
-                &OrientationLerp {
+                })?),
+            MoveEvent::OrientationLerp { value } => out.push(self.pack(&OrientationLerp {
                     header: plain,
                     value: *value,
                     flag: 0,
-                },
-                "out-orientation-lerp",
-                value.to_string(),
-            )?),
+                })?),
             // Stats component `0x1d5`, then, for a requested swap, the session message `0xff`
             // that lets the client use skills and swap again (owner only: other clients never
             // sent the request; a swap made by a skill of the other set has none).
             MoveEvent::WeaponSet { set, requested } => {
-                out.push(self.pack(
-                    &SetWeaponSet {
+                out.push(self.pack(&SetWeaponSet {
                         header: plain,
                         set: *set,
-                    },
-                    "out-weapon-set",
-                    set.to_string(),
-                )?);
+                    })?);
                 if owner && *requested {
-                    out.push(self.pack(&WeaponSetSwapDone { unk: 1 }, "out-weapon-swap-done", String::new())?);
+                    out.push(self.pack(&WeaponSetSwapDone { unk: 1 })?);
                 }
             }
             MoveEvent::StanceChanged { combat, request } => out.push(
-                self.pack(
-                    &ComponentDelta {
+                self.pack(&ComponentDelta {
                         header: plain,
                         component: PLAYER_COMPONENT,
                         delta: PlayerDelta {
@@ -429,37 +366,24 @@ impl Codec {
                             ..Default::default()
                         }
                         .encode(),
-                    },
-                    "out-component",
-                    format!("stance\t{combat}\t{request:?}"),
-                )?,
+                    })?,
             ),
             // The client checks the cell of a direction update only for a non-zero direction,
             // and in lockstep puts the entity on that cell's centre: a minimal direction with
             // the cell, then a stop, in the same frame.
             MoveEvent::Teleport { cell } => {
                 for dir_x in [1, 0] {
-                    out.push(self.pack(
-                        &ack((dir_x, 0), *cell),
-                        "out-dir",
-                        format!("{dir_x}\t0\t{}\t{}", cell.0, cell.1),
-                    )?);
+                    out.push(self.pack(&ack((dir_x, 0), *cell))?);
                 }
             }
         }
         Ok(out)
     }
 
-    fn pack<M: Message>(
-        &self,
-        message: &M,
-        kind: &'static str,
-        fields: String,
-    ) -> anyhow::Result<Out> {
+    fn pack<M: Message>(&self, message: &M) -> anyhow::Result<Out> {
         Ok(Out {
             name: M::NAME,
             bytes: self.protocol.instance.encode(message)?,
-            trace: (kind, fields),
         })
     }
 }

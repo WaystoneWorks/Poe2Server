@@ -184,7 +184,6 @@ pub(crate) fn actor_init(
         codec: Codec::new(protocol.clone(), stat_keys()),
         directory: directory.clone(),
         idle: Duration::ZERO,
-        trace: true,
         player_spacing: 0,
         mods: Arc::new(poe_mod_host::ModHost::empty()),
         sink: Arc::new(crate::modlink::NullSink),
@@ -583,20 +582,6 @@ fn a_roll_batch_reaches_every_session_in_the_frame_it_is_produced() {
         .collect();
     assert_eq!(ids.len(), 1);
     assert!(ids[0] > start.action_id);
-}
-
-#[test]
-fn the_trace_lines_name_the_entity_they_belong_to() {
-    let mut fx = Fixture::new();
-    let mut a = fx.join_default("Alice", (100, 100));
-    let b = fx.join_default("Bob", (300, 300));
-    fx.walk(&b, 0, 180);
-    fx.tick();
-    let frame = a.rx.try_recv().unwrap();
-    // Besides the `pos` line every player gets per tick.
-    let trace: Vec<_> = frame.trace.iter().filter(|t| t.kind != "pos").collect();
-    assert_eq!(trace.len(), 1);
-    assert_eq!((trace[0].entity, trace[0].kind), (b.entity, "out-dir"));
 }
 
 #[test]

@@ -13,11 +13,7 @@
 
 use std::{
     collections::HashMap,
-    fmt::Arguments,
-    fs::File,
-    io::{BufWriter, Write},
     net::SocketAddr,
-    path::Path,
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
@@ -158,11 +154,11 @@ pub struct DriftLine {
 /// One client's side-channel session (registered when its ticket is redeemed).
 struct SideSession {
     keys: SessionKeys,
-    /// The client's TCP port (trace column, log lines; not an identity).
+    /// The client's TCP port (log lines; not an identity).
     port: u16,
-    /// Replay windows of the UDP stream (reports, commands) and the upload stream.
+    /// Replay windows of the UDP stream (reports, commands) and the TCP side stream.
     udp: ReplayWindow,
-    upload: ReplayWindow,
+    stream: ReplayWindow,
     /// Counter of the server's debug frames.
     out: u64,
     /// Where the client's authenticated datagrams come from (debug frames go back there).
@@ -178,58 +174,15 @@ struct SideSession {
 #[derive(Default)]
 pub struct ClientReports {
     sessions: Mutex<HashMap<u64, SideSession>>,
-    trace: OnceLock<Arc<MovementTrace>>,
     socket: OnceLock<Arc<UdpSocket>>,
     /// Datagrams dropped for failing authentication (for the log's rate limit).
     rejected: AtomicU64,
-}
-
-/// Movement trace (dev, `[dev] movement_trace`): one TSV line per client position
-/// report, movement input and movement reply, so a play session can be analysed afterwards.
-/// Columns: milliseconds since the trace was opened, client TCP port, kind, then fields.
-pub struct MovementTrace {
-    start: Instant,
-    out: Mutex<BufWriter<File>>,
-}
-
-impl MovementTrace {
-    pub fn open(path: &Path) -> std::io::Result<Self> {
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
-        let mut out = BufWriter::new(file);
-        writeln!(out, "# trace opened (ms, client port, kind, fields)")?;
-        Ok(Self {
-            start: Instant::now(),
-            out: Mutex::new(out),
-        })
-    }
-
-    pub fn line(&self, port: u16, kind: &str, fields: Arguments<'_>) {
-        let ms = self.start.elapsed().as_secs_f64() * 1000.0;
-        let mut out = self.out.lock().unwrap();
-        let _ = writeln!(out, "{ms:.1}\t{port}\t{kind}\t{fields}");
-    }
-
-    pub fn flush(&self) {
-        let _ = self.out.lock().unwrap().flush();
-    }
 }
 
 /// Reports older than this are ignored (the client stopped sending, e.g. paused or gone).
 const FRESH: Duration = Duration::from_millis(250);
 
 impl ClientReports {
-    /// Turns on the movement trace.
-    pub fn set_trace(&self, trace: Arc<MovementTrace>) {
-        let _ = self.trace.set(trace);
-    }
-
-    pub fn trace(&self) -> Option<&MovementTrace> {
-        self.trace.get().map(|t| &**t)
-    }
-
     /// Registers a session from its ticket keys (the key material the client got in
     /// `InstanceDetails`); returns the session id the client's datagrams carry.
     pub fn register(&self, material: &[u8; 64], port: u16) -> u64 {
@@ -241,7 +194,7 @@ impl ClientReports {
                 keys,
                 port,
                 udp: ReplayWindow::default(),
-                upload: ReplayWindow::default(),
+                stream: ReplayWindow::default(),
                 out: 0,
                 peer: None,
                 latest: None,
@@ -319,7 +272,7 @@ impl ClientReports {
             .ok_or(Reject::WrongSession)?;
         let frame = sc::open(&keys, Dir::ClientToServer, data)?;
         if !matches!(frame.kind, Kind::Report | Kind::Command) {
-            // Uploads travel over TCP; nothing else is valid here.
+            // Mod reports travel over TCP; nothing else is valid here.
             return Err(Reject::UnknownKind(frame.kind as u8));
         }
         let mut sessions = self.sessions.lock().unwrap();
@@ -332,21 +285,6 @@ impl ClientReports {
             Kind::Report => {
                 let p = ReportPayload::decode(frame.payload).ok_or(Reject::Malformed)?;
                 let report = ClientReport::from_payload(&p);
-                if let Some(t) = self.trace() {
-                    t.line(
-                        s.port,
-                        "report",
-                        format_args!(
-                            "{}\t{:.3}\t{:.3}\t{:#06x}\t{:#06x}\t{:#x}",
-                            report.frame,
-                            report.x,
-                            report.y,
-                            report.action,
-                            report.action2,
-                            report.flags
-                        ),
-                    );
-                }
                 if s.latest.replace(report).is_none() {
                     info!(
                         port = s.port,
@@ -368,9 +306,10 @@ impl ClientReports {
         Ok(frame.kind)
     }
 
-    /// Opens a frame of the upload stream (TCP): the session by its id, tag and direction, and
-    /// the upload counter (which must rise). Returns the session id, the kind and the payload.
-    pub fn open_upload(&self, data: &[u8]) -> Result<(u64, Kind, Vec<u8>), Reject> {
+    /// Opens a frame of the TCP side stream ([`crate::side_stream`]): the session by its id, tag
+    /// and direction, and the stream counter (which must rise). Only `Kind::ModReport` is valid
+    /// (the terrain upload kinds are gone). Returns the session id and the payload.
+    pub fn open_stream(&self, data: &[u8]) -> Result<(u64, Vec<u8>), Reject> {
         let id = sc::peek_session(data).ok_or(Reject::Malformed)?;
         let keys = self
             .sessions
@@ -380,15 +319,15 @@ impl ClientReports {
             .map(|s| s.keys.clone())
             .ok_or(Reject::WrongSession)?;
         let frame = sc::open(&keys, Dir::ClientToServer, data)?;
-        if !matches!(frame.kind, Kind::Upload | Kind::UploadOffer | Kind::ModReport) {
+        if frame.kind != Kind::ModReport {
             return Err(Reject::UnknownKind(frame.kind as u8));
         }
         let mut sessions = self.sessions.lock().unwrap();
         let s = sessions.get_mut(&id).ok_or(Reject::WrongSession)?;
-        if !s.upload.accept(frame.counter) {
+        if !s.stream.accept(frame.counter) {
             return Err(Reject::Replay);
         }
-        Ok((id, frame.kind, frame.payload.to_vec()))
+        Ok((id, frame.payload.to_vec()))
     }
 
     /// Keeps the client's mod report for session `id`.
@@ -585,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    fn upload_frames_have_their_own_counter() {
+    fn stream_frames_have_their_own_counter() {
         let reports = ClientReports::default();
         let material = [6u8; 64];
         let id = reports.register(&material, 1);
@@ -595,22 +534,16 @@ mod tests {
             let f = sc::seal(&keys, Kind::Report, c, &report_payload(c as u32, 1.0));
             reports.handle_datagram(&f, peer()).unwrap();
         }
-        let offer = sc::seal(&keys, Kind::UploadOffer, 1, &7u32.to_le_bytes());
-        let (sid, kind, payload) = reports.open_upload(&offer).unwrap();
-        assert_eq!(
-            (sid, kind, payload.as_slice()),
-            (id, Kind::UploadOffer, &7u32.to_le_bytes()[..])
-        );
-        assert_eq!(reports.open_upload(&offer), Err(Reject::Replay));
-        let up = sc::seal(&keys, Kind::Upload, 2, b"data");
-        assert!(reports.open_upload(&up).is_ok());
-        // Uploads are not accepted over UDP, reports not over the upload stream.
-        assert_eq!(
-            reports.handle_datagram(&up, peer()),
-            Err(Reject::UnknownKind(4))
-        );
+        let mods = sc::seal(&keys, Kind::ModReport, 1, b"mods");
+        assert_eq!(reports.open_stream(&mods), Ok((id, b"mods".to_vec())));
+        assert_eq!(reports.open_stream(&mods), Err(Reject::Replay));
+        // Mod reports are not accepted over UDP, reports not over the stream, terrain uploads
+        // nowhere.
+        assert!(matches!(reports.handle_datagram(&sc::seal(&keys, Kind::ModReport, 2, b"m"), peer()), Err(Reject::UnknownKind(_))));
         let report = sc::seal(&keys, Kind::Report, 501, &report_payload(1, 1.0));
-        assert_eq!(reports.open_upload(&report), Err(Reject::UnknownKind(1)));
+        assert_eq!(reports.open_stream(&report), Err(Reject::UnknownKind(1)));
+        let up = sc::seal(&keys, Kind::Upload, 2, b"data");
+        assert!(matches!(reports.open_stream(&up), Err(Reject::UnknownKind(_))));
     }
 
     #[test]

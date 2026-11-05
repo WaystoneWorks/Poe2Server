@@ -886,7 +886,7 @@ mod tests {
     #[test]
     fn ending_moves_each_variant_to_its_match() {
         let store = SqliteStore::in_memory().unwrap();
-        let acc = store.create_account("k", "Exile").unwrap().id;
+        let acc = store.create_account("k").unwrap().id;
         // Standard has Hardcore but no SSF variants: SSF characters fall back to the base.
         store.create_family(&family("Standard", true, false, true), 1).unwrap().unwrap();
         store.create_family(&family("Dawn", true, true, false), 1).unwrap().unwrap();
@@ -916,7 +916,7 @@ mod tests {
     #[test]
     fn players_leave_ssf_and_hardcore_one_way() {
         let store = SqliteStore::in_memory().unwrap();
-        let acc = store.create_account("k", "Exile").unwrap().id;
+        let acc = store.create_account("k").unwrap().id;
         store.create_family(&family("Dawn", true, true, false), 1).unwrap().unwrap();
         let hcssf = character(&store, acc, "Hcssf", "HC SSF Dawn");
         let base = character(&store, acc, "Base", "Dawn");
@@ -960,7 +960,7 @@ mod tests {
     #[test]
     fn an_account_migrates_a_whole_league_in_one_go() {
         let store = SqliteStore::in_memory().unwrap();
-        let (acc, other) = (store.create_account("k", "Exile").unwrap().id, store.create_account("o", "Exile").unwrap().id);
+        let (acc, other) = (store.create_account("k").unwrap().id, store.create_account("o").unwrap().id);
         store.create_family(&family("Standard", true, false, true), 1).unwrap().unwrap();
         store.create_family(&family("Dawn", true, true, false), 1).unwrap().unwrap();
         character(&store, acc, "OneSsf", "SSF Dawn");
@@ -993,7 +993,7 @@ mod tests {
     #[test]
     fn admins_move_a_character_anywhere_alive() {
         let store = SqliteStore::in_memory().unwrap();
-        let acc = store.create_account("k", "Exile").unwrap().id;
+        let acc = store.create_account("k").unwrap().id;
         store.create_family(&family("Standard", true, false, true), 1).unwrap().unwrap();
         store.create_family(&family("Dawn", true, true, false), 1).unwrap().unwrap();
         let c = character(&store, acc, "Moved", "Standard");

@@ -12,7 +12,7 @@ use poe_proto::{
     entity::{self, Actor, Component, Life, Player, Pool, Positioned, Skill, Stats},
     player_blob::{ActorSection, AnimationSet, PlayerBlob, PlayerSection, PlayerStats, StatSet},
 };
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::{
     InstanceServer,
@@ -46,45 +46,6 @@ const ACTOR_SETS_BYTES: usize = 18;
 /// Entity flags and link count in front of the components of `initial_state_blob`.
 const BLOB_HEADER_BYTES: usize = 2;
 
-/// The parts of the official remote layout that can be left out one by one
-/// (`[dev] remote_blob_omit`, to find which part the client reacts to).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RemoteParts {
-    pub stat_sets: bool,
-    pub derived_stats: bool,
-    pub life_state: bool,
-    pub player_flags: bool,
-}
-
-impl Default for RemoteParts {
-    fn default() -> Self {
-        Self {
-            stat_sets: true,
-            derived_stats: true,
-            life_state: true,
-            player_flags: true,
-        }
-    }
-}
-
-impl RemoteParts {
-    /// Everything except the named parts; unknown names are returned.
-    pub fn omitting(names: &[String]) -> (Self, Vec<String>) {
-        let mut parts = Self::default();
-        let mut unknown = Vec::new();
-        for name in names {
-            match name.as_str() {
-                "stat_sets" => parts.stat_sets = false,
-                "derived_stats" => parts.derived_stats = false,
-                "life_state" => parts.life_state = false,
-                "player_flags" => parts.player_flags = false,
-                _ => unknown.push(name.clone()),
-            }
-        }
-        (parts, unknown)
-    }
-}
-
 /// What a remote blob is made of. Everything else in the blob is the official default.
 #[derive(Default)]
 pub struct RemoteInit<'a> {
@@ -102,9 +63,6 @@ pub struct RemoteInit<'a> {
     pub energy_shield: u32,
     /// Energy shield recharge delay in seconds (the official blobs store it in the pools).
     pub recharge_delay: f32,
-    pub parts: RemoteParts,
-    /// The class's animated object path, when the blob should carry it.
-    pub animated_path: Option<String>,
     /// Main hand, off hand and default animation set names.
     pub animation_sets: [String; 3],
     pub skills: Vec<Skill>,
@@ -210,23 +168,16 @@ pub fn remote_blob(init: &RemoteInit<'_>) -> PlayerBlob {
             unk_168: 0,
             form: 0,
             slots: SHAPESHIFT_SLOTS,
-            sets: if init.parts.stat_sets {
-                init.stat_sets.clone()
-            } else {
-                Vec::new()
-            },
+            sets: init.stat_sets.clone(),
             unk_1b0: STATS_TRAILER.0,
             unk_1b4: STATS_TRAILER.1,
             unk_1b5: STATS_TRAILER.2,
         },
         buffs: Vec::new(),
-        life: if init.parts.life_state {
-            official_life(init)
-        } else {
-            Life::character(init.life, init.mana)
-        },
-        animated_flags: ANIMATED_FLAGS | u8::from(init.animated_path.is_some()),
-        animated_path: init.animated_path.clone(),
+        life: official_life(init),
+        // Official remote blobs carry no animated object path.
+        animated_flags: ANIMATED_FLAGS,
+        animated_path: None,
         animated: [TURN_SPEED.to_bits(), 0, 0, 0, 0],
         player: PlayerSection {
             name: init.name.to_owned(),
@@ -241,11 +192,7 @@ pub fn remote_blob(init: &RemoteInit<'_>) -> PlayerBlob {
             bytes5: [0; 5],
             hideout_a: 0,
             hideout_b: 0,
-            flags: if init.parts.player_flags {
-                REMOTE_PLAYER_FLAGS
-            } else {
-                0
-            },
+            flags: REMOTE_PLAYER_FLAGS,
             unk_205: 0,
             unk_3e7: REMOTE_UNK_3E7,
             unk_list: Vec::new(),
@@ -324,17 +271,8 @@ impl InstanceServer {
             entity::initial_state_blob(entity::ENTITY_IN_WAKE_ZONE, &components)
         });
         // Other clients: the official remote layout with what the character's data gives.
-        let (parts, unknown) = RemoteParts::omitting(&self.config.dev.remote_blob_omit);
-        if !unknown.is_empty() {
-            warn!(
-                ?unknown,
-                "[dev] remote_blob_omit: unknown part names (stat_sets, derived_stats, life_state, player_flags)"
-            );
-        }
         let mut remote_stats = stats.clone();
-        if parts.derived_stats {
-            game_stats::add_resting_state(&mut remote_stats);
-        }
+        game_stats::add_resting_state(&mut remote_stats);
         let mut remote_network = remote_stats.to_network(&self.stats);
         remote_network.sort_unstable();
         let remote = remote_blob(&RemoteInit {
@@ -350,12 +288,6 @@ impl InstanceServer {
             recharge_delay: remote_stats.get("virtual_total_energy_shield_recharge_delay_ms")
                 as f32
                 / 1000.0,
-            parts,
-            animated_path: self
-                .config
-                .dev
-                .remote_animated_path
-                .then(|| class.ao_file.clone()),
             animation_sets: self.config.player.animation_sets.clone(),
             skills: actor_skills,
         });
@@ -541,41 +473,14 @@ mod tests {
     }
 
     #[test]
-    fn parts_can_be_left_out_one_by_one() {
+    fn the_remote_blob_carries_every_official_part() {
         let mut init = init(Vec::new());
         init.stat_sets = unarmed_stat_sets(&game_stats::Stats::default(), &registry());
         let full = remote_blob(&init);
         assert!(!full.stats.sets.is_empty());
         assert_eq!(full.life.flags, 1);
         assert_eq!(full.player.flags, REMOTE_PLAYER_FLAGS);
-        let (parts, unknown) = RemoteParts::omitting(&[
-            "stat_sets".into(),
-            "life_state".into(),
-            "player_flags".into(),
-            "nonsense".into(),
-        ]);
-        assert_eq!(unknown, ["nonsense"]);
-        init.parts = parts;
-        let bare = remote_blob(&init);
-        assert!(bare.stats.sets.is_empty());
-        // The solo blob's life: full pools, flags 0.
-        assert_eq!((bare.life.flags, bare.life.life.current), (0, 120));
-        assert_eq!(bare.player.flags, 0);
-        assert_eq!(RemoteParts::default(), RemoteParts::omitting(&[]).0);
-    }
-
-    #[test]
-    fn the_animated_path_is_optional() {
-        let mut init = init(Vec::new());
-        assert_eq!(remote_blob(&init).animated_path, None);
-        init.animated_path = Some("Metadata/Characters/Dex/DexFour.ao".into());
-        let blob = remote_blob(&init);
-        let back = PlayerBlob::decode(&blob.encode()).unwrap();
-        assert_eq!(
-            back.animated_path.as_deref(),
-            Some("Metadata/Characters/Dex/DexFour.ao")
-        );
-        assert_eq!(back, blob);
+        assert_eq!(full.animated_path, None);
     }
 
     #[test]

@@ -83,8 +83,9 @@ pub struct NewCharacter {
 pub trait Store: Send + Sync {
     fn account_by_login_key(&self, login_key: &str) -> Result<Option<Account>>;
     fn account_by_id(&self, id: u32) -> Result<Option<Account>>;
-    /// Creates an account named `<name_prefix><id>`.
-    fn create_account(&self, login_key: &str, name_prefix: &str) -> Result<Account>;
+    /// Creates a password-less account by login key, named `account<id>` (the removed Steam
+    /// login made these; tests still do).
+    fn create_account(&self, login_key: &str) -> Result<Account>;
     /// Characters of an account, oldest first.
     fn characters(&self, account_id: u32) -> Result<Vec<Character>>;
     /// Every character of every account, by id (web admin).

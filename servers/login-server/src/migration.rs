@@ -137,7 +137,7 @@ mod tests {
         let store = SqliteStore::in_memory().unwrap();
         let family = NewLeagueFamily { name: "Dawn".into(), hardcore: true, ssf: true, ..Default::default() };
         store.create_family(&family, 1).unwrap().unwrap();
-        let (a, b) = (store.create_account("a", "Exile").unwrap(), store.create_account("b", "Exile").unwrap());
+        let (a, b) = (store.create_account("a").unwrap(), store.create_account("b").unwrap());
         for (account, name, league) in
             [(a.id, "OneSsf", "SSF Dawn"), (a.id, "TwoSsf", "SSF Dawn"), (a.id, "BothFlags", "HC SSF Dawn"), (a.id, "Plain", "Dawn"), (b.id, "Theirs", "SSF Dawn")]
         {

@@ -125,7 +125,7 @@ pub struct Config {
     pub movement: MovementConfig,
     #[serde(default)]
     pub travel: TravelConfig,
-    /// Development and research tools (debug link, position sync, traces, seed sweep).
+    /// Development tools (debug link, position sync, drift checker).
     #[serde(default)]
     pub dev: DevConfig,
     /// HTTP API and web admin (`crates/poe-web-api`).
@@ -156,6 +156,54 @@ pub struct Config {
     /// config editor writes exactly this file.
     #[serde(skip)]
     pub source_path: Option<PathBuf>,
+    /// Keys of [`REMOVED_KEYS`] this config still names (ignored; a startup warning each,
+    /// [`Config::security_warnings`]).
+    #[serde(skip)]
+    pub removed_keys: Vec<String>,
+}
+
+/// Keys that were options once and are gone (user decision 2026-11-05: the server is the terrain
+/// authority, the client terrain upload and research switches are deleted, account placeholders
+/// are fixed). An old config naming one still loads: the key is ignored with a warning, so a
+/// `server.toml` the launcher carried over keeps working. A table entry covers all its keys.
+pub const REMOVED_KEYS: &[&str] = &[
+    "terrain.generate",
+    "terrain.generated_grid",
+    "terrain.force_layout",
+    "terrain.mismatch_log",
+    "spawn.upload",
+    "spawn.layout_dir",
+    "spawn.filler",
+    "dev.known_seeds",
+    "dev.sweep",
+    "dev.sweep_results",
+    "dev.remote_blob_omit",
+    "dev.remote_animated_path",
+    "dev.fake_terrain_hash",
+    "dev.movement_trace",
+    "accounts.full_access",
+    "accounts.stash_tabs",
+    "accounts.name_prefix",
+];
+
+/// The [`REMOVED_KEYS`] present in a parsed TOML table.
+fn removed_keys_in(table: &toml::Table) -> Vec<String> {
+    REMOVED_KEYS
+        .iter()
+        .filter(|path| {
+            let mut value: Option<&toml::Table> = Some(table);
+            let mut parts = path.split('.').peekable();
+            while let Some(part) = parts.next() {
+                let Some(v) = value.and_then(|t| t.get(part)) else { return false };
+                if parts.peek().is_none() {
+                    return true;
+                }
+                value = v.as_table();
+            }
+            false
+        })
+        .map(|p| (*p).to_owned())
+        .collect()
 }
 
 /// Rate limiting of password logins (the game login `0x0003` and the web API `/login` and
@@ -504,52 +552,27 @@ fn default_web_token_ttl() -> u64 {
     60
 }
 
-/// Server-side terrain generation (`poe-world`). The client always builds the terrain itself
-/// from the area and seed; the server's copy is for collision, pathing and spawns later.
+/// Server-side terrain generation (`poe-world`). The server is the terrain authority: it
+/// generates every new instance, forces its layout on the client (`map_force_topology` /
+/// `map_force_orientation`), uses its own walkability grid, spawn layout and travel objects, and
+/// kicks a player whose tile or doodad hash differs from its own (`terrain_check`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct TerrainConfig {
-    /// Send every new instance's layout (topology and region orientation) to the client as
-    /// `map_force_topology` / `map_force_orientation`, chosen by the server's generator
-    /// (`poe_world::area::choose_layout`, the client's own natural choice), unless the instance
-    /// forces one itself. Client and server then agree on the layout by construction. Off: the
-    /// client chooses alone (as before).
-    #[serde(default = "default_true")]
-    pub force_layout: bool,
-    /// Generate each new instance's terrain on the server and compare its tile hash with the
-    /// client's (on by default since 2026-10-28: every layout of the client batch that the client
-    /// can generate matches, docs/status/terrain.md in the hub).
-    #[serde(default = "default_true")]
-    pub generate: bool,
-    /// Use the walkability grid the server generates (`poe-world`, docs/architecture/instance-world.md in the hub)
-    /// instead of the one the client uploads or the layout cache holds. It is used only when the
-    /// server's tile hash equals the client's; otherwise the uploaded or cached grid stands in.
-    /// On by default since 2026-11-02 (the generated grid equals the client's in the broad sample
-    /// and in the live wall tests, hub PLAN R2).
-    #[serde(default = "default_true")]
-    pub generated_grid: bool,
     /// Seconds the client has to report its terrain hashes after the area load started. No
     /// report in time counts as a mismatch ("client terrain generation failed": the client throws
     /// `TerrainGenerationException` on some seeds and then never reports). 0: wait forever.
     #[serde(default = "default_hash_timeout_secs")]
     pub hash_timeout_secs: u64,
-    /// Every terrain mismatch (a kicked player) is appended to this TSV; `cargo xtask
-    /// terrain-matrix` reads it. Empty: off.
-    #[serde(default = "default_mismatch_log")]
-    pub mismatch_log: PathBuf,
 }
 
 impl Default for TerrainConfig {
     fn default() -> Self {
-        Self { force_layout: true, generate: true, generated_grid: true, hash_timeout_secs: default_hash_timeout_secs(), mismatch_log: default_mismatch_log() }
+        Self { hash_timeout_secs: default_hash_timeout_secs() }
     }
 }
 
 fn default_hash_timeout_secs() -> u64 {
     30
-}
-
-fn default_mismatch_log() -> PathBuf {
-    "runtime/terrain_mismatches.tsv".into()
 }
 
 /// Cluster identity. Login tokens carry the id of the cluster that issued them, so a token
@@ -650,19 +673,11 @@ fn default_chat_channel() -> u16 {
     1
 }
 
-/// Player start position (see `instance-server::spawn`). The layout comes from the client DLL
-/// (exported or uploaded); the server's own generator (`poe-world`) does not feed spawns yet.
+/// Player start position (see `instance-server::spawn`), on the layout and grid the server
+/// generated.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct SpawnConfig {
-    /// Terrain dump directory (`dumps/<version>/terrain`): the client DLL writes
-    /// `layouts/terrain_layout_<tile hash>.tsv` and `grids/terrain_grid_<tile hash>.bin`
-    /// there (poe-hook.toml `dump_dir`); empty disables layout-based spawns.
-    #[serde(default)]
-    pub layout_dir: String,
-    /// Substrings of tile paths that are never playable (map filler).
-    #[serde(default)]
-    pub filler: Vec<String>,
     /// Per `WorldAreas.Id`: the tile the player starts on.
     #[serde(default)]
     pub start_tiles: std::collections::BTreeMap<String, StartTile>,
@@ -670,8 +685,6 @@ pub struct SpawnConfig {
     /// intro area stays covered in grey fog.
     #[serde(default)]
     pub intro_areas: Vec<String>,
-    /// Terrain uploads from client DLLs (`layout_dir` is their cache).
-    pub upload: UploadConfig,
     /// Smallest distance in grid cells between a joining player's spawn cell and the players
     /// already in the instance; a joiner whose spawn is closer than this stands on the nearest
     /// free walkable cell instead (0 turns it off).
@@ -681,48 +694,9 @@ pub struct SpawnConfig {
 impl Default for SpawnConfig {
     fn default() -> Self {
         Self {
-            layout_dir: String::new(),
-            filler: Vec::new(),
             start_tiles: Default::default(),
             intro_areas: Vec::new(),
-            upload: UploadConfig::default(),
             player_spacing: 8,
-        }
-    }
-}
-
-/// Terrain upload (WP3.4): a client DLL on a trusted server sends the layout and cell grid it
-/// generated, authenticated with the session's side-channel keys (docs/protocol/side-channel.md),
-/// over the instance TCP port. The server validates them and caches them per tile hash in
-/// `[spawn] layout_dir`, which is also where local clients write them.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub struct UploadConfig {
-    /// Accept uploads. Needs `[spawn] layout_dir`. Off by default since the server generates
-    /// the grid itself (`[terrain] generated_grid`); a fallback for areas it cannot generate.
-    pub enabled: bool,
-    /// Largest upload as sent (zlib-compressed layout and grid), in bytes.
-    pub max_bytes: usize,
-    /// Largest layout after decompression.
-    pub max_layout_bytes: usize,
-    /// Largest grid after decompression.
-    pub max_grid_bytes: usize,
-    /// How long a spawn waits for the layout when no upload is announced (a local DLL writes
-    /// the file within a moment).
-    pub wait_ms: u64,
-    /// How long a spawn waits for the layout once its client announced an upload.
-    pub wait_upload_secs: u64,
-}
-
-impl Default for UploadConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            max_bytes: 32 << 20,
-            max_layout_bytes: 16 << 20,
-            max_grid_bytes: 128 << 20,
-            wait_ms: 3000,
-            wait_upload_secs: 60,
         }
     }
 }
@@ -802,6 +776,13 @@ impl Config {
     /// `config/server.toml` triggers none of them.
     pub fn security_warnings(&self) -> Vec<String> {
         let mut out = Vec::new();
+        for key in &self.removed_keys {
+            out.push(format!(
+                "{key} was removed and is ignored (the server is the terrain authority; client \
+                 terrain uploads, research switches and account placeholders are gone): remove \
+                 the key from this config"
+            ));
+        }
         if self.accounts.dev_machine_hash_login.is_some() {
             out.push(
                 "[accounts] dev_machine_hash_login is gone and ignored: the password-less Steam login \
@@ -1027,13 +1008,9 @@ fn default_sprint_buff_rows() -> [u16; 3] {
     [2758, 2737, 2853]
 }
 
-/// `[dev]`: development and research tools. None of these are needed for normal play.
+/// `[dev]`: development tools. None of these are needed for normal play.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DevConfig {
-    /// Optional TSV of terrain seeds known to generate (`area, level, seed, ...`); the server
-    /// picks one for areas listed there, since some random seeds fail to generate.
-    #[serde(default)]
-    pub known_seeds: PathBuf,
     /// Listen for the client DLL's UDP datagrams on the instance port: per-frame position
     /// reports (only read by the drift checker, `drift_check`), and the debug link's overlay
     /// commands. Reports never move the player. Datagrams carry a per-session HMAC and a
@@ -1048,67 +1025,23 @@ pub struct DevConfig {
     /// Interval of the drift checker's log lines.
     #[serde(default = "default_drift_interval_ms")]
     pub drift_interval_ms: u64,
-    /// Movement trace: every client position report, movement input and movement reply
-    /// is appended to this TSV file, for analysing a play session. Empty: off.
-    #[serde(default)]
-    pub movement_trace: PathBuf,
     /// Debug link for the client DLL's overlay: send the player's movement state
     /// (from the instance's simulation) to the DLL (UDP, where its position reports come from), the command registry and instance
     /// list, and accept server commands from its overlay (`commands.rs`). Authenticated per
     /// session, so remote clients work too.
     #[serde(default = "default_true")]
     pub debug_link: bool,
-    /// Terrain seed sweep (research, for the `poe-world` generator): a file of
-    /// `<WorldAreas.Id> <seed> [count]` lines.
-    /// Each instance session generates the next listed area/seed instead of the character's
-    /// area, records the client's hashes in `sweep_results` and ends (the client then logs in
-    /// again; `scripts/re/sweep_drive.py`). A second AreaInfo on one connection crashes the
-    /// client, hence one layout per session. The client DLL's area export records each layout.
-    /// `POE_SWEEP` overrides it. Empty: off.
-    #[serde(default)]
-    pub sweep: PathBuf,
-    /// Where the sweep appends `area, seed, tile hash, doodad hash` lines.
-    #[serde(default = "default_sweep_results")]
-    pub sweep_results: PathBuf,
-    /// Remote player blob experiments (the model other players see: `docs/protocol/entities.md`,
-    /// "Remote player look"). Parts of the official remote layout the server generates that can
-    /// be left out one by one to find which one a client reacts to: `"stat_sets"` (the weapon
-    /// set stat sets), `"derived_stats"` (full life/mana conditions, poise, recharge delay),
-    /// `"life_state"` (the pools as the official server sends them: nothing reserved, flags 1),
-    /// `"player_flags"` (Player flags bit 3). Empty: everything is sent.
-    #[serde(default)]
-    pub remote_blob_omit: Vec<String>,
-    /// Also send the class's animated object path in the remote blob (as the player's own blob
-    /// does; official blobs send none).
-    #[serde(default)]
-    pub remote_animated_path: bool,
-    /// Test switch for the terrain check (`[terrain] generated_grid`): the server expects a wrong
-    /// tile hash for every generated (non-town, non-hideout) area, so every player entering one is
-    /// kicked as on a real mismatch. Only for agent tests; logs a warning at every entry.
-    #[serde(default)]
-    pub fake_terrain_hash: bool,
 }
 
 impl Default for DevConfig {
     fn default() -> Self {
         Self {
-            known_seeds: PathBuf::new(),
             position_sync: true,
             drift_check: false,
             drift_interval_ms: default_drift_interval_ms(),
-            movement_trace: PathBuf::new(),
             debug_link: true,
-            sweep: PathBuf::new(),
-            sweep_results: default_sweep_results(),
-            remote_blob_omit: Vec::new(),
-            remote_animated_path: false,
-            fake_terrain_hash: false,
         }
     }
-}
-
-fn default_sweep_results() -> PathBuf {
-    "dumps/{version}/terrain/vectors/sweep-results.tsv".into()
 }
 
 fn default_drift_interval_ms() -> u64 {
@@ -1126,19 +1059,11 @@ pub struct DatabaseConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AccountsConfig {
-    pub name_prefix: String,
     pub max_characters: u8,
     /// The account flag bytes of the authentication result (`docs/protocol/login.md`). Default
     /// `[0x23, 0x03]`: no terms-of-use, warning or update windows, no strict-unlock banner.
     #[serde(default = "default_account_flags")]
     pub flags: [u8; 2],
-    /// Full game access (InitialState CharacterState flags byte 1 bit 6); without it the
-    /// in-game escape menu shows a "Get Full Access" button.
-    #[serde(default = "yes")]
-    pub full_access: bool,
-    /// Stash tab names an account gets (sent in InitialState; official: "1".."4").
-    #[serde(default = "default_stash_tabs")]
-    pub stash_tabs: Vec<String>,
     /// Removed: the password-less Steam login (`0x0005`) no longer exists (a `0x0005` is always
     /// refused). The key is still read so an old config loads; any value only gives a startup
     /// warning ([`Config::security_warnings`]).
@@ -1152,20 +1077,16 @@ pub struct AccountsConfig {
     pub remember_days: u32,
 }
 
+fn yes() -> bool {
+    true
+}
+
 fn default_account_flags() -> [u8; 2] {
     [0x23, 0x03]
 }
 
 fn default_remember_days() -> u32 {
     30
-}
-
-fn yes() -> bool {
-    true
-}
-
-fn default_stash_tabs() -> Vec<String> {
-    ["1", "2", "3", "4"].map(String::from).to_vec()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1230,13 +1151,12 @@ impl Config {
     /// `{version}` in the path settings that name a build's data is replaced by
     /// `[game] version`.
     pub fn parse(text: &str) -> Result<Self, toml::de::Error> {
+        let table: toml::Table = toml::from_str(text)?;
         let mut config: Self = toml::from_str(text)?;
+        config.removed_keys = removed_keys_in(&table);
         let version = config.game.version.clone();
         let expand = |s: &str| s.replace("{version}", &version);
         config.game.protocol_dir = expand(&config.game.protocol_dir.to_string_lossy()).into();
-        config.dev.known_seeds = expand(&config.dev.known_seeds.to_string_lossy()).into();
-        config.dev.sweep_results = expand(&config.dev.sweep_results.to_string_lossy()).into();
-        config.spawn.layout_dir = expand(&config.spawn.layout_dir);
         Ok(config)
     }
 
@@ -1320,25 +1240,6 @@ mod tests {
         assert_eq!(v.version, cfg.game.version);
         // protocol_dir is not in the shipped config: it comes from the version file.
         assert_eq!(cfg.game.protocol_dir, root.join(&v.protocol.opcodes));
-        // `{version}` is replaced in the path settings.
-        // `{version}` is replaced in the path settings (known_seeds is empty in the safe
-        // committed config; the dev config sets a path with the placeholder).
-        let dev = Config::parse(
-            &std::fs::read_to_string(root.join("config/server.toml"))
-                .unwrap()
-                .replace(
-                    "known_seeds = \"\"",
-                    "known_seeds = \"dumps/{version}/terrain/seeds.tsv\"",
-                ),
-        )
-        .unwrap();
-        assert_eq!(
-            dev.dev.known_seeds,
-            Path::new(&format!("dumps/{}/terrain/seeds.tsv", cfg.game.version))
-        );
-        assert!(!cfg.spawn.layout_dir.contains('{'));
-        assert!(!cfg.dev.sweep_results.to_string_lossy().contains('{'));
-
         let dir = std::env::temp_dir().join(format!("poe-config-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let text = std::fs::read_to_string(root.join("config/server.toml"))
@@ -1414,11 +1315,7 @@ mod tests {
         assert!(!cfg.security.trust_forwarded_for);
         assert!(!cfg.security.allow_unknown_client);
         assert!(!cfg.dev.debug_link && !cfg.dev.position_sync && !cfg.dev.drift_check);
-        assert!(cfg.dev.movement_trace.as_os_str().is_empty());
-        assert!(cfg.dev.sweep.as_os_str().is_empty());
-        // Server-side generation and its grid are on; the layout is forced; uploads are off.
-        assert!(cfg.terrain.generate && cfg.terrain.force_layout && cfg.terrain.generated_grid);
-        assert!(!cfg.spawn.upload.enabled);
+        assert!(cfg.removed_keys.is_empty(), "{:?}", cfg.removed_keys);
         // The pre-login limits are on.
         let l = &cfg.network.login;
         assert!(l.pre_auth_read_timeout_secs > 0 && l.pre_auth_login_timeout_secs > 0);
@@ -1438,12 +1335,13 @@ mod tests {
         assert!(ex.web.bind.ip().is_loopback());
     }
 
-    /// The release ships the example: with `generated_grid` off no area has fog gates, waypoints
-    /// or checkpoints (0.6.0 did that).
+    /// The release ships the example. 0.6.0 shipped one with `generated_grid = false`, so no
+    /// area had fog gates, waypoints or checkpoints; the travel objects now always come from the
+    /// server's generation, and the example names no removed key and keeps the travel defaults.
     #[test]
     fn the_example_spawns_travel_objects() {
         let ex = Config::parse(include_str!("../../../config/server.example.toml")).unwrap();
-        assert!(ex.terrain.generate && ex.terrain.generated_grid);
+        assert!(ex.removed_keys.is_empty(), "{:?}", ex.removed_keys);
         assert_eq!(ex.travel.interact_range, TravelConfig::default().interact_range);
         assert_eq!(ex.travel.skip_objects, TravelConfig::default().skip_objects);
     }
@@ -1471,7 +1369,7 @@ mod tests {
         let min = Config::parse(
             "[game]\nversion=\"x\"\ngame_dir=\"g\"\nschema=\"s\"\n[network]\npublic_host=\"h\"\n\
              [network.login]\nbind=\"0.0.0.0:1\"\n[network.instance]\nbind=\"0.0.0.0:2\"\npublic_port=2\n\
-             [database]\npath=\"d\"\n[accounts]\nname_prefix=\"E\"\nmax_characters=1\n\
+             [database]\npath=\"d\"\n[accounts]\nmax_characters=1\n\
              [gateway]\nregion=\"r\"\ndisplay_name=\"n\"\n",
         )
         .unwrap();
@@ -1496,29 +1394,22 @@ mod tests {
         assert_eq!(i(&ex.network.instance), i(&min.network.instance));
     }
 
+    /// A config the launcher carried over from an older release still names removed keys: it
+    /// loads, and each key gives one warning.
     #[test]
-    fn spawn_upload_defaults_match_the_shipped_config() {
-        let cfg = Config::parse(include_str!("../../../config/server.toml")).unwrap();
-        let d = UploadConfig::default();
-        let u = &cfg.spawn.upload;
+    fn removed_keys_load_with_a_warning() {
+        let old = include_str!("../../../config/server.toml")
+            .replacen("[terrain]\n", "[terrain]\ngenerated_grid = false\nmismatch_log = \"x.tsv\"\n", 1)
+            .replacen("\nmax_characters =", "\nname_prefix = \"Exile\"\nfull_access = true\nmax_characters =", 1)
+            + "\n[spawn.upload]\nenabled = true\n";
+        let cfg = Config::parse(&old).unwrap();
         assert_eq!(
-            (
-                u.enabled,
-                u.max_bytes,
-                u.max_layout_bytes,
-                u.max_grid_bytes,
-                u.wait_ms,
-                u.wait_upload_secs
-            ),
-            (
-                d.enabled,
-                d.max_bytes,
-                d.max_layout_bytes,
-                d.max_grid_bytes,
-                d.wait_ms,
-                d.wait_upload_secs
-            )
+            cfg.removed_keys,
+            ["terrain.generated_grid", "terrain.mismatch_log", "spawn.upload", "accounts.full_access", "accounts.name_prefix"]
         );
+        let w = cfg.security_warnings();
+        assert_eq!(w.len(), 5, "{w:?}");
+        assert!(w[0].starts_with("terrain.generated_grid was removed and is ignored"), "{w:?}");
     }
 
     #[test]
@@ -1539,7 +1430,7 @@ mod tests {
     fn restart_mode_parses_and_rejects_unknown() {
         let base = |extra: &str| {
             format!(
-                "{extra}\n[game]\nversion = \"x\"\ngame_dir = \"g\"\nschema = \"s\"\nprotocol_dir = \"p\"\n[network]\npublic_host = \"h\"\n[network.login]\nbind = \"0.0.0.0:1\"\n[network.instance]\nbind = \"0.0.0.0:2\"\npublic_port = 2\n[database]\npath = \"d\"\n[accounts]\nname_prefix = \"Exile\"\nmax_characters = 1\n[gateway]\nregion = \"r\"\ndisplay_name = \"n\"\n"
+                "{extra}\n[game]\nversion = \"x\"\ngame_dir = \"g\"\nschema = \"s\"\nprotocol_dir = \"p\"\n[network]\npublic_host = \"h\"\n[network.login]\nbind = \"0.0.0.0:1\"\n[network.instance]\nbind = \"0.0.0.0:2\"\npublic_port = 2\n[database]\npath = \"d\"\n[accounts]\nmax_characters = 1\n[gateway]\nregion = \"r\"\ndisplay_name = \"n\"\n"
             )
         };
         // `[server]` must come before the other tables only because of this helper's layout.
@@ -1572,7 +1463,6 @@ mod tests {
             [database]
             path = "d"
             [accounts]
-            name_prefix = "Exile"
             max_characters = 1
             [gateway]
             region = "r"
@@ -1651,7 +1541,7 @@ mod tests {
     fn motd_and_new_sections_parse() {
         let base = |extra: &str| {
             format!(
-                "{extra}\n[game]\nversion = \"x\"\ngame_dir = \"g\"\nschema = \"s\"\nprotocol_dir = \"p\"\n[network]\npublic_host = \"h\"\n[network.login]\nbind = \"0.0.0.0:1\"\n[network.instance]\nbind = \"0.0.0.0:2\"\npublic_port = 2\n[database]\npath = \"d\"\n[accounts]\nname_prefix = \"Exile\"\nmax_characters = 1\n[gateway]\nregion = \"r\"\ndisplay_name = \"n\"\n"
+                "{extra}\n[game]\nversion = \"x\"\ngame_dir = \"g\"\nschema = \"s\"\nprotocol_dir = \"p\"\n[network]\npublic_host = \"h\"\n[network.login]\nbind = \"0.0.0.0:1\"\n[network.instance]\nbind = \"0.0.0.0:2\"\npublic_port = 2\n[database]\npath = \"d\"\n[accounts]\nmax_characters = 1\n[gateway]\nregion = \"r\"\ndisplay_name = \"n\"\n"
             )
         };
         let c = Config::parse(&base("")).unwrap();

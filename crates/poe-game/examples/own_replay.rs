@@ -8,7 +8,7 @@
 //! Always from the segment's start (the area's start).
 //! `--free`: no placing on the client's log inside skills. The two models must then agree in every frame.
 //! `OFFSET`: log frame minus capture frame of the segment, as the trace script prints it.
-//! A private session (`scripts/re/movement_session_replay.py`): OFFSET 0, `--roll-skill 1`.
+//! Files made from a private session (the removed server movement trace) used OFFSET 0, `--roll-skill 1`.
 
 use poe_game::clientsim::ClientSim;
 use poe_game::grid::Grid;

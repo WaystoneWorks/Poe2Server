@@ -102,14 +102,6 @@ pub struct OwnDebug {
     pub paused: bool,
 }
 
-/// One line of the movement trace for a message of `entity`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TraceLine {
-    pub entity: u32,
-    pub kind: &'static str,
-    pub fields: String,
-}
-
 /// What the actor sends a session for each tick. The session writes `head`, then `events`.
 #[derive(Debug, Clone)]
 pub struct Frame {
@@ -119,8 +111,6 @@ pub struct Frame {
     /// Every entity's messages of the frame, in event order, then the `SimulationTick` marker.
     /// Shared by all sessions of the instance.
     pub events: Arc<Vec<u8>>,
-    /// Trace lines of the movement messages (empty unless tracing is on).
-    pub trace: Arc<Vec<TraceLine>>,
     pub own: Own,
     /// Objects the session's player clicked and reached in this frame: (entity, request flags).
     pub interactions: Vec<(u32, u16)>,
@@ -251,8 +241,6 @@ pub struct ActorInit {
     pub directory: Arc<dyn InstanceDirectory>,
     /// Empty for this long ends the actor; zero: never.
     pub idle: Duration,
-    /// Build [`Frame::trace`].
-    pub trace: bool,
     /// `[spawn] player_spacing`: the smallest distance in cells between a joining player's cell
     /// and the players already in the instance (0: spawn where requested).
     pub player_spacing: i32,
@@ -804,7 +792,6 @@ impl Actor {
         // Per event: the entity, the bytes for its own client and the bytes for everybody else
         // (they differ for stat updates that carry owner-only stats).
         let mut segments: Vec<(u32, Vec<u8>, Vec<u8>)> = Vec::new();
-        let mut trace = Vec::new();
         let mut interactions: Vec<(u32, (u32, u16))> = Vec::new();
         for e in &events {
             let Event::Movement(m) = &e.event else {
@@ -829,27 +816,6 @@ impl Actor {
                 outs.iter().flat_map(|o| o.bytes.iter().copied()).collect()
             };
             segments.push((entity, join(&owner), join(&others)));
-            if self.init.trace {
-                trace.extend(owner.into_iter().map(|o| TraceLine {
-                    entity,
-                    kind: o.trace.0,
-                    fields: o.trace.1,
-                }));
-            }
-        }
-        // The server's own position and the client grid cell it models, after this frame.
-        if self.init.trace {
-            for m in &self.members {
-                if let Some(e) = self.world.entity(m.entity) {
-                    let (x, y) = e.movement.position();
-                    let g = e.movement.grid();
-                    trace.push(TraceLine {
-                        entity: m.entity.0,
-                        kind: "pos",
-                        fields: format!("{x:.3}\t{y:.3}\t{}\t{}", g.0, g.1),
-                    });
-                }
-            }
         }
         // What everyone but the owner gets, and the owner's own version where it differs.
         let mut shared = Vec::new();
@@ -858,7 +824,6 @@ impl Actor {
         }
         shared.extend_from_slice(&self.tick_marker);
         let shared = Arc::new(shared);
-        let trace = Arc::new(trace);
         let mut dead = Vec::new();
         for i in 0..self.members.len() {
             let own = self.own(&self.members[i]);
@@ -880,7 +845,6 @@ impl Actor {
             let frame = Frame {
                 head: std::mem::take(&mut m.head),
                 events,
-                trace: trace.clone(),
                 own,
                 interactions: interactions.iter().filter(|(e, _)| *e == entity).map(|(_, i)| *i).collect(),
             };

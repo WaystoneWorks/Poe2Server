@@ -131,6 +131,11 @@ pub struct CharacterClass {
     pub integer_id: u32,
     pub base_max_life: i64,
     pub base_max_mana: i64,
+    /// `Characters.MinDamage` and `MaxDamage`: unarmed physical damage.
+    pub min_damage: i64,
+    pub max_damage: i64,
+    /// `Characters.WeaponSpeed`: unarmed attack time in milliseconds.
+    pub weapon_speed: i64,
 }
 
 impl CharacterClass {
@@ -152,6 +157,9 @@ impl CharacterClass {
                     base_strength: row.int("BaseStrength")?,
                     base_dexterity: row.int("BaseDexterity")?,
                     base_intelligence: row.int("BaseIntelligence")?,
+                    min_damage: row.int("MinDamage")?,
+                    max_damage: row.int("MaxDamage")?,
+                    weapon_speed: row.int("WeaponSpeed")?,
                 }));
             }
         }

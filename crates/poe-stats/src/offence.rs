@@ -10,6 +10,9 @@ use crate::{
     round, round_to,
 };
 
+/// `data.misc.NegArmourDmgBonusCap`.
+const NEG_ARMOUR_DAMAGE_BONUS_CAP: f64 = 100.0;
+
 /// The active skill as far as the calculator needs it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SkillProfile {
@@ -19,6 +22,8 @@ pub struct SkillProfile {
     pub skill_types: Vec<u32>,
     /// `grantedEffectLevel.baseMultiplier`.
     pub base_multiplier: f64,
+    /// `base_number_of_crossbow_bolts` of the skill at its level, for a crossbow skill.
+    pub base_bolts: f64,
 }
 
 impl SkillProfile {
@@ -34,18 +39,21 @@ impl SkillProfile {
                 keyword_flags: kw | keyword::BOW | keyword::ARROW,
                 skill_types: vec![1, 3, 41, 57, 58, 70, 141, 184],
                 base_multiplier,
+                base_bolts: 1.0,
             },
             WeaponType::Crossbow => Self {
                 flags: common | flag::PROJECTILE | flag::AREA,
                 keyword_flags: kw,
                 skill_types: vec![1, 3, 14, 15, 16, 41, 57, 116, 141],
                 base_multiplier,
+                base_bolts: 1.0,
             },
             _ => Self {
                 flags: common | flag::MELEE | flag::AREA,
                 keyword_flags: kw,
                 skill_types: vec![1, 8, 20, 21, 83],
                 base_multiplier,
+                base_bolts: 1.0,
             },
         }
     }
@@ -95,7 +103,7 @@ pub(crate) fn offence(env: &mut Env, input: &Input, out: &mut Output) {
         // The firing rate and the reload of one clip (`calcCrossbowAmmoStats`, the `reloadTime` part
         // of `calcs.offence`).
         let reload = env.weapon.reload_time / db.factor(&cfg, &["ReloadSpeed", "Speed"]);
-        let bolts = (1.0 + db.sum(Kind::Base, &cfg, &["CrossbowBoltCount"])).max(1.0);
+        let bolts = (skill.base_bolts + db.sum(Kind::Base, &cfg, &["CrossbowBoltCount"])).max(1.0);
         let not_consumed = db.sum(Kind::Base, &cfg, &["ChanceToNotConsumeAmmo"]);
         let instant = db.sum(Kind::Base, &cfg, &["InstantReloadChance"]).min(100.0);
         if not_consumed < 100.0 {
@@ -141,7 +149,7 @@ pub(crate) fn offence(env: &mut Env, input: &Input, out: &mut Output) {
             let mult = if pass == 0 { out.crit_multiplier } else { 1.0 };
             let avg = (min * mult + max * mult) / 2.0;
             let resist = if i == 0 {
-                (enemy.physical_reduction + armour_reduction(enemy.armour, avg)).min(90.0)
+                (enemy.physical_reduction + armour_reduction(enemy.armour, avg)).max(-NEG_ARMOUR_DAMAGE_BONUS_CAP).min(enemy.max_physical_reduction)
             } else {
                 enemy.resist[i - 1]
             };

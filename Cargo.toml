@@ -49,6 +49,7 @@ poe-accounts = { path = "crates/poe-accounts" }
 poe-cluster = { path = "crates/poe-cluster" }
 poe-web-api = { path = "crates/poe-web-api" }
 poe-data = { path = "crates/poe-data" }
+poe-stats = { path = "crates/poe-stats" }
 poe-game = { path = "crates/poe-game" }
 poe-world = { path = "crates/poe-world" }
 login-server = { path = "servers/login-server" }

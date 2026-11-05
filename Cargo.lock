@@ -1969,6 +1969,7 @@ name = "poe-game"
 version = "0.5.1"
 dependencies = [
  "poe-data",
+ "poe-stats",
  "serde_json",
  "tracing",
 ]
@@ -2083,6 +2084,9 @@ dependencies = [
 [[package]]
 name = "poe-stats"
 version = "0.5.1"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "poe-store"

@@ -7,9 +7,8 @@
 //! - the class row in `Characters.dat` (base life/mana and attributes);
 //! - the character's level.
 //!
-//! Derived totals use the template's per-level stats:
-//! `maximum_life = base_maximum_life + life_per_level * level` (and the same for mana).
-//! Attribute bonuses and modifiers (passives, items, buffs) are not applied yet.
+//! The derived totals come from the calculator (`poe-stats`, [`derive`]); items, passives and
+//! buffs reach it with the stats pipeline of P9.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -145,23 +144,51 @@ pub fn character_defaults(template: &ObjectTemplate, class: &CharacterClass, lev
     stats.set("base_dexterity", class.base_dexterity as i32);
     stats.set("base_intelligence", class.base_intelligence as i32);
 
-    let per_level = |id: &str| stats.get(id) * level;
-    let strength = stats.get("base_strength") + stats.get("strength_per_level") * (level - 1);
-    let dexterity = stats.get("base_dexterity") + stats.get("dexterity_per_level") * (level - 1);
-    let intelligence =
-        stats.get("base_intelligence") + stats.get("intelligence_per_level") * (level - 1);
-    let maximum_life = stats.get("base_maximum_life") + per_level("life_per_level");
-    let maximum_mana = stats.get("base_maximum_mana") + per_level("mana_per_level");
-    stats.set("strength", strength);
-    stats.set("dexterity", dexterity);
-    stats.set("intelligence", intelligence);
-    stats.set("maximum_life", maximum_life);
-    stats.set("maximum_mana", maximum_mana);
+    derive(&mut stats, class);
     let speed = speed_stats(&stats);
     if speed.permyriad(0) != 0 {
         stats.set("movement_velocity_+permyriad", speed.permyriad(0));
     }
     stats
+}
+
+/// The calculator's input for a character with nothing equipped, from the template stats and the
+/// class row.
+fn calculator_input(stats: &Stats, class: &CharacterClass) -> poe_stats::Input {
+    let template = |id: &str| stats.0.get(id).map(|v| f64::from(*v));
+    poe_stats::Input {
+        constants: poe_stats::Constants::from_template(template, class.base_max_life as f64, class.base_max_mana as f64),
+        class: poe_stats::CharacterBase {
+            strength: class.base_strength as f64,
+            dexterity: class.base_dexterity as f64,
+            intelligence: class.base_intelligence as f64,
+            unarmed: poe_stats::WeaponBase {
+                kind: poe_stats::WeaponType::Unarmed,
+                physical_min: class.min_damage as f64,
+                physical_max: class.max_damage as f64,
+                attack_rate: poe_stats::round_to(1000.0 / (class.weapon_speed as f64).max(1.0), 2),
+                crit_chance: template("unarmed_base_critical_strike_chance").unwrap_or(0.0) / 100.0,
+                reload_time: 0.0,
+            },
+        },
+        level: stats.get("level").max(1) as u32,
+        items: Vec::new(),
+        passives: Vec::new(),
+        extra_mods: Vec::new(),
+        resist_penalty: 0.0,
+        skill: poe_stats::SkillProfile::default_attack(poe_stats::WeaponType::Unarmed, 1.0),
+        enemy: poe_stats::Enemy::default(),
+        conditions: Vec::new(),
+    }
+}
+
+/// Runs the calculator and stores what the server sends for the character.
+fn derive(stats: &mut Stats, class: &CharacterClass) {
+    let input = calculator_input(stats, class);
+    let out = poe_stats::calculate(&input);
+    for (id, value) in poe_stats::network::own_stats(&out, &input.class) {
+        stats.set(id, value);
+    }
 }
 
 /// The character's stats that change its speed.
@@ -237,6 +264,7 @@ mod tests {
                 ("is_player".into(), "1".into()),
                 ("life_per_level".into(), "12".into()),
                 ("mana_per_level".into(), "4".into()),
+                ("character_inherent_mana_regeneration_rate_per_minute_%".into(), "240".into()),
                 ("enable_weapon_sets".into(), "true".into()),
             ],
         );
@@ -250,11 +278,25 @@ mod tests {
             base_strength: 7,
             base_dexterity: 15,
             base_intelligence: 7,
+            min_damage: 2,
+            max_damage: 6,
+            weapon_speed: 833,
         };
+        // The official server's numbers for this character (captures, stats-sent).
         let s = character_defaults(&template, &class, 1);
-        assert_eq!(s.get("maximum_life"), 28);
-        assert_eq!(s.get("maximum_mana"), 34);
+        assert_eq!(s.get("maximum_life"), 42);
+        assert_eq!(s.get("maximum_mana"), 48);
+        assert_eq!(s.get("life_unreserved"), 42);
+        assert_eq!(s.get("ailment_threshold"), 21);
+        assert_eq!(s.get("virtual_stun_threshold"), 42);
+        assert_eq!(s.get("total_mana_recovery_per_minute_from_regeneration"), 115);
+        assert_eq!(s.get("total_attributes"), 29);
         assert_eq!(s.get("dexterity"), 15);
+        let s = character_defaults(&template, &class, 2);
+        assert_eq!(s.get("maximum_life"), 54);
+        assert_eq!(s.get("maximum_mana"), 52);
+        assert_eq!(s.get("ailment_threshold"), 27);
+        assert_eq!(s.get("total_mana_recovery_per_minute_from_regeneration"), 125);
         assert_eq!(s.get("is_player"), 1);
         assert_eq!(s.get("enable_weapon_sets"), 1);
     }

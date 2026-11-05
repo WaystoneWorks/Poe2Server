@@ -1,6 +1,7 @@
 //! Character stat calculator: a Rust port of the calculation rules of Path of Building 2
 //! (PathOfBuilding-PoE2, MIT licence, Copyright (c) Path of Building Community; the reference
-//! commit is pinned in `third_party/fetch-tools.sh` of the hub).
+//! commit is pinned in `third_party/fetch-tools.sh` of the hub; licence in
+//! `LICENSE-PathOfBuilding.md`).
 //!
 //! Pure functions, no I/O: game data comes in through [`Input`]. Checked against PoB2 itself by
 //! `cargo xtask stats-check`. Which stats exist for the calculator is [`map::STAT_MAP`]; every
@@ -12,6 +13,7 @@ pub mod defence;
 pub mod items;
 pub mod map;
 pub mod moddb;
+pub mod network;
 pub mod offence;
 
 pub use calc::{CharacterBase, Constants, Enemy, Input, Output, calculate};

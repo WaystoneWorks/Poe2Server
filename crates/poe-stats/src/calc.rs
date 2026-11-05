@@ -24,9 +24,30 @@ pub struct Constants {
     pub mana_regen_per_minute: f64,
     /// `energy_shield_recharge_rate_per_minute_%`.
     pub es_recharge_per_minute: f64,
-    /// The life and mana a level 0 character would have (PoB2's `base = 16` and `base = 30`).
+    /// `Characters.BaseMaxLife` and `BaseMaxMana`: the life and mana a level 0 character would have.
     pub base_life: f64,
     pub base_mana: f64,
+}
+
+impl Constants {
+    /// From the stats of the `Character` object template, by stat id, and the class row. A stat
+    /// the template does not have is 0.
+    pub fn from_template(stat: impl Fn(&str) -> Option<f64>, base_life: f64, base_mana: f64) -> Self {
+        let get = |id: &str| stat(id).unwrap_or(0.0);
+        Self {
+            life_per_level: get("life_per_level"),
+            mana_per_level: get("mana_per_level"),
+            accuracy_per_level: get("accuracy_rating_per_level"),
+            base_evasion: get("base_evasion_rating"),
+            base_crit_bonus: get("base_critical_hit_damage_bonus"),
+            max_resistance: get("base_maximum_all_resistances_%"),
+            max_block: get("object_inherent_base_maximum_block_%_from_ot"),
+            mana_regen_per_minute: get("character_inherent_mana_regeneration_rate_per_minute_%"),
+            es_recharge_per_minute: get("energy_shield_recharge_rate_per_minute_%"),
+            base_life,
+            base_mana,
+        }
+    }
 }
 
 /// The class row of `Characters.dat`.
@@ -44,6 +65,8 @@ pub struct Enemy {
     pub evasion: f64,
     pub armour: f64,
     pub physical_reduction: f64,
+    /// `maximum_physical_damage_reduction_%` of `Metadata/Monsters/Monster.ot`.
+    pub max_physical_reduction: f64,
     /// `[Lightning, Cold, Fire, Chaos]`.
     pub resist: [f64; 4],
 }
@@ -94,7 +117,15 @@ pub struct Output {
     pub mana_regen: f64,
     pub es_regen: f64,
     pub es_recharge: f64,
+    /// Before the display rounding: per second.
+    pub mana_regen_raw: f64,
+    pub life_regen_raw: f64,
+    pub es_recharge_raw: f64,
     pub movement_speed_mod: f64,
+    /// `MovementSpeed` INC and everything multiplied after it (the armour penalty, MORE), as the
+    /// movement port wants them; `movement_speed_mod = (1 + inc/100)(1 + final/100)`.
+    pub movement_inc_percent: f64,
+    pub movement_final_percent: f64,
     pub action_speed_mod: f64,
     pub stun_threshold: f64,
     pub ailment_threshold: f64,
@@ -111,6 +142,41 @@ pub struct Output {
     pub average_hit: f64,
     /// Stats that had no entry in the stat table, in item order.
     pub not_implemented: Vec<String>,
+}
+
+impl Output {
+    /// An output by PoB2's name for it.
+    pub fn by_pob_name(&self, key: &str) -> Option<f64> {
+        Some(match key {
+            "Life" => self.life,
+            "Mana" => self.mana,
+            "Spirit" => self.spirit,
+            "EnergyShield" => self.energy_shield,
+            "Armour" => self.armour,
+            "Evasion" => self.evasion,
+            "Ward" => self.ward,
+            "FireResist" => self.fire_resist,
+            "ColdResist" => self.cold_resist,
+            "LightningResist" => self.lightning_resist,
+            "ChaosResist" => self.chaos_resist,
+            "BlockChance" => self.block_chance,
+            "Str" => self.str,
+            "Dex" => self.dex,
+            "Int" => self.int,
+            "Accuracy" => self.accuracy,
+            "LifeRegen" => self.life_regen,
+            "ManaRegen" => self.mana_regen,
+            "EnergyShieldRecharge" => self.es_recharge,
+            "AverageHit" => self.average_hit,
+            "Speed" => self.speed,
+            "CritChance" => self.crit_chance,
+            "CritMultiplier" => self.crit_multiplier,
+            "MovementSpeedMod" => self.movement_speed_mod,
+            "StunThreshold" => self.stun_threshold,
+            "AilmentThreshold" => self.ailment_threshold,
+            _ => return None,
+        })
+    }
 }
 
 /// The calculator's state between the steps of `calculate`.
@@ -239,10 +305,10 @@ pub fn calculate(input: &Input) -> Output {
             db.add(m);
         }
         out.not_implemented.extend(built.not_implemented);
-        if let Some((kind, w)) = built.weapon {
-            if item.slot == items::Slot::MainHand {
-                env_weapon = (kind, Some(w));
-            }
+        if let Some((kind, w)) = built.weapon
+            && item.slot == items::Slot::MainHand
+        {
+            env_weapon = (kind, Some(w));
         }
         if let Some(a) = built.armour {
             if item.slot == items::Slot::OffHand {

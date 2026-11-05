@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 serde_json.workspace = true
 poe-data.workspace = true
+poe-stats.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

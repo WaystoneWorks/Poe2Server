@@ -89,7 +89,7 @@ fn regen(env: &Env, resource: &str, pool: f64) -> f64 {
     let more = db.more(&NO_CFG, &[&regen_name, &rate_name]);
     let base = db.sum(Kind::Base, &NO_CFG, &[&regen_name])
         + pool * db.sum(Kind::Base, &NO_CFG, &[&format!("{resource}RegenPercent")]) / 100.0;
-    round_to(base * (1.0 + inc / 100.0) * more, 1)
+    base * (1.0 + inc / 100.0) * more
 }
 
 /// `calcs.defence`, the basic stats.
@@ -130,17 +130,23 @@ pub(crate) fn defence(env: &mut Env, out: &mut Output) {
         .unwrap_or_else(|| round(pool(slots_s, &["EnergyShield", "Defences"], "EnergyShieldTotal")).max(0.0));
     out.ward = round(pool(slots_w, &["Ward", "Defences"], "WardTotal")).max(0.0);
 
-    out.mana_regen = regen(env, "Mana", out.mana);
-    out.life_regen = regen(env, "Life", out.life);
-    out.es_regen = regen(env, "EnergyShield", out.energy_shield);
+    out.mana_regen_raw = regen(env, "Mana", out.mana);
+    out.life_regen_raw = regen(env, "Life", out.life);
+    out.mana_regen = round_to(out.mana_regen_raw, 1);
+    out.life_regen = round_to(out.life_regen_raw, 1);
+    out.es_regen = round_to(regen(env, "EnergyShield", out.energy_shield), 1);
     let recharge_inc = db.sum(Kind::Inc, &NO_CFG, &["EnergyShieldRecharge"]);
     let recharge_more = db.more(&NO_CFG, &["EnergyShieldRecharge"]);
-    out.es_recharge = round_to(out.energy_shield * env.es_recharge_rate * (1.0 + recharge_inc / 100.0) * recharge_more, 1);
+    out.es_recharge_raw = out.energy_shield * env.es_recharge_rate * (1.0 + recharge_inc / 100.0) * recharge_more;
+    out.es_recharge = round_to(out.es_recharge_raw, 1);
 
     let base_ms = db.sum(Kind::Base, &NO_CFG, &["MovementSpeed"]);
     out.movement_speed_mod = db
         .override_value(&NO_CFG, &["MovementSpeed"])
         .unwrap_or_else(|| round_to((1.0 + base_ms) * db.factor(&NO_CFG, &["MovementSpeed"]), 3));
+
+    out.movement_inc_percent = db.sum(Kind::Inc, &NO_CFG, &["MovementSpeed"]);
+    out.movement_final_percent = round(((1.0 + base_ms) * db.more(&NO_CFG, &["MovementSpeed"]) - 1.0) * 100.0);
 
     let stun_inc = 1.0 + db.sum(Kind::Inc, &NO_CFG, &["StunThreshold"]) / 100.0;
     let stun_more = db.more(&NO_CFG, &["StunThreshold"]);

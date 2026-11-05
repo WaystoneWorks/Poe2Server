@@ -191,6 +191,18 @@ pub struct TileMap {
     /// The `outside_tiles` zones of the rooms placed in this map, in cells of this map
     /// (x0, y0, x1, y1, end exclusive; [`crate::doodads::room_outside`]).
     pub outside: Vec<(i32, i32, i32, i32)>,
+    /// The graph rooms placed in this map with their node's tags, in tiles of this map.
+    pub tagged_rooms: Vec<TaggedRoom>,
+}
+
+/// A graph node's placed room: its turned rectangle (tiles) and the node's tags and room type
+/// (`entrance1`, `teleport1`, ...; the object stage in `crate::objects` reads them).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaggedRoom {
+    pub origin: (i32, i32),
+    pub size: (i32, i32),
+    pub room_type: String,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -243,6 +255,7 @@ impl TileMap {
             raised: false,
             doodads: Vec::new(),
             outside: Vec::new(),
+            tagged_rooms: Vec::new(),
         }
     }
 
@@ -259,6 +272,7 @@ impl TileMap {
             .collect();
         m.doodads = self.doodads.iter().map(|d| shifted(d, offset)).collect();
         m.outside = self.outside.iter().map(|&z| shifted_zone(z, offset)).collect();
+        m.tagged_rooms = self.tagged_rooms.iter().map(|r| TaggedRoom { origin: (r.origin.0 + offset.0, r.origin.1 + offset.1), ..r.clone() }).collect();
         for y in 0..self.height as i32 {
             for x in 0..self.width as i32 {
                 let i = self.index(x, y).unwrap();
@@ -409,6 +423,7 @@ impl TileMap {
         }
         self.doodads.extend(sub.doodads.iter().map(|d| shifted(d, origin)));
         self.outside.extend(sub.outside.iter().map(|&z| shifted_zone(z, origin)));
+        self.tagged_rooms.extend(sub.tagged_rooms.iter().map(|r| TaggedRoom { origin: (r.origin.0 + origin.0, r.origin.1 + origin.1), ..r.clone() }));
         self.pieces.extend(sub.pieces.iter().map(|p| Piece { x: p.x + origin.0, y: p.y + origin.1, tile: None, ..p.clone() }));
         for y in 0..sub.height as i32 {
             for x in 0..sub.width as i32 {

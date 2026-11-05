@@ -1357,6 +1357,16 @@ fn build_dungeon(files: &dyn crate::generate::Files, graph: &Graph, removed: &[b
     crate::dungeon_tiles::wiggle(&mut master, files, &mut map, wiggle, rng)?;
     dbg_cell(&map, "post-wiggle");
     // De-repetition over the rooms and fill rooms, then the outer buffer.
+    map.tagged_rooms = grid
+        .rooms
+        .iter()
+        .filter_map(|r| {
+            let node = &graph.nodes[r.node?];
+            let room = rooms.get(&r.path)?;
+            let (w, h) = TileMap::oriented_size((room.width() as u8, room.height() as u8), r.orientation);
+            Some(crate::generate::TaggedRoom { origin: (r.origin.0 * step as i32, r.origin.1 * step as i32), size: (w as i32, h as i32), room_type: node.room_type.clone(), tags: node.tags.clone() })
+        })
+        .collect();
     let mut placements: Vec<RoomPlacement> = grid
         .rooms
         .iter()
@@ -1963,6 +1973,16 @@ fn build_tgr(files: &dyn crate::generate::Files, graph: &Graph, removed: Vec<boo
     if std::env::var_os("POE_NO_REFIX").is_none() {
         lattice::refix_fills(&mut map, files).map_err(data)?;
     }
+    map.tagged_rooms = placed
+        .iter()
+        .filter(|p| p.tile.is_none())
+        .map(|p| {
+            let node = &graph.nodes[p.node];
+            let room = &set.rooms[p.room].room;
+            let (w, h) = TileMap::oriented_size((room.width() as u8, room.height() as u8), p.orientation);
+            crate::generate::TaggedRoom { origin: p.pos, size: (w as i32, h as i32), room_type: node.room_type.clone(), tags: node.tags.clone() }
+        })
+        .collect();
     let mut rooms: Vec<RoomPlacement> = placed
         .iter()
         .filter(|p| p.tile.is_none())

@@ -23,8 +23,8 @@ The launcher's **Servers > Host** tab does this on the machine you play on, for 
 Take a package from this repository's GitHub releases (tags `server-v<version>`, built by CI, see [releasing.md](releasing.md)). Each release has, per platform, `poe-server-v<version>-game-<game version>-<linux|windows>-x86_64.tar.gz` (Linux) or `.zip` (Windows), a `.sha256` file and a combined `SHA256SUMS`. The game version in the name must be your players' client build.
 
 ```sh
-sha256sum -c poe-server-v0.5.0-game-0.5.5e.hotfix1-linux-x86_64.sha256    # Windows: certutil -hashfile <zip> SHA256
-tar xzf poe-server-v0.5.0-game-0.5.5e.hotfix1-linux-x86_64.tar.gz && cd poe-server-v0.5.0-game-0.5.5e.hotfix1-linux-x86_64
+sha256sum -c poe-server-v0.5.1-game-0.5.5e.hotfix1-linux-x86_64.sha256    # Windows: certutil -hashfile <zip> SHA256
+tar xzf poe-server-v0.5.1-game-0.5.5e.hotfix1-linux-x86_64.tar.gz && cd poe-server-v0.5.1-game-0.5.5e.hotfix1-linux-x86_64
 cp config/server.example.toml config/server.toml
 # edit config/server.toml: game_dir (your own game install, the folder with Bundles2), [network] public_host,
 # and static_dir = "web-admin" to serve the web admin

@@ -8,6 +8,7 @@
 //! server's cell during a roll follows the client's roll path (docs/protocol/movement.md, "Roll
 //! path and speed profile"), which the server's roll speed profile approximates within a few
 //! cells, and walking differs by a fraction of a cell per frame.
+#![cfg(game_files)] // Needs the game files (build.rs).
 
 use std::{collections::BTreeMap, sync::Arc};
 

@@ -261,6 +261,7 @@ mod tests {
         assert!(Curve::from_amd(text, "missing").is_none());
     }
 
+    #[cfg_attr(not(game_files), ignore = "needs the game files")]
     #[test]
     fn the_hub_game_files_have_the_curves_and_the_offset_scale() {
         let (curves, scale) = hub_motion_or_panic();

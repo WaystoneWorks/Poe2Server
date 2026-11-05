@@ -1,6 +1,7 @@
 //! Rules no captured fixture covers, on the [`World`] with the port (`ClientModel`): walls,
 //! click paths around them, teleports, weapon swaps, entity targets. Restored from the unit tests
 //! of the movement before the restart where the rule still holds.
+#![cfg(game_files)] // Needs the game files (build.rs).
 
 use std::sync::Arc;
 

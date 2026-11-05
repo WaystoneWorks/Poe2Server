@@ -486,6 +486,7 @@ fn replay(name: &str) {
 
 /// Stance changes through the codec: `0x2a6` before the Player delta with the stance byte
 /// and the requested value (`0x1000`).
+#[cfg_attr(not(game_files), ignore = "needs the game files")]
 #[test]
 fn stance_fixtures() {
     for name in [
@@ -500,21 +501,25 @@ fn stance_fixtures() {
     }
 }
 
+#[cfg_attr(not(game_files), ignore = "needs the game files")]
 #[test]
 fn wasd_start_turn_stop_with_aim_echoes() {
     replay("wasd_start_turn_stop");
 }
 
+#[cfg_attr(not(game_files), ignore = "needs the game files")]
 #[test]
 fn tap_roll_while_walking() {
     replay("tap_roll_while_walking");
 }
 
+#[cfg_attr(not(game_files), ignore = "needs the game files")]
 #[test]
 fn tap_rolls_chained_second_one_waits() {
     replay("tap_rolls_chained");
 }
 
+#[cfg_attr(not(game_files), ignore = "needs the game files")]
 #[test]
 fn sprint_hold_with_release() {
     replay("sprint_hold_release");
@@ -523,16 +528,19 @@ fn sprint_hold_with_release() {
 /// The sprint of the 2026-10-20 capture ended by the key release with the cursor direction in
 /// flight: the packets of the end and the stop (the coasting itself is checked against the
 /// client's own positions in `poe-game`'s replay test).
+#[cfg_attr(not(game_files), ignore = "needs the game files")]
 #[test]
 fn sprint_wasd_released_then_space_up() {
     replay("sprint_wasd_released_then_space_up");
 }
 
+#[cfg_attr(not(game_files), ignore = "needs the game files")]
 #[test]
 fn sprint_ended_by_an_attack() {
     replay("sprint_ended_by_attack");
 }
 
+#[cfg_attr(not(game_files), ignore = "needs the game files")]
 #[test]
 fn wasd_is_answered_in_the_next_tick_with_the_servers_cell() {
     let mut s = Session::new((100, 100));
@@ -554,6 +562,7 @@ fn wasd_is_answered_in_the_next_tick_with_the_servers_cell() {
     assert_eq!(s.cell().0, m.grid_x);
 }
 
+#[cfg_attr(not(game_files), ignore = "needs the game files")]
 #[test]
 fn a_roll_batch_has_the_official_order_and_the_confirmed_target() {
     let mut s = Session::new((371, 1052));
@@ -587,6 +596,7 @@ fn a_roll_batch_has_the_official_order_and_the_confirmed_target() {
     assert_eq!(ack.target_flags & 0x04, 0x04);
 }
 
+#[cfg_attr(not(game_files), ignore = "needs the game files")]
 #[test]
 fn skill_release_and_input_end_are_acked_in_the_next_tick() {
     let mut s = Session::new((10, 10));
@@ -603,6 +613,7 @@ fn skill_release_and_input_end_are_acked_in_the_next_tick() {
     assert!(s.tick().is_empty());
 }
 
+#[cfg_attr(not(game_files), ignore = "needs the game files")]
 #[test]
 fn combat_stance_goes_out_after_the_first_aim_mode() {
     let mut s = Session::new((10, 10));
@@ -627,6 +638,7 @@ fn combat_stance_goes_out_after_the_first_aim_mode() {
     assert_eq!(delta.header.unk_14, 0xffff_ffff);
 }
 
+#[cfg_attr(not(game_files), ignore = "needs the game files")]
 #[test]
 fn a_move_click_starts_the_move_action_and_acks_the_request() {
     // Verified on the 2026-10-20 official capture (docs/protocol/movement.md#click-to-move).
@@ -653,6 +665,7 @@ fn a_move_click_starts_the_move_action_and_acks_the_request() {
     assert_eq!(s.cell(), (110, 95));
 }
 
+#[cfg_attr(not(game_files), ignore = "needs the game files")]
 #[test]
 fn pause_holds_inputs_until_resumed() {
     let mut s = Session::new((100, 100));
@@ -665,6 +678,7 @@ fn pause_holds_inputs_until_resumed() {
     assert_eq!(s.names(), ["MoveDirectionUpdate"]);
 }
 
+#[cfg_attr(not(game_files), ignore = "needs the game files")]
 #[test]
 fn teleport_is_a_direction_and_a_stop_with_the_new_cell() {
     let mut s = Session::new((100, 100));
@@ -724,6 +738,7 @@ fn action_event_is_skipped_while_instance_toml_lacks_it() {
 /// WASD held since before the roll: the sprint has no `MoveDirectionUpdate` stream and its end
 /// sends none either (the client's direction was never scaled; a cell one off would snap it out
 /// of the `SprintEnd` coast, `0x1421497c0`). Server and client coast, then the held key walks on.
+#[cfg_attr(not(game_files), ignore = "needs the game files")]
 #[test]
 fn a_sprint_without_a_stream_coasts_without_a_direction_update() {
     let mut s = Session::new((100, 100));
@@ -814,6 +829,7 @@ fn sim_config_comes_from_game_data_and_config() {
 
 /// The dev command `speed`: the actor hands the new stats to the movement, which sends
 /// `movement_velocity_+permyriad` once and walks faster.
+#[cfg_attr(not(game_files), ignore = "needs the game files")]
 #[test]
 fn speed_command_changes_the_walk_and_sends_the_stat_once() {
     let mut s = Session::new((100, 100));

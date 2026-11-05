@@ -52,6 +52,21 @@ pub fn end_family(
     Ok(outcome)
 }
 
+/// An admin's move of one character; logs it like an end does.
+pub fn move_character(
+    store: &dyn LeagueStore,
+    character_id: u32,
+    to: &str,
+    by: &str,
+) -> poe_store::Result<Result<LeagueMove, LeagueRefusal>> {
+    let outcome = store.move_character(character_id, to, by, unix_now())?;
+    match &outcome {
+        Ok(m) => info!(target: "audit", character = %m.name, id = m.character_id, from = %m.from, to = %m.to, %by, "character moved to another league"),
+        Err(e) => warn!(id = character_id, %to, %by, "league move refused: {e}"),
+    }
+    Ok(outcome)
+}
+
 /// Ends the families whose end date has passed, each into its `migrate_to` family or, without
 /// one, the default family. A family with neither stays as it is (listed as over by the client)
 /// and is logged once per server run.

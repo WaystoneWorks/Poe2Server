@@ -13,7 +13,7 @@ use axum::{
     http::StatusCode,
 };
 use poe_data::views::{LeagueFlagRow, league_mechanics};
-use poe_store::{League, LeagueRefusal, LeagueState, LeagueUpdate, NewLeagueFamily};
+use poe_store::{HardcoreDeath, League, LeagueRefusal, LeagueState, LeagueUpdate, NewLeagueFamily};
 use serde::{Deserialize, Deserializer, Serialize};
 use utoipa::ToSchema;
 
@@ -39,6 +39,11 @@ fn refusal(e: LeagueRefusal) -> ApiError {
         _ => StatusCode::BAD_REQUEST,
     };
     ApiError::new(status, e.to_string())
+}
+
+fn hc_death(v: Option<&str>) -> Result<Option<HardcoreDeath>, ApiError> {
+    v.map(|t| HardcoreDeath::parse(t).ok_or_else(|| ApiError::bad_request("hc_death must be softcore or stay")))
+        .transpose()
 }
 
 /// Absent field: `None`; `null`: `Some(None)`; a value: `Some(Some(v))`.
@@ -128,6 +133,9 @@ pub struct AdminLeague {
     pub sort: i64,
     pub created_at: i64,
     pub art: FlagArt,
+    /// What a hardcore death does here: `softcore` (the character moves to the softcore
+    /// league) or `stay`. Stored now; used once death exists.
+    pub hc_death: String,
 }
 
 fn public(l: League, art: &HashMap<String, FlagArt>) -> PublicLeague {
@@ -166,6 +174,7 @@ fn admin_view(l: League, counts: &HashMap<String, u32>, art: &HashMap<String, Fl
         migrate_to: l.migrate_to,
         sort: l.sort,
         created_at: l.created_at,
+        hc_death: l.hc_death.as_str().into(),
     }
 }
 
@@ -223,6 +232,8 @@ pub struct CreateLeagueRequest {
     /// Make this the default family.
     #[serde(default)]
     pub default: bool,
+    /// `softcore` (default) or `stay`: what a hardcore death does.
+    pub hc_death: Option<String>,
 }
 
 fn check_mechanics(s: &WebState, mechanics: &[String]) -> Result<(), ApiError> {
@@ -277,6 +288,7 @@ pub async fn create(
         ends_at: req.ends_at,
         migrate_to: req.migrate_to,
         is_default: req.default,
+        hc_death: hc_death(req.hc_death.as_deref())?.unwrap_or_default(),
     };
     let store = s.leagues.clone();
     let rows = blocking(move || store.create_family(&new, unix_now())).await??.map_err(refusal)?;
@@ -315,6 +327,8 @@ pub struct UpdateLeagueRequest {
     pub migrate_to: Option<Option<String>>,
     /// Family-wide.
     pub default: Option<bool>,
+    /// Family-wide: `softcore` or `stay`.
+    pub hc_death: Option<String>,
 }
 
 /// Changes a league. `400` for a bad value, `404` unknown league, `409` an ended league.
@@ -351,6 +365,7 @@ pub async fn update(
         ends_at: req.ends_at,
         migrate_to: req.migrate_to,
         is_default: req.default,
+        hc_death: hc_death(req.hc_death.as_deref())?,
     };
     let store = s.leagues.clone();
     let league_id = id.clone();
@@ -422,6 +437,42 @@ pub async fn end(
         .map(|m| LeagueMoveView { character_id: m.character_id, name: m.name, from: m.from, to: m.to })
         .collect();
     Ok(Json(EndLeagueResponse { family, target, count: moved.len(), moved }))
+}
+
+/// `POST /admin/characters/{id}/league`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct MoveCharacterRequest {
+    /// The league id to move the character into (any league that has not ended).
+    pub league: String,
+}
+
+/// Moves a character into another league, whatever its flags (an admin's move; players leave
+/// SSF or hardcore in game). `409` while the character is online, in the target's league
+/// already or the target has ended, `404` for an unknown character or league.
+#[utoipa::path(post, operation_id = "move_character", path = "/api/v1/admin/characters/{id}/league", tag = "admin", security(("bearer" = [])),
+    params(("id" = u32, Path, description = "character id")), request_body = MoveCharacterRequest,
+    responses((status = 200, body = LeagueMoveView), (status = 404, body = crate::ErrorBody),
+        (status = 409, body = crate::ErrorBody), (status = 401, body = crate::ErrorBody), (status = 403, body = crate::ErrorBody)))]
+pub async fn move_character(
+    State(s): State<WebState>,
+    AdminAuth(who): AdminAuth,
+    Path(id): Path<u32>,
+    ApiJson(req): ApiJson<MoveCharacterRequest>,
+) -> Result<Json<LeagueMoveView>, ApiError> {
+    let state = s.clone();
+    let by = who.account.username.clone();
+    let to = req.league;
+    let m = blocking(move || -> Result<LeagueMoveView, ApiError> {
+        let c = state.store.character_by_id(id)?.ok_or_else(|| ApiError::not_found("no such character"))?;
+        if state.admin.online().iter().any(|o| o.character.eq_ignore_ascii_case(&c.name)) {
+            return Err(ApiError::new(StatusCode::CONFLICT, format!("{} is online: ask them to log out first", c.name)));
+        }
+        let m = crate::leagues::move_character(&*state.leagues, id, &to, &by)?.map_err(refusal)?;
+        Ok(LeagueMoveView { character_id: m.character_id, name: m.name, from: m.from, to: m.to })
+    })
+    .await??;
+    s.admin.record(&who.account.username, "character league", &format!("{}: {} -> {}", m.name, m.from, m.to));
+    Ok(Json(m))
 }
 
 /// `POST /admin/leagues/{id}/delete`.

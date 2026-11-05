@@ -5,8 +5,8 @@ mod sqlite;
 mod tasks;
 
 pub use leagues::{
-    League, LeagueClosed, LeagueMove, LeagueRefusal, LeagueState, LeagueStore, LeagueUpdate,
-    NewLeagueFamily, Refusable, Variant, valid_league_name,
+    HardcoreDeath, League, LeagueClosed, LeagueMove, LeagueRefusal, LeagueState, LeagueStore,
+    LeagueUpdate, MoveKind, NewLeagueFamily, Refusable, Variant, valid_league_name,
 };
 pub use sqlite::SqliteStore;
 pub use tasks::{NewRun, RUN_MESSAGE_MAX, RunRow, TaskRow, TaskSpec, TaskStore};

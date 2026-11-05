@@ -55,6 +55,7 @@ async fn league_endpoints_need_an_admin_except_the_public_list() {
         ("POST", "/api/v1/admin/leagues/Standard"),
         ("POST", "/api/v1/admin/leagues/Standard/end"),
         ("POST", "/api/v1/admin/leagues/Standard/delete"),
+        ("POST", "/api/v1/admin/characters/1/league"),
         ("GET", "/api/v1/admin/data/league-flags"),
         ("GET", "/api/v1/admin/data/league-mechanics"),
     ] {
@@ -178,6 +179,30 @@ async fn ending_moves_characters_and_a_delete_needs_the_exact_id() {
     assert_eq!(del["deleted"], json!(["Dawn", "HC Dawn"]));
     let (_, all) = f.call("GET", "/api/v1/admin/leagues", Some(&t), None).await;
     assert!(!ids(&all).contains(&"Dawn"));
+}
+
+#[tokio::test]
+async fn admins_move_offline_characters_to_any_league() {
+    let f = fixture();
+    let t = admin(&f).await;
+    create(&f, &t, json!({"name": "Standard", "permanent": true})).await;
+    create(&f, &t, json!({"name": "Dawn", "hardcore": true, "ssf": true, "hc_death": "stay"})).await;
+    // Bob is online in the fixture; Sam is not.
+    character(&f, "Bob", "SSF Dawn");
+    character(&f, "Sam", "SSF Dawn");
+    let uri = |id: u32| format!("/api/v1/admin/characters/{id}/league");
+    let (st, body) = f.call("POST", &uri(1), Some(&t), Some(json!({"league": "Standard"}))).await;
+    assert_eq!(st, StatusCode::CONFLICT, "{body}");
+    let (st, body) = f.call("POST", &uri(2), Some(&t), Some(json!({"league": "Standard"}))).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!((body["name"].as_str(), body["from"].as_str(), body["to"].as_str()), (Some("Sam"), Some("SSF Dawn"), Some("Standard")));
+    assert_eq!(f.call("POST", &uri(2), Some(&t), Some(json!({"league": "Standard"}))).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(f.call("POST", &uri(2), Some(&t), Some(json!({"league": "Nope"}))).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(f.call("POST", &uri(99), Some(&t), Some(json!({"league": "Standard"}))).await.0, StatusCode::NOT_FOUND);
+    let (_, all) = f.call("GET", "/api/v1/admin/leagues", Some(&t), None).await;
+    let dawn = all.as_array().unwrap().iter().find(|l| l["id"] == "HC Dawn").unwrap();
+    assert_eq!(dawn["hc_death"], "stay");
+    assert_eq!(create(&f, &t, json!({"name": "Dusk", "hc_death": "bogus"})).await.0, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

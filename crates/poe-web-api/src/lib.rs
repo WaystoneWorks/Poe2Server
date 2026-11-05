@@ -173,6 +173,7 @@ pub fn router(state: WebState) -> Router {
         )
         .route("/admin/leagues/{id}", post(league_api::update))
         .route("/admin/leagues/{id}/end", post(league_api::end))
+        .route("/admin/characters/{id}/league", post(league_api::move_character))
         .route("/admin/leagues/{id}/delete", post(league_api::delete))
         .route("/admin/data/league-flags", get(league_api::flags))
         .route("/admin/data/league-mechanics", get(league_api::mechanics))

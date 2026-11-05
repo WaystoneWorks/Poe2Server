@@ -798,6 +798,95 @@
         ]
       }
     },
+    "/api/v1/admin/characters/{id}/league": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Moves a character into another league, whatever its flags (an admin's move; players leave\nSSF or hardcore in game). `409` while the character is online, in the target's league\nalready or the target has ended, `404` for an unknown character or league.",
+        "operationId": "move_character",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "character id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoveCharacterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeagueMoveView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/admin/config": {
       "get": {
         "tags": [
@@ -4190,7 +4279,8 @@
           "mechanics",
           "sort",
           "created_at",
-          "art"
+          "art",
+          "hc_death"
         ],
         "properties": {
           "art": {
@@ -4226,6 +4316,10 @@
           },
           "hardcore": {
             "type": "boolean"
+          },
+          "hc_death": {
+            "type": "string",
+            "description": "What a hardcore death does here: `softcore` (the character moves to the softcore\nleague) or `stay`. Stored now; used once death exists."
           },
           "id": {
             "type": "string"
@@ -4759,6 +4853,13 @@
           "hardcore": {
             "type": "boolean",
             "description": "Also create \"HC <name>\"."
+          },
+          "hc_death": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`softcore` (default) or `stay`: what a hardcore death does."
           },
           "mechanics": {
             "type": "array",
@@ -5671,6 +5772,19 @@
           "persisted": {
             "type": "boolean",
             "description": "Whether it was also written into the config file, so it survives a restart."
+          }
+        }
+      },
+      "MoveCharacterRequest": {
+        "type": "object",
+        "description": "`POST /admin/characters/{id}/league`.",
+        "required": [
+          "league"
+        ],
+        "properties": {
+          "league": {
+            "type": "string",
+            "description": "The league id to move the character into (any league that has not ended)."
           }
         }
       },
@@ -6634,6 +6748,13 @@
               "null"
             ],
             "description": "`LeagueFlag.Id`; `null` clears."
+          },
+          "hc_death": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Family-wide: `softcore` or `stay`."
           },
           "mechanics": {
             "type": [

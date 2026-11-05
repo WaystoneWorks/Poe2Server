@@ -85,6 +85,57 @@ impl Variant {
     }
 }
 
+/// What a hardcore death does in a league (stored now; the death code of P13 reads it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HardcoreDeath {
+    /// The dead character moves to the family's softcore league (same SSF flag).
+    #[default]
+    Softcore,
+    /// The character stays in the hardcore league, dead.
+    Stay,
+}
+
+impl HardcoreDeath {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Softcore => "softcore",
+            Self::Stay => "stay",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "softcore" => Some(Self::Softcore),
+            "stay" => Some(Self::Stay),
+            _ => None,
+        }
+    }
+}
+
+/// Why a character changed league (`league_moves.kind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveKind {
+    /// Its league ended.
+    End,
+    /// A player left SSF (to the trade league of the same family).
+    LeaveSsf,
+    /// A player left hardcore (to the softcore league of the same family).
+    LeaveHardcore,
+    /// An admin moved it.
+    Admin,
+}
+
+impl MoveKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::End => "end",
+            Self::LeaveSsf => "ssf",
+            Self::LeaveHardcore => "hardcore",
+            Self::Admin => "admin",
+        }
+    }
+}
+
 /// One league (one row of the client's league list).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct League {
@@ -111,9 +162,31 @@ pub struct League {
     pub is_default: bool,
     pub sort: i64,
     pub created_at: i64,
+    /// What a hardcore death does here (hardcore members only).
+    pub hc_death: HardcoreDeath,
 }
 
 impl League {
+    /// The league a player may move a character of this league into by leaving SSF
+    /// (`LeaveSsf`) or hardcore (`LeaveHardcore`): the same family with that flag off.
+    /// `None` when the league does not have the flag. One way only: nothing moves back.
+    pub fn leave_target(&self, kind: MoveKind) -> Option<String> {
+        let (hardcore, ssf) = match kind {
+            MoveKind::LeaveSsf if self.ssf => (self.hardcore, false),
+            MoveKind::LeaveHardcore if self.hardcore => (false, self.ssf),
+            _ => return None,
+        };
+        Some(Variant::of(hardcore, ssf).league_id(&self.family))
+    }
+
+    /// Where a dead hardcore character goes (P13): the softcore member, unless the family
+    /// keeps them dead in place.
+    pub fn death_target(&self) -> Option<String> {
+        (self.hc_death == HardcoreDeath::Softcore)
+            .then(|| self.leave_target(MoveKind::LeaveHardcore))
+            .flatten()
+    }
+
     pub fn is_base(&self) -> bool {
         self.id == self.family
     }
@@ -161,6 +234,7 @@ pub struct NewLeagueFamily {
     pub ends_at: Option<i64>,
     pub migrate_to: Option<String>,
     pub is_default: bool,
+    pub hc_death: HardcoreDeath,
 }
 
 /// `Variant` as a map key in [`NewLeagueFamily::flags`].
@@ -180,6 +254,7 @@ pub struct LeagueUpdate {
     pub ends_at: Option<Option<i64>>,
     pub migrate_to: Option<Option<String>>,
     pub is_default: Option<bool>,
+    pub hc_death: Option<HardcoreDeath>,
 }
 
 /// A request the store refuses (the caller maps it to a 4xx).
@@ -203,6 +278,10 @@ pub enum LeagueRefusal {
     BadDates,
     #[error("state can only be set to active or hidden")]
     BadState,
+    #[error("no character {0}")]
+    NoCharacter(u32),
+    #[error("{0}")]
+    CannotMove(String),
 }
 
 /// One character moved by [`LeagueStore::end_family`].
@@ -228,6 +307,13 @@ pub trait LeagueStore: Send + Sync {
     /// the target's base when it has no such member), one
     /// `league_moves` line each; the family's state becomes ended.
     fn end_family(&self, family: &str, target: &str, now: i64) -> Result<Refusable<Vec<LeagueMove>>>;
+    /// A player's own move: leaving SSF or hardcore (`kind` is `LeaveSsf` or `LeaveHardcore`)
+    /// into the same family's league without that flag. Refused when the character's league
+    /// has no such flag, the target is missing or ended. One `league_moves` line.
+    fn migrate_character(&self, character_id: u32, kind: MoveKind, actor: &str, now: i64) -> Result<Refusable<LeagueMove>>;
+    /// An admin's move of a character into any league that has not ended (hidden is fine).
+    /// The caller checks that the character is offline.
+    fn move_character(&self, character_id: u32, to: &str, actor: &str, now: i64) -> Result<Refusable<LeagueMove>>;
     /// Deletes a variant, or a whole family when `id` is a base; refused while any of them has
     /// characters. Returns the deleted ids.
     fn delete_league(&self, id: &str) -> Result<Refusable<Vec<String>>>;
@@ -238,7 +324,7 @@ pub trait LeagueStore: Send + Sync {
 }
 
 const COLUMNS: &str = "id, display_name, family, hardcore, ssf, flag, mechanics, permanent, \
-    starts_at, ends_at, state, migrate_to, is_default, sort, created_at";
+    starts_at, ends_at, state, migrate_to, is_default, sort, created_at, hc_death";
 
 /// Family order, then base, HC, SSF, HC SSF (`ssf, hardcore` sorts them that way).
 const ORDER: &str = "sort, family, ssf, hardcore";
@@ -262,6 +348,7 @@ fn league_row(r: &Row<'_>) -> rusqlite::Result<League> {
         is_default: r.get(12)?,
         sort: r.get(13)?,
         created_at: r.get(14)?,
+        hc_death: HardcoreDeath::parse(&r.get::<_, String>(15)?).unwrap_or_default(),
     })
 }
 
@@ -307,6 +394,33 @@ fn characters_in(tx: &Transaction<'_>, ids: &[String]) -> rusqlite::Result<u32> 
         )?;
     }
     Ok(n)
+}
+
+fn character_league(tx: &Transaction<'_>, id: u32) -> rusqlite::Result<Option<(String, String)>> {
+    tx.query_row("SELECT name, league FROM characters WHERE id = ?1", params![id], |r| {
+        Ok((r.get(0)?, r.get(1)?))
+    })
+    .optional()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_move(
+    tx: &Transaction<'_>,
+    character_id: u32,
+    name: String,
+    from: &str,
+    to: &str,
+    kind: MoveKind,
+    actor: &str,
+    now: i64,
+) -> rusqlite::Result<LeagueMove> {
+    tx.execute("UPDATE characters SET league = ?2 WHERE id = ?1", params![character_id, to])?;
+    tx.execute(
+        "INSERT INTO league_moves (character_id, name, from_league, to_league, at, kind, actor)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![character_id, name, from, to, now, kind.as_str(), actor],
+    )?;
+    Ok(LeagueMove { character_id, name, from: from.to_owned(), to: to.to_owned() })
 }
 
 /// A family that characters may be moved into: an existing, permanent base that has not
@@ -391,8 +505,8 @@ impl LeagueStore for SqliteStore {
                 let flag = new.flags.get(v).cloned().or_else(|| base_flag.clone());
                 tx.execute(
                     "INSERT INTO leagues (id, display_name, family, hardcore, ssf, flag, mechanics,
-                         permanent, starts_at, ends_at, state, migrate_to, is_default, sort, created_at)
-                     VALUES (?1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'active', ?10, ?11, ?12, ?13)",
+                         permanent, starts_at, ends_at, state, migrate_to, is_default, sort, created_at, hc_death)
+                     VALUES (?1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'active', ?10, ?11, ?12, ?13, ?14)",
                     params![
                         id,
                         new.name,
@@ -406,7 +520,8 @@ impl LeagueStore for SqliteStore {
                         new.migrate_to,
                         new.is_default,
                         sort,
-                        now
+                        now,
+                        new.hc_death.as_str()
                     ],
                 )?;
             }
@@ -469,6 +584,9 @@ impl LeagueStore for SqliteStore {
                 }
                 tx.execute("UPDATE leagues SET migrate_to = ?2 WHERE family = ?1", params![family, target])?;
             }
+            if let Some(d) = u.hc_death {
+                tx.execute("UPDATE leagues SET hc_death = ?2 WHERE family = ?1", params![family, d.as_str()])?;
+            }
             if let Some(d) = u.is_default {
                 if d {
                     tx.execute("UPDATE leagues SET is_default = 0", [])?;
@@ -510,8 +628,8 @@ impl LeagueStore for SqliteStore {
                 drop(st);
                 for (character_id, name) in chars {
                     tx.execute(
-                        "INSERT INTO league_moves (character_id, name, from_league, to_league, at)
-                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        "INSERT INTO league_moves (character_id, name, from_league, to_league, at, kind)
+                         VALUES (?1, ?2, ?3, ?4, ?5, 'end')",
                         params![character_id, name, m.id, to, now],
                     )?;
                     moves.push(LeagueMove {
@@ -529,6 +647,54 @@ impl LeagueStore for SqliteStore {
             )?;
             tx.commit()?;
             Ok(Ok(moves))
+        })
+    }
+
+    fn migrate_character(&self, character_id: u32, kind: MoveKind, actor: &str, now: i64) -> Result<Refusable<LeagueMove>> {
+        self.with_connection(|conn| {
+            let tx = conn.transaction()?;
+            let Some((name, from)) = character_league(&tx, character_id)? else {
+                return Ok(Err(LeagueRefusal::NoCharacter(character_id)));
+            };
+            let Some(league) = get(&tx, &from)? else {
+                return Ok(Err(LeagueRefusal::CannotMove(format!("league {from:?} is not in this server's league list"))));
+            };
+            let what = match kind {
+                MoveKind::LeaveSsf => "Solo Self-Found",
+                MoveKind::LeaveHardcore => "hardcore",
+                _ => return Ok(Err(LeagueRefusal::CannotMove("players can only leave SSF or hardcore".into()))),
+            };
+            let Some(to) = league.leave_target(kind) else {
+                return Ok(Err(LeagueRefusal::CannotMove(format!("{from:?} is not a {what} league"))));
+            };
+            match get(&tx, &to)? {
+                Some(t) if t.state != LeagueState::Ended => {}
+                Some(_) => return Ok(Err(LeagueRefusal::CannotMove(format!("{to:?} has ended")))),
+                None => return Ok(Err(LeagueRefusal::CannotMove(format!("{to:?} does not exist")))),
+            }
+            let m = apply_move(&tx, character_id, name, &from, &to, kind, actor, now)?;
+            tx.commit()?;
+            Ok(Ok(m))
+        })
+    }
+
+    fn move_character(&self, character_id: u32, to: &str, actor: &str, now: i64) -> Result<Refusable<LeagueMove>> {
+        self.with_connection(|conn| {
+            let tx = conn.transaction()?;
+            let Some((name, from)) = character_league(&tx, character_id)? else {
+                return Ok(Err(LeagueRefusal::NoCharacter(character_id)));
+            };
+            match get(&tx, to)? {
+                None => return Ok(Err(LeagueRefusal::NotFound(to.to_owned()))),
+                Some(t) if t.state == LeagueState::Ended => return Ok(Err(LeagueRefusal::Ended)),
+                Some(_) => {}
+            }
+            if from == to {
+                return Ok(Err(LeagueRefusal::CannotMove(format!("the character is already in {to:?}"))));
+            }
+            let m = apply_move(&tx, character_id, name, &from, to, MoveKind::Admin, actor, now)?;
+            tx.commit()?;
+            Ok(Ok(m))
         })
     }
 
@@ -696,6 +862,72 @@ mod tests {
         assert_eq!(store.delete_league("Standard").unwrap(), Err(LeagueRefusal::HasCharacters(5)));
         assert_eq!(store.delete_league("Dawn").unwrap().unwrap().len(), 4);
         assert_eq!(store.character_counts().unwrap().get("Hardcore"), Some(&2));
+    }
+
+    #[test]
+    fn players_leave_ssf_and_hardcore_one_way() {
+        let store = SqliteStore::in_memory().unwrap();
+        let acc = store.create_account("k", "Exile").unwrap().id;
+        store.create_family(&family("Dawn", true, true, false), 1).unwrap().unwrap();
+        let hcssf = character(&store, acc, "Hcssf", "HC SSF Dawn");
+        let base = character(&store, acc, "Base", "Dawn");
+        // HC SSF: leaving SSF lands in HC, leaving hardcore lands in SSF.
+        let m = store.migrate_character(hcssf, MoveKind::LeaveSsf, "Exile", 7).unwrap().unwrap();
+        assert_eq!((m.from.as_str(), m.to.as_str()), ("HC SSF Dawn", "HC Dawn"));
+        let m = store.migrate_character(hcssf, MoveKind::LeaveHardcore, "Exile", 8).unwrap().unwrap();
+        assert_eq!(m.to, "Dawn");
+        // Nothing left to leave; nothing moves back or sideways; players cannot use other kinds.
+        assert!(matches!(store.migrate_character(hcssf, MoveKind::LeaveSsf, "Exile", 9).unwrap(), Err(LeagueRefusal::CannotMove(_))));
+        assert!(matches!(store.migrate_character(base, MoveKind::LeaveHardcore, "Exile", 9).unwrap(), Err(LeagueRefusal::CannotMove(_))));
+        assert!(matches!(store.migrate_character(base, MoveKind::Admin, "Exile", 9).unwrap(), Err(LeagueRefusal::CannotMove(_))));
+        assert_eq!(store.migrate_character(999, MoveKind::LeaveSsf, "x", 9).unwrap(), Err(LeagueRefusal::NoCharacter(999)));
+        let kinds: Vec<(String, String)> = store.with_connection(|c| {
+            let mut st = c.prepare("SELECT kind, actor FROM league_moves ORDER BY id").unwrap();
+            st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+        });
+        assert_eq!(kinds, [("ssf".to_string(), "Exile".to_string()), ("hardcore".to_string(), "Exile".to_string())]);
+        // A variant that was deleted, or an ended family, is no target.
+        store.delete_league("SSF Dawn").unwrap().unwrap();
+        let hc = character(&store, acc, "Hc", "HC Dawn");
+        assert!(store.migrate_character(hc, MoveKind::LeaveHardcore, "Exile", 9).unwrap().is_ok());
+    }
+
+    #[test]
+    fn admins_move_a_character_anywhere_alive() {
+        let store = SqliteStore::in_memory().unwrap();
+        let acc = store.create_account("k", "Exile").unwrap().id;
+        store.create_family(&family("Standard", true, false, true), 1).unwrap().unwrap();
+        store.create_family(&family("Dawn", true, true, false), 1).unwrap().unwrap();
+        let c = character(&store, acc, "Moved", "Standard");
+        let m = store.move_character(c, "SSF Dawn", "root", 3).unwrap().unwrap();
+        assert_eq!((m.from.as_str(), m.to.as_str()), ("Standard", "SSF Dawn"));
+        // Back out of SSF: allowed for admins.
+        assert!(store.move_character(c, "Hardcore", "root", 4).unwrap().is_ok());
+        assert!(matches!(store.move_character(c, "Hardcore", "root", 5).unwrap(), Err(LeagueRefusal::CannotMove(_))));
+        assert_eq!(store.move_character(c, "Nope", "root", 5).unwrap(), Err(LeagueRefusal::NotFound("Nope".into())));
+        assert_eq!(store.move_character(77, "Dawn", "root", 5).unwrap(), Err(LeagueRefusal::NoCharacter(77)));
+        // Hidden is a valid target, ended is not.
+        store.update_league("Dawn", &LeagueUpdate { state: Some(LeagueState::Hidden), ..Default::default() }).unwrap().unwrap();
+        assert!(store.move_character(c, "Dawn", "root", 6).unwrap().is_ok());
+        store.end_family("Dawn", "Standard", 7).unwrap().unwrap();
+        assert_eq!(store.move_character(c, "HC Dawn", "root", 8).unwrap(), Err(LeagueRefusal::Ended));
+    }
+
+    #[test]
+    fn hardcore_death_rule_is_stored_per_family() {
+        let store = SqliteStore::in_memory().unwrap();
+        let mut f = family("Dawn", true, true, false);
+        f.hc_death = HardcoreDeath::Stay;
+        store.create_family(&f, 1).unwrap().unwrap();
+        store.create_family(&family("Dusk", true, true, false), 1).unwrap().unwrap();
+        let dawn = store.league("HC SSF Dawn").unwrap().unwrap();
+        assert_eq!((dawn.hc_death, dawn.death_target()), (HardcoreDeath::Stay, None));
+        let dusk = store.league("HC SSF Dusk").unwrap().unwrap();
+        assert_eq!(dusk.death_target().as_deref(), Some("SSF Dusk"));
+        assert_eq!(store.league("Dusk").unwrap().unwrap().death_target(), None);
+        let u = LeagueUpdate { hc_death: Some(HardcoreDeath::Softcore), ..Default::default() };
+        store.update_league("Dawn", &u).unwrap().unwrap();
+        assert_eq!(store.league("HC Dawn").unwrap().unwrap().death_target().as_deref(), Some("Dawn"));
     }
 
     #[test]

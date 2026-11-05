@@ -51,7 +51,7 @@ impl Modify for BearerAuth {
         scheduler::api::update, scheduler::api::enable, scheduler::api::disable,
         scheduler::api::delete, scheduler::api::runs,
         league_api::list, league_api::admin_list, league_api::create, league_api::update, league_api::end,
-        league_api::delete, league_api::flags, league_api::mechanics, art::get,
+        league_api::delete, league_api::move_character, league_api::flags, league_api::mechanics, art::get,
     ),
     components(schemas(
         error::ErrorBody, dto::ServerInfo, dto::ModInfo, dto::ModSource, dto::ModsAdminInfo, dto::ModStatusInfo, dto::AccountInfo, dto::RegisterRequest, dto::SetupStatus, dto::CreateAccountRequest, dto::LoginRequest,
@@ -71,7 +71,7 @@ impl Modify for BearerAuth {
         league_api::PublicLeague, league_api::AdminLeague, league_api::FlagArt, league_api::CreateLeagueRequest,
         league_api::UpdateLeagueRequest, league_api::EndLeagueRequest, league_api::EndLeagueResponse,
         league_api::LeagueMoveView, league_api::DeleteLeagueRequest, league_api::DeleteLeagueResponse,
-        league_api::LeagueFlagView, league_api::MechanicView,
+        league_api::MoveCharacterRequest, league_api::LeagueFlagView, league_api::MechanicView,
         scheduler::schedule::Schedule, scheduler::kind::TaskKind,
     )),
     modifiers(&BearerAuth),

@@ -1438,6 +1438,16 @@ mod tests {
         assert!(ex.web.bind.ip().is_loopback());
     }
 
+    /// The release ships the example: with `generated_grid` off no area has fog gates, waypoints
+    /// or checkpoints (0.6.0 did that).
+    #[test]
+    fn the_example_spawns_travel_objects() {
+        let ex = Config::parse(include_str!("../../../config/server.example.toml")).unwrap();
+        assert!(ex.terrain.generate && ex.terrain.generated_grid);
+        assert_eq!(ex.travel.interact_range, TravelConfig::default().interact_range);
+        assert_eq!(ex.travel.skip_objects, TravelConfig::default().skip_objects);
+    }
+
     #[test]
     fn security_warnings_name_the_dangerous_combinations() {
         let mut cfg = Config::parse(include_str!("../../../config/server.toml")).unwrap();

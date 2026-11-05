@@ -65,6 +65,18 @@ tick_ms = 33
 # at 12000; the area's own objects have lower ids).
 first_entity_id = 12000
 
+[travel]
+# Reaches of gates, waypoints and checkpoints, in cells (docs/re/world-travel.md in the hub).
+# A click acts from interact_range; from farther the player walks there first (official: 26).
+interact_range = 26
+# A waypoint or checkpoint this close counts as touched (official: inside about 40).
+touch_range = 40
+# The WorldAreas.Act values `unlock <character> all` covers: acts 1-4 and the interludes (6).
+acts = [1, 2, 3, 4, 6]
+# Objects not spawned: a type path or .ao path containing one of these stays out of the world.
+# Wells: no capture holds their blob and the ones tried hang the client's area load.
+skip_objects = ["HealingWell"]
+
 [movement]
 # Movement facts the server sends that the game data does not name directly (the movement itself is
 # the client's code behind the movement seam: docs/architecture/instance-world.md in the hub).
@@ -118,9 +130,10 @@ generate = true
 # Use the collision grid the server generates (poe-world: tile planes plus doodad hulls, byte
 # for byte the client's for the areas the generator reproduces) instead of the one the client
 # uploads or the layout cache holds. Used only when the server's tile hash equals the client's;
-# otherwise the log warns and the uploaded grid stands in. docs/architecture/instance-world.md
-# (hub). Off by default.
-generated_grid = false
+# otherwise the uploaded or cached grid stands in. docs/architecture/instance-world.md (hub). On by
+# default: it equals the client's in the broad sample and the live wall tests. The travel objects
+# (fog gates, waypoints, checkpoints) come from this generation: off, no area has any.
+generated_grid = true
 # Seconds the client has to report its terrain hashes after the area load started; no report counts
 # as a terrain mismatch. Needs generated_grid: a player whose tile or doodad hash differs from the
 # server's is kicked to the previous instance, else the act's town, else character select

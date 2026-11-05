@@ -25,13 +25,13 @@ jobs:
     steps:
       # Path dependencies in modules/protocol and modules/client-hook (public repositories); the
       # version files are in modules/protocol/versions.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           submodules: true
       # The pinned nightly of rust-toolchain.toml (poe_data_tools needs nightly features).
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install --profile minimal
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: cargo build --locked
       # Tests that read the game files (poe-data) skip themselves when GameFiles/ is absent.
       - run: cargo test --locked
@@ -42,7 +42,7 @@ jobs:
     name: Secret scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # gitleaks over the checked-out files (the history is scanned before a repository goes
       # public, docs/plans/public-release-audit.md of the hub). Version and checksum are pinned; the
       # checksum file comes from the same release.

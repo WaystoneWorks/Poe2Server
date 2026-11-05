@@ -16,14 +16,14 @@ use poe_proto::{
         Authenticate, AuthenticationResult, Credentials, CharacterCreated, CharacterDetails, CharacterEntry,
         CharacterList, CreateCharacter, DeleteCharacter, DeleteCharacterResult, InstanceDetails,
         KeepAlive, KeepAliveReply, LeagueEntry, LeagueList, PlayCharacter, RequestCharacterDetails,
-        RequestCharacterList, ResumeSession,
+        RequestCharacterList, RequestLeaguesWithProgress, MigrateCharacter, MigrateLeague, ResumeSession,
     },
 };
 use poe_store::{Account, Character, NewCharacter};
 use tokio::net::TcpStream;
 use tracing::{debug, info, warn};
 
-use crate::{LoginServer, auth, handshake};
+use crate::{LoginServer, auth, handshake, migration};
 
 /// Messages the login server understands after the key exchange.
 pub(crate) enum ClientMessage {
@@ -36,6 +36,9 @@ pub(crate) enum ClientMessage {
     PlayCharacter(PlayCharacter),
     DeleteCharacter(DeleteCharacter),
     ResumeSession(ResumeSession),
+    RequestLeaguesWithProgress(RequestLeaguesWithProgress),
+    MigrateCharacter(MigrateCharacter),
+    MigrateLeague(MigrateLeague),
 }
 
 /// Reads one message of a known type (opcode checked against the table).
@@ -81,6 +84,11 @@ pub(crate) fn decode_client(protocol: &Protocol, r: &mut Reader<'_>) -> Result<C
         Some(DeleteCharacter::NAME) => {
             DeleteCharacter::decode(r).map(ClientMessage::DeleteCharacter)
         }
+        Some(RequestLeaguesWithProgress::NAME) => {
+            RequestLeaguesWithProgress::decode(r).map(ClientMessage::RequestLeaguesWithProgress)
+        }
+        Some(MigrateCharacter::NAME) => MigrateCharacter::decode(r).map(ClientMessage::MigrateCharacter),
+        Some(MigrateLeague::NAME) => MigrateLeague::decode(r).map(ClientMessage::MigrateLeague),
         _ => Err(DecodeError::Invalid {
             offset: at,
             what: "unknown login opcode",
@@ -287,6 +295,28 @@ pub async fn run(
                 // The client keeps its list until it gets a new one (it does not ask).
                 send_character_list(&server, &mut conn, account.id).await?;
             }
+            ClientMessage::RequestLeaguesWithProgress(req) => {
+                match &account {
+                    Some(a) if a.id == req.account_id => migration::send_list(&server, &mut conn, a.id).await?,
+                    _ => warn!(account_id = req.account_id, "leagues with progress for a foreign account"),
+                }
+            }
+            ClientMessage::MigrateCharacter(req) => {
+                match &account {
+                    Some(a) if a.id == req.account_id => {
+                        migration::run(&server, &mut conn, a, migration::Target::Character(&req.name)).await?;
+                    }
+                    _ => warn!(account_id = req.account_id, "migrate character for a foreign account"),
+                }
+            }
+            ClientMessage::MigrateLeague(req) => {
+                match &account {
+                    Some(a) if a.id == req.account_id => {
+                        migration::run(&server, &mut conn, a, migration::Target::League(&req.league)).await?;
+                    }
+                    _ => warn!(account_id = req.account_id, "migrate league for a foreign account"),
+                }
+            }
             ClientMessage::CreateCharacter(create) => {
                 let Some(account) = &account else {
                     warn!("create character before authentication");
@@ -414,7 +444,7 @@ async fn send_authentication_result(
     Ok(())
 }
 
-fn unix_now() -> i64 {
+pub(crate) fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -439,47 +469,47 @@ fn league_list(server: &LoginServer) -> anyhow::Result<LeagueList> {
 fn league_entries(leagues: &[League], flag_row: impl Fn(&str) -> Option<u32>) -> Vec<LeagueEntry> {
     let mut listed: Vec<&League> = leagues.iter().filter(|l| l.state == LeagueState::Active).collect();
     listed.sort_by_key(|l| !l.is_default);
-    let sibling = |l: &League, hardcore: bool, ssf: bool| {
+    listed.into_iter().map(|l| league_entry(l, leagues, &flag_row)).collect()
+}
+
+/// The wire entry of one league; `leagues` is every league, for the sibling ids.
+pub(crate) fn league_entry(l: &League, leagues: &[League], flag_row: &impl Fn(&str) -> Option<u32>) -> LeagueEntry {
+    let sibling = |hardcore: bool, ssf: bool| {
         leagues
             .iter()
             .find(|o| o.family == l.family && o.hardcore == hardcore && o.ssf == ssf)
             .map(|o| o.id.clone())
             .unwrap_or_default()
     };
-    listed
-        .into_iter()
-        .map(|l| {
-            let start = l.starts_at.unwrap_or(0).max(0) as u64;
-            LeagueEntry {
-                id: l.id.clone(),
-                name: l.display_name.clone(),
-                // SSF variants name their non-SSF sibling, hardcore ones their softcore sibling
-                // (`0x140e7ca80` pairs the creation checkboxes through them).
-                text_60: if l.ssf { sibling(l, l.hardcore, false) } else { String::new() },
-                text_80: if l.hardcore { sibling(l, false, l.ssf) } else { String::new() },
-                text_a0: String::new(),
-                time_d0: start,
-                time_d8: start,
-                time_c8: l.ends_at.unwrap_or(0).max(0) as u64,
-                // +0xe0: bits 3, 5 and 7 as officially (7: gets a creation banner); bit 1
-                // hardcore; bit 4: has an end time (no banner once it passed).
-                // +0xe1 bit 1: a variant. +0xe2 bits 2 and 3: SSF.
-                raw_e0: [
-                    0xa8 | if l.hardcore { 0x02 } else { 0 } | if l.ends_at.is_some() { 0x10 } else { 0 },
-                    if l.is_base() { 0 } else { 0x02 },
-                    if l.ssf { 0x0c } else { 0 },
-                ],
-                flag_c0: 0,
-                // Category 1 preselects the banner at creation: the default league's.
-                flag_c1: u8::from(l.is_default && l.is_base()),
-                // LeagueFlag row + 1 of the creation banner.
-                flag_c2: l.flag.as_deref().and_then(&flag_row).map_or(0, |r| (r + 1).min(255) as u8),
-            }
-        })
-        .collect()
+    let start = l.starts_at.unwrap_or(0).max(0) as u64;
+    LeagueEntry {
+        id: l.id.clone(),
+        name: l.display_name.clone(),
+        // SSF variants name their non-SSF sibling, hardcore ones their softcore sibling
+        // (`0x140e7ca80` pairs the creation checkboxes through them).
+        text_60: if l.ssf { sibling(l.hardcore, false) } else { String::new() },
+        text_80: if l.hardcore { sibling(false, l.ssf) } else { String::new() },
+        text_a0: String::new(),
+        time_d0: start,
+        time_d8: start,
+        time_c8: l.ends_at.unwrap_or(0).max(0) as u64,
+        // +0xe0: bits 3, 5 and 7 as officially (7: gets a creation banner); bit 1
+        // hardcore; bit 4: has an end time (no banner once it passed).
+        // +0xe1 bit 1: a variant. +0xe2 bits 2 and 3: SSF.
+        raw_e0: [
+            0xa8 | if l.hardcore { 0x02 } else { 0 } | if l.ends_at.is_some() { 0x10 } else { 0 },
+            if l.is_base() { 0 } else { 0x02 },
+            if l.ssf { 0x0c } else { 0 },
+        ],
+        flag_c0: 0,
+        // Category 1 preselects the banner at creation: the default league's.
+        flag_c1: u8::from(l.is_default && l.is_base()),
+        // LeagueFlag row + 1 of the creation banner.
+        flag_c2: l.flag.as_deref().and_then(flag_row).map_or(0, |r| (r + 1).min(255) as u8),
+    }
 }
 
-async fn send_character_list(
+pub(crate) async fn send_character_list(
     server: &LoginServer,
     conn: &mut Connection,
     account_id: u32,
@@ -592,18 +622,23 @@ fn delete_result(outcome: DeleteOutcome, account_id: u32) -> DeleteCharacterResu
     DeleteCharacterResult { result: outcome.code(), account_id }
 }
 
+/// The code for a name the account does not own: another account's, or nobody's.
+pub(crate) fn not_owned_code(store: &dyn poe_store::Store, name: &str) -> BackendError {
+    match store.all_characters() {
+        Ok(all) if all.iter().any(|c| c.name == name) => be::NOT_CHARACTER_OWNER,
+        Ok(_) => be::CHARACTER_DOES_NOT_EXIST,
+        Err(e) => {
+            warn!("character lookup: {e}");
+            be::DATABASE_ERROR
+        }
+    }
+}
+
 fn delete_character(store: &dyn poe_store::Store, account_id: u32, name: &str) -> DeleteOutcome {
     match store.delete_character(account_id, name) {
         Ok(true) => DeleteOutcome::Deleted,
         // Is the name somebody else's character?
-        Ok(false) => match store.all_characters() {
-            Ok(all) if all.iter().any(|c| c.name == name) => DeleteOutcome::Refused(be::NOT_CHARACTER_OWNER),
-            Ok(_) => DeleteOutcome::Refused(be::CHARACTER_DOES_NOT_EXIST),
-            Err(e) => {
-                warn!("delete character: {e}");
-                DeleteOutcome::Refused(be::DATABASE_ERROR)
-            }
-        },
+        Ok(false) => DeleteOutcome::Refused(not_owned_code(store, name)),
         Err(e) => {
             warn!("delete character: {e}");
             DeleteOutcome::Refused(be::DATABASE_ERROR)

@@ -103,19 +103,6 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(game_dir = %config.game.game_dir.display(), "game data opened");
     // One limiter for the login server and the web API.
     let limiter = Arc::new(poe_accounts::LoginLimiter::from_config(&config.security));
-    let login = Arc::new(LoginServer {
-        config: config.clone(),
-        protocol: protocol.clone(),
-        store: store.clone(),
-        leagues: store.clone(),
-        accounts: accounts.clone(),
-        limiter: limiter.clone(),
-        data: data.clone(),
-        tickets: tickets.clone(),
-        sessions: sessions.clone(),
-        instances: instances.clone(),
-    });
-
     let instance = Arc::new(instance_server::InstanceServer {
         config: config.clone(),
         protocol: protocol.clone(),
@@ -130,7 +117,7 @@ async fn main() -> anyhow::Result<()> {
         )),
         reports: Default::default(),
         terrain: Arc::new(instance_server::terrain_store::TerrainStore::new(&config.spawn)),
-        sessions,
+        sessions: sessions.clone(),
         instances: instances.clone(),
         live: Default::default(),
         actors: Default::default(),
@@ -139,6 +126,20 @@ async fn main() -> anyhow::Result<()> {
         terrain_memory: Default::default(),
         started: std::time::Instant::now(),
         names: instance_server::names::NameCache::default(),
+    });
+
+    let login = Arc::new(LoginServer {
+        config: config.clone(),
+        protocol: protocol.clone(),
+        store: store.clone(),
+        leagues: store.clone(),
+        accounts: accounts.clone(),
+        limiter: limiter.clone(),
+        data: data.clone(),
+        tickets: tickets.clone(),
+        sessions,
+        instances: instances.clone(),
+        admin: instance.clone(),
     });
 
     let (web_lifecycle, mut shutdown_requests) = poe_web_api::Lifecycle::new();

@@ -179,6 +179,15 @@ impl League {
         Some(Variant::of(hardcore, ssf).league_id(&self.family))
     }
 
+    /// The move a player gets from the client's League Migrations window: leave SSF first,
+    /// else leave hardcore. The window's messages name no target, so a league has one move;
+    /// `HC SSF X` goes to `HC X`, a second migration to `X`.
+    pub fn player_leave(&self) -> Option<(MoveKind, String)> {
+        [MoveKind::LeaveSsf, MoveKind::LeaveHardcore]
+            .into_iter()
+            .find_map(|kind| self.leave_target(kind).map(|to| (kind, to)))
+    }
+
     /// Where a dead hardcore character goes (P13): the softcore member, unless the family
     /// keeps them dead in place.
     pub fn death_target(&self) -> Option<String> {
@@ -311,6 +320,10 @@ pub trait LeagueStore: Send + Sync {
     /// into the same family's league without that flag. Refused when the character's league
     /// has no such flag, the target is missing or ended. One `league_moves` line.
     fn migrate_character(&self, character_id: u32, kind: MoveKind, actor: &str, now: i64) -> Result<Refusable<LeagueMove>>;
+    /// Moves every character of the account in `league` by [`League::player_leave`], in one
+    /// transaction (the client's Migrate All), with one `league_moves` line each. Refuses a
+    /// league without a move, a missing or ended target, and an account with nobody there.
+    fn migrate_account_league(&self, account_id: u32, league: &str, actor: &str, now: i64) -> Result<Refusable<Vec<LeagueMove>>>;
     /// An admin's move of a character into any league that has not ended (hidden is fine).
     /// The caller checks that the character is offline.
     fn move_character(&self, character_id: u32, to: &str, actor: &str, now: i64) -> Result<Refusable<LeagueMove>>;
@@ -401,6 +414,15 @@ fn character_league(tx: &Transaction<'_>, id: u32) -> rusqlite::Result<Option<(S
         Ok((r.get(0)?, r.get(1)?))
     })
     .optional()
+}
+
+/// Why a player cannot leave into the league `to`: it must exist and not have ended.
+fn leave_target_refusal(tx: &Transaction<'_>, to: &str) -> rusqlite::Result<Option<LeagueRefusal>> {
+    Ok(match get(tx, to)? {
+        Some(t) if t.state != LeagueState::Ended => None,
+        Some(_) => Some(LeagueRefusal::CannotMove(format!("{to:?} has ended"))),
+        None => Some(LeagueRefusal::CannotMove(format!("{to:?} does not exist"))),
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -667,14 +689,41 @@ impl LeagueStore for SqliteStore {
             let Some(to) = league.leave_target(kind) else {
                 return Ok(Err(LeagueRefusal::CannotMove(format!("{from:?} is not a {what} league"))));
             };
-            match get(&tx, &to)? {
-                Some(t) if t.state != LeagueState::Ended => {}
-                Some(_) => return Ok(Err(LeagueRefusal::CannotMove(format!("{to:?} has ended")))),
-                None => return Ok(Err(LeagueRefusal::CannotMove(format!("{to:?} does not exist")))),
+            if let Some(refusal) = leave_target_refusal(&tx, &to)? {
+                return Ok(Err(refusal));
             }
             let m = apply_move(&tx, character_id, name, &from, &to, kind, actor, now)?;
             tx.commit()?;
             Ok(Ok(m))
+        })
+    }
+
+    fn migrate_account_league(&self, account_id: u32, league: &str, actor: &str, now: i64) -> Result<Refusable<Vec<LeagueMove>>> {
+        self.with_connection(|conn| {
+            let tx = conn.transaction()?;
+            let Some(from) = get(&tx, league)? else {
+                return Ok(Err(LeagueRefusal::NotFound(league.to_owned())));
+            };
+            let Some((kind, to)) = from.player_leave() else {
+                return Ok(Err(LeagueRefusal::CannotMove(format!("{league:?} is neither Solo Self-Found nor hardcore"))));
+            };
+            if let Some(refusal) = leave_target_refusal(&tx, &to)? {
+                return Ok(Err(refusal));
+            }
+            let characters: Vec<(u32, String)> = {
+                let mut st = tx.prepare("SELECT id, name FROM characters WHERE account_id = ?1 AND league = ?2 ORDER BY id")?;
+                let rows = st.query_map(params![account_id, league], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                rows.collect::<rusqlite::Result<_>>()?
+            };
+            if characters.is_empty() {
+                return Ok(Err(LeagueRefusal::CannotMove(format!("the account has no character in {league:?}"))));
+            }
+            let moves = characters
+                .into_iter()
+                .map(|(id, name)| apply_move(&tx, id, name, league, &to, kind, actor, now))
+                .collect::<rusqlite::Result<_>>()?;
+            tx.commit()?;
+            Ok(Ok(moves))
         })
     }
 
@@ -890,6 +939,55 @@ mod tests {
         store.delete_league("SSF Dawn").unwrap().unwrap();
         let hc = character(&store, acc, "Hc", "HC Dawn");
         assert!(store.migrate_character(hc, MoveKind::LeaveHardcore, "Exile", 9).unwrap().is_ok());
+    }
+
+    #[test]
+    fn player_leave_takes_ssf_first_then_hardcore() {
+        let store = SqliteStore::in_memory().unwrap();
+        let rows = store.create_family(&family("Dawn", true, true, false), 1).unwrap().unwrap();
+        let leave: Vec<_> = rows.iter().map(|l| l.player_leave()).collect();
+        assert_eq!(
+            leave,
+            [
+                None,
+                Some((MoveKind::LeaveHardcore, "Dawn".to_owned())),
+                Some((MoveKind::LeaveSsf, "Dawn".to_owned())),
+                Some((MoveKind::LeaveSsf, "HC Dawn".to_owned())),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_account_migrates_a_whole_league_in_one_go() {
+        let store = SqliteStore::in_memory().unwrap();
+        let (acc, other) = (store.create_account("k", "Exile").unwrap().id, store.create_account("o", "Exile").unwrap().id);
+        store.create_family(&family("Standard", true, false, true), 1).unwrap().unwrap();
+        store.create_family(&family("Dawn", true, true, false), 1).unwrap().unwrap();
+        character(&store, acc, "OneSsf", "SSF Dawn");
+        character(&store, acc, "TwoSsf", "SSF Dawn");
+        character(&store, acc, "StaysHc", "HC Dawn");
+        character(&store, other, "Theirs", "SSF Dawn");
+
+        let moves = store.migrate_account_league(acc, "SSF Dawn", "k", 5).unwrap().unwrap();
+        assert_eq!(moves.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["OneSsf", "TwoSsf"]);
+        assert!(moves.iter().all(|m| m.from == "SSF Dawn" && m.to == "Dawn"));
+        let league_of = |name: &str| store.all_characters().unwrap().into_iter().find(|c| c.name == name).unwrap().league;
+        assert_eq!(league_of("OneSsf"), "Dawn");
+        assert_eq!(league_of("StaysHc"), "HC Dawn", "another league of the account stays");
+        assert_eq!(league_of("Theirs"), "SSF Dawn", "another account stays");
+        let lines: u32 = store.with_connection(|conn| {
+            conn.query_row("SELECT count(*) FROM league_moves WHERE kind = 'ssf' AND actor = 'k' AND at = 5", [], |r| r.get(0)).unwrap()
+        });
+        assert_eq!(lines, 2);
+
+        // Nobody left there, a league without a move, an unknown league.
+        assert!(matches!(store.migrate_account_league(acc, "SSF Dawn", "k", 6).unwrap(), Err(LeagueRefusal::CannotMove(_))));
+        assert!(matches!(store.migrate_account_league(acc, "Dawn", "k", 6).unwrap(), Err(LeagueRefusal::CannotMove(_))));
+        assert_eq!(store.migrate_account_league(acc, "Nope", "k", 6).unwrap(), Err(LeagueRefusal::NotFound("Nope".into())));
+        // The target ended: nothing moves.
+        store.with_connection(|conn| conn.execute("UPDATE leagues SET state = 'ended' WHERE id = 'Dawn'", []).unwrap());
+        assert!(matches!(store.migrate_account_league(other, "SSF Dawn", "o", 8).unwrap(), Err(LeagueRefusal::CannotMove(_))));
+        assert_eq!(league_of("Theirs"), "SSF Dawn");
     }
 
     #[test]

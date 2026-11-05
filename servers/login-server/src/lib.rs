@@ -5,6 +5,7 @@
 mod auth;
 mod codes;
 mod handshake;
+mod migration;
 mod session;
 
 use std::sync::Arc;
@@ -35,6 +36,8 @@ pub struct LoginServer {
     pub sessions: Arc<dyn poe_cluster::LoginSessions>,
     /// Instances of areas (characters enter an existing one or a new one).
     pub instances: Arc<dyn poe_cluster::InstanceDirectory>,
+    /// Who is in game (a character there cannot be migrated).
+    pub admin: Arc<dyn poe_cluster::AdminControl>,
 }
 
 impl LoginServer {

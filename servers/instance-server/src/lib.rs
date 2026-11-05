@@ -809,8 +809,9 @@ impl InstanceServer {
             let grid = poe_world::collision::build(&g.map, &files, g.doodads.iter().chain(&g.tile_objects).chain(&sent), poe_world::doodads::Side::Client).map_err(|e| e.to_string())?;
             let grid = spawn::Grid::parse(&grid.pwg1()).ok_or_else(|| "generated grid is not PWG1".to_string())?;
             let layout = spawn::Layout::parse(&g.map.layout_tsv()).ok_or_else(|| "generated layout does not parse".to_string())?;
-            let town = poe_data::views::WorldArea::find(&data, &area).ok().flatten().is_some_and(|a| a.is_town);
-            let objects = travel::prepare(objects, &grid, town);
+            let here = poe_data::views::WorldArea::find(&data, &area).ok().flatten();
+            let town = here.as_ref().is_some_and(|a| a.is_town);
+            let objects = travel::prepare(objects, &grid, town, here.map_or(0, |a| a.hash16));
             Ok::<_, String>(GeneratedTerrain { grid, layout, hashes, objects })
         })
         .await

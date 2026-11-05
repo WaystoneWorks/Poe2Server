@@ -85,7 +85,8 @@ pub fn gate_arrival(grid: &spawn::Grid, (x, y): (i32, i32), angle: f32) -> (i32,
 }
 
 /// The blob, type key and arrival cell of every object of a layout.
-pub fn prepare(objects: Vec<WorldObject>, grid: &spawn::Grid, town: bool) -> Vec<PreparedObject> {
+/// `here`: the area's `HASH16`, the destination an in-instance gate names.
+pub fn prepare(objects: Vec<WorldObject>, grid: &spawn::Grid, town: bool, here: u16) -> Vec<PreparedObject> {
     use poe_game::movement::Walkable;
     objects
         .into_iter()
@@ -93,8 +94,10 @@ pub fn prepare(objects: Vec<WorldObject>, grid: &spawn::Grid, town: bool) -> Vec
             let cell = (object.x, object.y);
             let tail = match (&object.class, &object.target) {
                 (Class::Gate, Target::Area { hash16, index, .. }) => ObjectTail::Gate { area_hash: *hash16, index: *index, town },
-                // A teleport within the instance names no area: the gate's own click decides.
-                (Class::Gate, _) => ObjectTail::Gate { area_hash: 0, index: 0, town },
+                // A teleport within the instance names its own area: with no area row behind the
+                // destination (HASH16 0) the client locks the gate and a click walks
+                // (`0x1416e3640`); the server teleports on the click.
+                (Class::Gate, _) => ObjectTail::Gate { area_hash: here, index: 0, town },
                 (Class::Waypoint, _) => ObjectTail::Waypoint,
                 (Class::Checkpoint { .. }, _) => ObjectTail::Checkpoint,
                 (Class::Well, _) => ObjectTail::Well,

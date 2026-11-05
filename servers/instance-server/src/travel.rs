@@ -437,6 +437,7 @@ impl InstanceServer {
         let open: Vec<_> = self.instances.list().into_iter().filter(|i| i.spec.area == area).collect();
         let level = WorldArea::find(&self.data, area)?.map_or(1, |a| a.level as u8);
         let rows = open.iter().map(|i| InstanceRow { id: u64::from(i.id), unk: 0, level, names: i.players.clone() }).collect();
+        info!(%area, open = open.len(), "instance list sent");
         ctx.travel.state.lock().unwrap().pending = Some(PendingChoice { area: area.to_owned(), area_hash, arrive, tail, instances: open.iter().map(|i| i.id).collect() });
         Ok(self.protocol.instance.encode(&InstanceList { local: LOCAL_PLAYER, area_hash, level, rows })?)
     }
@@ -463,6 +464,7 @@ impl InstanceServer {
             }
             InstanceChoice::NAME => {
                 let m = InstanceChoice::decode(r)?;
+                info!(choice = m.choice, "instance choice");
                 let Some(p) = ctx.travel.state.lock().unwrap().pending.take() else {
                     return Ok(Some(Handled::Continue));
                 };

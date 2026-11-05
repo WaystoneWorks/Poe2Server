@@ -24,7 +24,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let seed: u32 = args.next().ok_or("seed")?.parse()?;
     let filter = args.next().map(|f| f.to_ascii_lowercase());
-    let g = area::generate(&gd, &first, seed)?;
+    let files = CachedFiles::new(gd.files());
+    let g = area::generate_with_files(&gd, &files, &first, &mut TerrainRng::new(seed), None)?;
     println!("graph {} doodads {} tile_objects {}", g.graph, g.doodads.len(), g.tile_objects.len());
     for (src, list) in [("room", &g.doodads), ("tile", &g.tile_objects)] {
         for d in list {

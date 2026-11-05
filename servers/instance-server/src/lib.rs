@@ -786,14 +786,17 @@ impl InstanceServer {
         let result = tokio::task::spawn_blocking(move || {
             let forced = resolve_layout(&request, &area, seed);
             let mut rng = poe_world::rng::TerrainRng::new(seed);
-            let g = poe_world::area::generate_with(&data, &area, &mut rng, forced).map_err(|e| e.to_string())?;
+            // One generation reads the same tile and room files many times: cached, G1_15 takes
+            // 3.6 s instead of 36 s (the client leaves after about 30 s without the area).
+            let files = poe_world::generate::CachedFiles::new(data.files());
+            let g = poe_world::area::generate_with_files(&data, &files, &area, &mut rng, forced).map_err(|e| e.to_string())?;
             let hashes = terrain_check::Hashes { tile: g.map.tile_hash(), doodad: g.doodad_hash() };
             // The client's live grid is its own generation (client side) plus the hull of every static
             // entity the server sends (`0x141d0ce70`). This server sends none of the `server_only`
             // static objects yet, so the grid it must agree with is the client side one; a
             // `Side::Server` grid would block cells (healing wells, benches) the client walks through.
             let mut objects = poe_world::objects::travel_objects(&data, &area, &g).map_err(|e| e.to_string())?;
-            objects.retain(|o| !skip_objects.iter().any(|skip| o.kind.contains(skip.as_str())));
+            objects.retain(|o| !skip_objects.iter().any(|skip| o.kind.contains(skip.as_str()) || o.ao.contains(skip.as_str())));
             // The objects this server sends with a hull change the client's grid: its wells.
             let wells: std::collections::BTreeSet<(i32, i32)> = objects.iter().filter(|o| o.class == poe_world::objects::Class::Well).map(|o| (o.x, o.y)).collect();
             let sent: Vec<poe_world::doodads::Doodad> = g
@@ -803,7 +806,7 @@ impl InstanceServer {
                 .filter(|d| d.solid && d.exists(poe_world::doodads::Side::Server) && !d.exists(poe_world::doodads::Side::Client) && wells.contains(&(d.x, d.y)))
                 .map(|d| poe_world::doodads::Doodad { side: 0, ..d.clone() })
                 .collect();
-            let grid = poe_world::collision::build(&g.map, data.files(), g.doodads.iter().chain(&g.tile_objects).chain(&sent), poe_world::doodads::Side::Client).map_err(|e| e.to_string())?;
+            let grid = poe_world::collision::build(&g.map, &files, g.doodads.iter().chain(&g.tile_objects).chain(&sent), poe_world::doodads::Side::Client).map_err(|e| e.to_string())?;
             let grid = spawn::Grid::parse(&grid.pwg1()).ok_or_else(|| "generated grid is not PWG1".to_string())?;
             let layout = spawn::Layout::parse(&g.map.layout_tsv()).ok_or_else(|| "generated layout does not parse".to_string())?;
             let town = poe_data::views::WorldArea::find(&data, &area).ok().flatten().is_some_and(|a| a.is_town);
@@ -846,7 +849,8 @@ impl InstanceServer {
             let forced = resolve_layout(&request, &area, seed);
             let started = std::time::Instant::now();
             let mut rng = poe_world::rng::TerrainRng::new(seed);
-            match poe_world::area::generate_with(&data, &area, &mut rng, forced) {
+            let files = poe_world::generate::CachedFiles::new(data.files());
+            match poe_world::area::generate_with_files(&data, &files, &area, &mut rng, forced) {
                 Ok(g) => {
                     let ours = g.map.tile_hash();
                     if ours == client_hash {

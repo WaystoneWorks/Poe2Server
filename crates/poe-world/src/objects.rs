@@ -29,7 +29,7 @@ use crate::{
 const TILE: i32 = 23;
 
 /// The fog gate's type: its blob layout is the captured one (docs/re/world-travel.md). A gate type
-/// with other components is sent as this type with its own art.
+/// that serialises differently is sent as this type with its own art ([`sent_kind`]).
 const FOG_GATE: &str = "Metadata/MiscellaneousObjects/AreaTransition_Animate";
 const WAYPOINT: &str = "Metadata/MiscellaneousObjects/Waypoint";
 const CHECKPOINT: &str = "Metadata/MiscellaneousObjects/Checkpoint";
@@ -109,10 +109,19 @@ fn classify(gd: &GameData, kind: &str) -> Option<(Class, &'static str)> {
     name.contains("HealingWell").then_some((Class::Well, ""))
 }
 
-/// The type sent for a placed type: its own when it has the captured type's components.
+/// The type sent for a placed type: its own when it serialises like the captured type (the same
+/// components and the same StateMachine shared states), else the captured one. A shared state is
+/// one more value in the blob: `AreaTransition_Animate_Toggleable` (`unlocked`) sent as itself
+/// with the fog gate's bytes made the client throw `BufferUnderflow` in `G2_6`.
 fn sent_kind(gd: &GameData, kind: &str, captured: &str) -> String {
-    let names = |k: &str| ObjectTemplate::load(gd, k).map(|t| t.components.into_keys().collect::<BTreeSet<_>>()).ok();
-    match names(kind) == names(captured) {
+    let shape = |k: &str| {
+        ObjectTemplate::load(gd, k).ok().map(|t| {
+            // `define_shared_state`, `define_shared_checkpoint_state` (`AncientSeal*Portal`), ...
+            let shared: Vec<(String, String)> = t.component("StateMachine").iter().filter(|(k, _)| k.starts_with("define_shared")).cloned().collect();
+            (t.components.into_keys().collect::<BTreeSet<_>>(), shared)
+        })
+    };
+    match shape(kind) == shape(captured) {
         true => kind.to_owned(),
         false => captured.to_owned(),
     }

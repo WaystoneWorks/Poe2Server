@@ -781,6 +781,7 @@ impl InstanceServer {
         let data = self.data.clone();
         let area = area.to_string();
         let request = self.layout_request(instance);
+        let skip_objects = self.config.travel.skip_objects.clone();
         let started = std::time::Instant::now();
         let result = tokio::task::spawn_blocking(move || {
             let forced = resolve_layout(&request, &area, seed);
@@ -791,7 +792,8 @@ impl InstanceServer {
             // entity the server sends (`0x141d0ce70`). This server sends none of the `server_only`
             // static objects yet, so the grid it must agree with is the client side one; a
             // `Side::Server` grid would block cells (healing wells, benches) the client walks through.
-            let objects = poe_world::objects::travel_objects(&data, &area, &g).map_err(|e| e.to_string())?;
+            let mut objects = poe_world::objects::travel_objects(&data, &area, &g).map_err(|e| e.to_string())?;
+            objects.retain(|o| !skip_objects.iter().any(|skip| o.kind.contains(skip.as_str())));
             // The objects this server sends with a hull change the client's grid: its wells.
             let wells: std::collections::BTreeSet<(i32, i32)> = objects.iter().filter(|o| o.class == poe_world::objects::Class::Well).map(|o| (o.x, o.y)).collect();
             let sent: Vec<poe_world::doodads::Doodad> = g
@@ -804,7 +806,8 @@ impl InstanceServer {
             let grid = poe_world::collision::build(&g.map, data.files(), g.doodads.iter().chain(&g.tile_objects).chain(&sent), poe_world::doodads::Side::Client).map_err(|e| e.to_string())?;
             let grid = spawn::Grid::parse(&grid.pwg1()).ok_or_else(|| "generated grid is not PWG1".to_string())?;
             let layout = spawn::Layout::parse(&g.map.layout_tsv()).ok_or_else(|| "generated layout does not parse".to_string())?;
-            let objects = travel::prepare(objects, &grid);
+            let town = poe_data::views::WorldArea::find(&data, &area).ok().flatten().is_some_and(|a| a.is_town);
+            let objects = travel::prepare(objects, &grid, town);
             Ok::<_, String>(GeneratedTerrain { grid, layout, hashes, objects })
         })
         .await

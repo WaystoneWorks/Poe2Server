@@ -85,16 +85,16 @@ pub fn gate_arrival(grid: &spawn::Grid, (x, y): (i32, i32), angle: f32) -> (i32,
 }
 
 /// The blob, type key and arrival cell of every object of a layout.
-pub fn prepare(objects: Vec<WorldObject>, grid: &spawn::Grid) -> Vec<PreparedObject> {
+pub fn prepare(objects: Vec<WorldObject>, grid: &spawn::Grid, town: bool) -> Vec<PreparedObject> {
     use poe_game::movement::Walkable;
     objects
         .into_iter()
         .map(|object| {
             let cell = (object.x, object.y);
             let tail = match (&object.class, &object.target) {
-                (Class::Gate, Target::Area { hash16, index, .. }) => ObjectTail::Gate { area_hash: *hash16, index: *index },
+                (Class::Gate, Target::Area { hash16, index, .. }) => ObjectTail::Gate { area_hash: *hash16, index: *index, town },
                 // A teleport within the instance names no area: the gate's own click decides.
-                (Class::Gate, _) => ObjectTail::Gate { area_hash: 0, index: 0 },
+                (Class::Gate, _) => ObjectTail::Gate { area_hash: 0, index: 0, town },
                 (Class::Waypoint, _) => ObjectTail::Waypoint,
                 (Class::Checkpoint { .. }, _) => ObjectTail::Checkpoint,
                 (Class::Well, _) => ObjectTail::Well,

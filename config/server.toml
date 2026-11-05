@@ -73,6 +73,9 @@ interact_range = 26
 touch_range = 40
 # The WorldAreas.Act values `unlock <character> all` covers: acts 1-4 and the interludes (6).
 acts = [1, 2, 3, 4, 6]
+# Object types not spawned: a type path containing one of these stays out of the world.
+# Wells: no capture holds their blob and the ones tried hang the client's area load.
+skip_objects = ["HealingWell"]
 
 [movement]
 # Movement facts the server sends that the game data does not name directly (the movement itself is

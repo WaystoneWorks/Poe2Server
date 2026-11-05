@@ -1003,11 +1003,15 @@ pub struct TravelConfig {
     pub touch_range: i32,
     /// The `WorldAreas.Act` values `unlock` means by all (acts 1-4, the interludes are 6).
     pub acts: Vec<i64>,
+    /// Object types not spawned: a type path containing one of these stays out of the world.
+    /// Default: wells, whose blob has no capture and hangs the client's area load.
+    #[serde(default)]
+    pub skip_objects: Vec<String>,
 }
 
 impl Default for TravelConfig {
     fn default() -> Self {
-        Self { interact_range: 26, touch_range: 40, acts: vec![1, 2, 3, 4, 6] }
+        Self { interact_range: 26, touch_range: 40, acts: vec![1, 2, 3, 4, 6], skip_objects: vec!["HealingWell".to_string()] }
     }
 }
 

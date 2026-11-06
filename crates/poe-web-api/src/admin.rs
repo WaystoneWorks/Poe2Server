@@ -77,19 +77,24 @@ pub async fn sessions(
             return Ok(Vec::new());
         }
         // Level and class come from the character rows.
-        let characters: HashMap<String, (u32, u32)> = state
+        let mut classes = HashMap::new();
+        let characters: HashMap<String, (u32, u32, Option<String>)> = state
             .store
             .all_characters()?
             .into_iter()
-            .map(|c| (c.name.to_lowercase(), (c.level, c.class_id)))
+            .map(|c| {
+                let class = class_name(&state, &mut classes, &c.start_state);
+                (c.name.to_lowercase(), (c.level, c.class_id, class))
+            })
             .collect();
         Ok(online
             .into_iter()
             .map(|o| {
-                let found = characters.get(&o.character.to_lowercase()).copied();
+                let found = characters.get(&o.character.to_lowercase());
                 let mut info = OnlinePlayerInfo::from(o);
                 info.level = found.map(|f| f.0);
                 info.class_id = found.map(|f| f.1);
+                info.class_name = found.and_then(|f| f.2.clone());
                 info
             })
             .collect())
@@ -534,6 +539,7 @@ fn character_infos(
         .map(|o| o.character.to_lowercase())
         .collect();
     let mut names: HashMap<u32, Option<String>> = HashMap::new();
+    let mut classes = HashMap::new();
     let mut out = Vec::with_capacity(list.len());
     for c in list {
         let account = match names.get(&c.account_id) {
@@ -545,9 +551,29 @@ fn character_infos(
             }
         };
         let is_online = online.contains(&c.name.to_lowercase());
-        out.push(CharacterInfo::new(c, account, is_online));
+        let class = class_name(s, &mut classes, &c.start_state);
+        out.push(CharacterInfo::new(c, account, is_online, class));
     }
     Ok(out)
+}
+
+/// `Characters.Name` of a start state's class from the game data (cached per call), `None` when
+/// the server has no game data or does not know the start state.
+fn class_name(
+    s: &WebState,
+    cache: &mut HashMap<String, Option<String>>,
+    start_state: &str,
+) -> Option<String> {
+    if let Some(hit) = cache.get(start_state) {
+        return hit.clone();
+    }
+    let name = s
+        .data
+        .as_deref()
+        .and_then(|d| poe_data::views::StartState::find(d, start_state).ok().flatten())
+        .map(|st| st.class_name);
+    cache.insert(start_state.to_owned(), name.clone());
+    name
 }
 
 /// Characters of all accounts, or of one (`?account=`).

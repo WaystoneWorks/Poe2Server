@@ -241,6 +241,8 @@ pub struct OnlinePlayerInfo {
     pub level: Option<u32>,
     /// `Characters.IntegerId` of the character's class.
     pub class_id: Option<u32>,
+    /// `Characters.Name` of the class (e.g. "Ranger"), when the game data knows it.
+    pub class_name: Option<String>,
     pub instance: Option<u32>,
     /// `WorldAreas.Id`.
     pub area: String,
@@ -260,6 +262,7 @@ impl From<OnlinePlayer> for OnlinePlayerInfo {
             account_id: o.account_id,
             level: None,
             class_id: None,
+            class_name: None,
             instance: o.instance,
             area: o.area,
             connected_at: o.connected_at,
@@ -403,6 +406,8 @@ pub struct CharacterInfo {
     pub league: String,
     /// `Characters.IntegerId` of the class.
     pub class_id: u32,
+    /// `Characters.Name` of the class (e.g. "Ranger"), when the game data knows it.
+    pub class_name: Option<String>,
     pub start_state: String,
     pub level: u32,
     pub experience: u64,
@@ -414,7 +419,12 @@ pub struct CharacterInfo {
 }
 
 impl CharacterInfo {
-    pub fn new(c: Character, account: Option<String>, online: bool) -> Self {
+    pub fn new(
+        c: Character,
+        account: Option<String>,
+        online: bool,
+        class_name: Option<String>,
+    ) -> Self {
         Self {
             id: c.id,
             account_id: c.account_id,
@@ -422,6 +432,7 @@ impl CharacterInfo {
             name: c.name,
             league: c.league,
             class_id: c.class_id,
+            class_name,
             start_state: c.start_state,
             level: c.level,
             experience: c.experience,

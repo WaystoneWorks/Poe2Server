@@ -1297,6 +1297,65 @@
         ]
       }
     },
+    "/api/v1/admin/data/areas": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Every world area with a name, in table order.",
+        "operationId": "areas",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AreaView"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/admin/data/league-flags": {
       "get": {
         "tags": [
@@ -4454,6 +4513,42 @@
           }
         }
       },
+      "AreaView": {
+        "type": "object",
+        "description": "A `WorldAreas` row for the area pickers (create instance, transfer).",
+        "required": [
+          "id",
+          "name",
+          "act",
+          "level",
+          "is_town",
+          "is_hideout"
+        ],
+        "properties": {
+          "act": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "string",
+            "description": "`WorldAreas.Id`, e.g. \"G1_1\"."
+          },
+          "is_hideout": {
+            "type": "boolean"
+          },
+          "is_town": {
+            "type": "boolean"
+          },
+          "level": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string",
+            "description": "`WorldAreas.Name`, e.g. \"The Riverbank\"."
+          }
+        }
+      },
       "BackupContent": {
         "type": "object",
         "description": "`GET /admin/config/backups/{name}`.",
@@ -4657,6 +4752,13 @@
             "format": "int32",
             "description": "`Characters.IntegerId` of the class.",
             "minimum": 0
+          },
+          "class_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`Characters.Name` of the class (e.g. \"Ranger\"), when the game data knows it."
           },
           "experience": {
             "type": "integer",
@@ -5955,6 +6057,13 @@
             "format": "int32",
             "description": "`Characters.IntegerId` of the character's class.",
             "minimum": 0
+          },
+          "class_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`Characters.Name` of the class (e.g. \"Ranger\"), when the game data knows it."
           },
           "connected_at": {
             "type": "integer",

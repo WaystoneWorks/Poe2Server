@@ -58,6 +58,7 @@ async fn league_endpoints_need_an_admin_except_the_public_list() {
         ("POST", "/api/v1/admin/characters/1/league"),
         ("GET", "/api/v1/admin/data/league-flags"),
         ("GET", "/api/v1/admin/data/league-mechanics"),
+        ("GET", "/api/v1/admin/data/areas"),
     ] {
         assert_eq!(f.call(method, uri, None, None).await.0, StatusCode::UNAUTHORIZED, "{uri}");
         assert_eq!(f.call(method, uri, Some(&alice), Some(json!({}))).await.0, StatusCode::FORBIDDEN, "{uri}");
@@ -122,6 +123,7 @@ async fn refusals_map_to_status_codes() {
     assert_eq!(create(&f, &t, json!({"name": "Dusk", "mechanics": ["Breach"]})).await.0, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(f.call("GET", "/api/v1/admin/data/league-flags", Some(&t), None).await.0, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(f.call("GET", "/api/v1/admin/data/league-mechanics", Some(&t), None).await.0, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(f.call("GET", "/api/v1/admin/data/areas", Some(&t), None).await.0, StatusCode::SERVICE_UNAVAILABLE);
 
     let post = |uri: &'static str, body: Value| {
         let (f, t) = (&f, &t);
@@ -237,6 +239,9 @@ async fn real_game_data_gives_flags_mechanics_and_art() {
     assert_eq!(status, StatusCode::OK);
     assert!(mech.as_array().unwrap().iter().all(|m| m["implemented"] == false && !m["name"].as_str().unwrap().is_empty()));
     let a_mechanic = mech[0]["id"].as_str().unwrap().to_owned();
+    let (status, areas) = f.call("GET", "/api/v1/admin/data/areas", Some(&t), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ids(&areas).contains(&"G1_1"), "areas list has the Riverbank");
 
     assert_eq!(create(&f, &t, json!({"name": "Dusk", "flag": "NoSuchFlag"})).await.0, StatusCode::BAD_REQUEST);
     assert_eq!(create(&f, &t, json!({"name": "Dusk", "mechanics": ["NoSuchMechanic"]})).await.0, StatusCode::BAD_REQUEST);

@@ -11,6 +11,7 @@ mod art;
 mod auth;
 mod bans;
 mod configfile;
+mod data_api;
 mod dto;
 mod error;
 mod league_api;
@@ -178,6 +179,7 @@ pub fn router(state: WebState) -> Router {
         .route("/admin/leagues/{id}/delete", post(league_api::delete))
         .route("/admin/data/league-flags", get(league_api::flags))
         .route("/admin/data/league-mechanics", get(league_api::mechanics))
+        .route("/admin/data/areas", get(data_api::areas))
         .route("/openapi.json", get(openapi::serve))
         .fallback(|| async { ApiError::not_found("no such endpoint") });
     let mut app = Router::new().nest("/api/v1", api);

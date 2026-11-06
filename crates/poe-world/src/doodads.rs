@@ -1,12 +1,12 @@
 //! Doodads (`docs/re/terrain/doodads.md` in the hub): the objects a room (`.arm`) brings to the map, and
 //! the doodad hash the client reports.
 //!
-//! `TerrainGen_Doodads` (`0x141ff56d0`) walks every region's room placements (the list the
+//! `TerrainGen_Doodads` (`0x142003d00`) walks every region's room placements (the list the
 //! de-repetition pass also uses, region +0x58, 0x38 bytes each) and calls `TerrainGen_TileDoodads`
-//! (`0x141ff3490`) for each. A placement's doodad entries are the room's `doodads`; the cell
-//! of each comes from `0x141fe7a50`: the entry's cell inside the room, turned by the placement's
-//! orientation (table `0x142f02118`) within the room's `w × h` tiles, plus the placement's
-//! corner. [`resolve`] then follows each entry's `AOSet` picks (`0x141fe76a0`, drawing from the
+//! (`0x142001ac0`) for each. A placement's doodad entries are the room's `doodads`; the cell
+//! of each comes from `0x141ff6080`: the entry's cell inside the room, turned by the placement's
+//! orientation (table `0x142f15238`) within the room's `w × h` tiles, plus the placement's
+//! corner. [`resolve`] then follows each entry's `AOSet` picks (`0x141ff5cd0`, drawing from the
 //! layout's random stream, in placement order). Entries whose object type has `+0x2d0 == 0` add
 //! `y + murmur(path) + (x << 16)` to the doodad hash; static types stamp their hull into the
 //! collision grid ([`crate::collision`]).
@@ -44,12 +44,12 @@ pub struct Doodad {
     /// The type has a `league_category` (`+0x2d4` other than 0x39): it exists only in areas
     /// whose league category equals it, which no area without a league mechanic rolled has.
     pub league: bool,
-    /// Tile rectangles (x0, y0, x1, y1) of later covering placements (`0x141ff3490`'s list of
+    /// Tile rectangles (x0, y0, x1, y1) of later covering placements (`0x142001ac0`'s list of
     /// placements with flag `+0x1c & 2`): a `Doodad`-family object inside one is not created.
     pub covers: Vec<(i32, i32, i32, i32)>,
     /// The generator's checks after the hash drop the object ([`dropped_by_type`], `covers`).
     pub dropped: bool,
-    /// Object group of a no-overlap object (`0x141ff4a50`): 0 for room doodads, the tile's
+    /// Object group of a no-overlap object (`0x142003080`): 0 for room doodads, the tile's
     /// `.tdt` object group for tile objects.
     pub group: u8,
     /// Whether the object is placed (stamps its hull); [`no_overlap`] clears it for no-overlap
@@ -63,14 +63,14 @@ pub struct Doodad {
     pub entry_flip: bool,
     /// The arm entry's scale.
     pub entry_scale: f32,
-    /// Mirrored hull (placement XOR pick XOR entry flag; `0x141fe7a50`); set by [`resolve`].
+    /// Mirrored hull (placement XOR pick XOR entry flag; `0x141ff6080`); set by [`resolve`].
     pub flip: bool,
     /// Entry scale times the `AOSet` scale pick; set by [`resolve`].
     pub scale: f32,
 }
 
-/// `0x141fe7a50`: the cell of an entry `(ex, ey)` of a room of `w × h` tiles turned by
-/// orientation `o`, relative to the placement's corner. The table at `0x142f02118` (three bytes
+/// `0x141ff6080`: the cell of an entry `(ex, ey)` of a room of `w × h` tiles turned by
+/// orientation `o`, relative to the placement's corner. The table at `0x142f15238` (three bytes
 /// per orientation) says which of `(w·23 - ex - 1, ex, h·23 - ey - 1, ey)` give x and y.
 pub fn turn_cell(ex: i32, ey: i32, w: i32, h: i32, o: u8) -> (i32, i32) {
     const T: [[usize; 3]; 9] = [
@@ -91,7 +91,7 @@ pub fn turn_cell(ex: i32, ey: i32, w: i32, h: i32, o: u8) -> (i32, i32) {
     (x, y)
 }
 
-/// The entry's angle after the placement's turn (`0x141ff3490`/`0x141fe7a50`): mirrored
+/// The entry's angle after the placement's turn (`0x142001ac0`/`0x141ff6080`): mirrored
 /// orientations (4..7) negate it, each quarter turn adds π/2, then it is wrapped into `0..=2π`.
 pub fn turn_angle(radians: f32, o: u8) -> f32 {
     use std::f32::consts::{FRAC_PI_2, TAU};
@@ -107,9 +107,9 @@ pub fn turn_angle(radians: f32, o: u8) -> f32 {
 }
 
 /// The `outside_tiles` zones of `room` placed with its turned corner at `origin` (tiles) and
-/// orientation `o`, as cell rectangles (x0, y0, x1, y1, end exclusive). `0x141ffbab0` (after the
+/// orientation `o`, as cell rectangles (x0, y0, x1, y1, end exclusive). `0x14200a1e0` (after the
 /// layout) turns a zone's first cell and its last cell (`x_max - 1`, `y_max - 1`) like a doodad
-/// cell and hands the rectangle to `0x141fdd690`, which flags the corners ([`mark_outside`]).
+/// cell and hands the rectangle to `0x141febcc0`, which flags the corners ([`mark_outside`]).
 /// The zone's object type (empty in every `outside_tiles` zone of this build) passes the side
 /// filter.
 pub fn room_outside(room: &Room, origin: (i32, i32), o: u8) -> Vec<(i32, i32, i32, i32)> {
@@ -127,7 +127,7 @@ pub fn room_outside(room: &Room, origin: (i32, i32), o: u8) -> Vec<(i32, i32, i3
         .collect()
 }
 
-/// `0x141fdd690`: lattice flag 8 on every corner from `ceil(x0 / 23)` to `ceil(x1 / 23)` and
+/// `0x141febcc0`: lattice flag 8 on every corner from `ceil(x0 / 23)` to `ceil(x1 / 23)` and
 /// `ceil(y0 / 23)` to `ceil(y1 / 23)` (inclusive, clamped to the map) of each zone.
 pub fn mark_outside(map: &mut crate::generate::TileMap) {
     let ceil = |v: i32| v.div_euclid(TILE) + (v.rem_euclid(TILE) != 0) as i32;
@@ -177,7 +177,7 @@ pub fn room_doodads(room: &Room, origin: (i32, i32), o: u8) -> Vec<Doodad> {
 }
 
 /// Whether objects of type `kind` count for the hash (`+0x2d0 == 0` and `+0x2d4` accepted on
-/// the type's data, `0x141ff3490`): the type exists (a template `.ot`, or an `.ao` extending
+/// the type's data, `0x142001ac0`): the type exists (a template `.ot`, or an `.ao` extending
 /// one) and its merged `BaseEvents` sets neither `server_only` nor `client_only` (the side flag
 /// that `+0x2d0` holds) and no `league_category` (`+0x2d4`: 0x39 without one; with one it must
 /// equal the area's league category, which is 0 for areas without league mechanics rolled).
@@ -203,7 +203,7 @@ pub fn type_counts(gd: &poe_data::GameData, kind: &str) -> bool {
 }
 
 /// What the doodad pass reads from an object file (`.ao`): its `AOSet` component, merged over the
-/// `extends` chain (`FUN_141d5af20` looks the component up, `0x141fe76a0` uses it).
+/// `extends` chain (`FUN_141d67e80` looks the component up, `0x141ff5cd0` uses it).
 #[derive(Debug, Clone, Default)]
 pub struct AoInfo {
     /// Some file of the chain declares `AOSet` (for example through `Metadata/AOSetParent`).
@@ -356,7 +356,7 @@ impl<'a> AoCache<'a> {
     }
 }
 
-/// `0x1421c3f40`: the orientation `u` selects among those the mask allows (bit `i` for
+/// `0x1421d3dc0`: the orientation `u` selects among those the mask allows (bit `i` for
 /// orientation `i`); a mask of 0 or 0xff takes `u & 7`.
 fn orientation_pick(mask: u8, u: u32) -> u8 {
     if (1..0xff).contains(&mask) {
@@ -367,11 +367,11 @@ fn orientation_pick(mask: u8, u: u32) -> u8 {
     }
 }
 
-/// `0x141fe76a0`: follows the `AOSet` choices of a doodad's object file (one `below(total)` draw
-/// per level, `0x141fe7737`) until a file without choices; `None` when a `null` choice (or an
+/// `0x141ff5cd0`: follows the `AOSet` choices of a doodad's object file (one `below(total)` draw
+/// per level, `0x141ff5d67`) until a file without choices; `None` when a `null` choice (or an
 /// empty set) ends the chain: the client then skips the entry. A file without an `AOSet` or with
 /// `fixed_ao` entries ends the chain, and the last set seen then draws for its rotation
-/// (`0x200`), orientation (`0x348`), scale (`0x200`, `0x141fe78dc`) and translation (two `0x200`).
+/// (`0x200`), orientation (`0x348`), scale (`0x200`, `0x141ff5f0c`) and translation (two `0x200`).
 /// Returns the angle and cell offset that adds to the entry.
 struct Pick {
     angle: f32,
@@ -444,14 +444,14 @@ fn pick(cache: &mut AoCache, path: &str, rng: &mut TerrainRng) -> Option<Pick> {
     }
 }
 
-/// Side flag of `server_only` types (`+0x2d0 == 1`; `0x141ff48e0` compares with 1).
+/// Side flag of `server_only` types (`+0x2d0 == 1`; `0x142002f10` compares with 1).
 pub const SIDE_SERVER: u8 = 1;
 /// Side flag of `client_only` types.
 pub const SIDE_CLIENT: u8 = 2;
 
-/// Which process runs the generator. The generator's object filter (`0x141ff48e0`, the base
+/// Which process runs the generator. The generator's object filter (`0x142002f10`, the base
 /// generator's vtable `+0xa0`) keeps an object of a side-flagged type only on its own side: the
-/// server (the globals `0x1445c995c` / `0x14458c74c` set) keeps `server_only` types and drops
+/// server (the globals `0x1445e15bd` / `0x1445a4105` set) keeps `server_only` types and drops
 /// `client_only` ones, a client process does the opposite. The official server's grid is the
 /// [`Side::Server`] one; the DLL's batch exports run the same generator in the client process
 /// ([`Side::Client`]), which is what they are compared with. A live client reaches the
@@ -465,7 +465,7 @@ pub enum Side {
 }
 
 impl Doodad {
-    /// Whether the generator's filter (`0x141ff48e0`) keeps the object on `side`: its type has no
+    /// Whether the generator's filter (`0x142002f10`) keeps the object on `side`: its type has no
     /// league category (or the area's, never the case here) and is not of the other side.
     pub fn exists(&self, side: Side) -> bool {
         !self.league
@@ -554,12 +554,12 @@ pub struct TmdEntry {
     pub orientations: u8,
 }
 
-/// The tile's art object list (tile data `+0x178`, loaded by `0x141d082a0` only when tile data
+/// The tile's art object list (tile data `+0x178`, loaded by `0x141d14cd0` only when tile data
 /// `+0x16c` (the low byte of [`crate::tdt::Tdt::body_flags`]) lacks bit 8; it keeps the last
 /// existing `.tmd` of the `.tgt`'s `;` segments). P3_1's `ambush_CenterHoleLarge_01.tdt` (flags
-/// `0x9a`) has none: its `.tmd` beside the `.tgt` repeats the `.tdt`'s own objects. `0x141d07630`
+/// `0x9a`) has none: its `.tmd` beside the `.tgt` repeats the `.tdt`'s own objects. `0x141d14060`
 /// places it: without body flag 0x200 the whole `.tgt` path with the extension swapped for `.tmd`
-/// (`0x141d07eb0`), with it the per-sub-tile objects ([`subtile_objects`]).
+/// (`0x141d148e0`), with it the per-sub-tile objects ([`subtile_objects`]).
 fn art_entries(files: &dyn Files, tdt: &crate::tdt::Tdt) -> Vec<TmdEntry> {
     if tdt.body_flags & 8 != 0 {
         return Vec::new();
@@ -571,13 +571,13 @@ fn art_entries(files: &dyn Files, tdt: &crate::tdt::Tdt) -> Vec<TmdEntry> {
     tgt_tmd(tgt).map(|p| tmd_entries(files, &p)).unwrap_or_default()
 }
 
-/// A `.tgt` path with the extension swapped for `.tmd` (`0x141d083f0`).
+/// A `.tgt` path with the extension swapped for `.tmd` (`0x141d14e20`).
 fn tgt_tmd(tgt: &str) -> Option<String> {
     let tgt = tgt.trim();
     (tgt.len() > 4).then(|| format!("{}.tmd", &tgt[..tgt.len() - 4]))
 }
 
-/// `0x143512a00[o + mask * 8]` is the OR over the mask's bits `j` of bit `ORIENT_COMPOSE[j][o]`:
+/// `0x1435280a0[o + mask * 8]` is the OR over the mask's bits `j` of bit `ORIENT_COMPOSE[j][o]`:
 /// an entry orientation `j` seen through a sub-tile group turned by `o`.
 const ORIENT_COMPOSE: [[u8; 8]; 8] = [
     [0, 3, 2, 1, 4, 5, 6, 7],
@@ -595,14 +595,14 @@ fn compose_mask(mask: u8, o: u8) -> u8 {
 }
 
 /// The per-sub-tile objects of a tile with body flag 0x200 (tile data `+0x16d & 2`,
-/// `0x141d07630`): row by row over the sub-tiles (row-major, the tile's width), each group origin
+/// `0x141d14060`): row by row over the sub-tiles (row-major, the tile's width), each group origin
 /// (`b1` without 2 joined left, 4 joined above, 8 skipped) places the `.tmd` of `.tgt` segment
-/// `parts[0]` (`0x141d07c80`; skipped when missing), turned by the group's orientation `parts[1]`
-/// within its span (`0x141d074a0`: 1 + the run of right neighbours with `b1 & 2`, 1 + the run
+/// `parts[0]` (`0x141d146b0`; skipped when missing), turned by the group's orientation `parts[1]`
+/// within its span (`0x141d13ed0`: 1 + the run of right neighbours with `b1 & 2`, 1 + the run
 /// of lower neighbours with `b1 & 4`; swapped for odd orientations) and shifted by the origin
 /// sub-tile times 250. The results are tile-level entries: cell = floor(world * 0.092), angle
 /// as [`turn_angle`], flip toggled for orientations 4..7, the orientation mask composed through
-/// `0x143512a00`. Not ported: the `alttiles` variant (`0x141d11c50`).
+/// `0x1435280a0`. Not ported: the `alttiles` variant (`0x141d1e680`).
 fn subtile_objects(files: &dyn Files, tdt: &crate::tdt::Tdt, tgt: &str) -> Vec<TmdEntry> {
     let segments: Vec<&str> = tgt.split(';').collect();
     let (w, h) = (tdt.size.0 as usize, tdt.size.1 as usize);
@@ -656,7 +656,7 @@ pub fn tmd_entries(files: &dyn Files, path: &str) -> Vec<TmdEntry> {
     text.lines().skip(1).filter_map(parse_tmd_line).collect()
 }
 
-/// A binary `.tmd` (`0x14291aab0`, first byte the version): u32 entry count, the entries, then a
+/// A binary `.tmd` (`0x14292cd30`, first byte the version): u32 entry count, the entries, then a
 /// UTF-16 string table (u32 length in chars, NUL-terminated strings addressed by char index).
 /// Version 5 entries are 0x24 bytes: world `x y`, height, x-rotation, angle, two asset-name
 /// strings, type string, `.ao` string (scale 1, no flip). Version 6 entries are 0x2d bytes: world
@@ -732,7 +732,7 @@ fn parse_tmd_line(line: &str) -> Option<TmdEntry> {
     })
 }
 
-/// `0x14159a260`: a tile-local world position (250 units per tile) turned by orientation `o`
+/// `0x1415a2950`: a tile-local world position (250 units per tile) turned by orientation `o`
 /// within `w × h` tiles (`w·250 − x` where cells use `w·23 − x − 1`), as the object's cell. The
 /// client places tile objects at this position, so an entry on the tile's edge lands one cell
 /// from where the cell formula ([`turn_cell`]) puts it.
@@ -741,7 +741,7 @@ fn turn_world(wx: f32, wy: f32, w: i32, h: i32, o: u8) -> (i32, i32) {
     ((x * 0.092).floor() as i32, (y * 0.092).floor() as i32)
 }
 
-/// [`turn_world`] before the cell step: the turned world position (table `0x142f02118`).
+/// [`turn_world`] before the cell step: the turned world position (table `0x142f15238`).
 fn turn_world_f(wx: f32, wy: f32, w: i32, h: i32, o: u8) -> (f32, f32) {
     const T: [[usize; 3]; 9] = [[0, 1, 1], [1, 0, 1], [0, 0, 0], [1, 1, 0], [0, 0, 1], [1, 0, 0], [0, 1, 0], [1, 1, 1], [0, 1, 1]];
     let a = [w as f32 * 250.0 - wx, wx, h as f32 * 250.0 - wy, wy];
@@ -749,15 +749,15 @@ fn turn_world_f(wx: f32, wy: f32, w: i32, h: i32, o: u8) -> (f32, f32) {
     (a[t[1] + t[0] * 2], a[t[2] + if t[0] == 0 { 2 } else { 0 }])
 }
 
-/// The tile-object pass (`0x141ff4030`, the generator's vtable `+0x28`, after the doodad pass):
+/// The tile-object pass (`0x142002660`, the generator's vtable `+0x28`, after the doodad pass):
 /// row by row over the tile records that are a tile's corner (record `+0x34/+0x35` zero), the
 /// objects of the tile's art list (tile data `+0x178`: the `.tmd` beside the tile's `.tgt`,
-/// `0x141d083f0`) and then of its own list (`+0x180`: the `.tdt`'s `tmd`) are placed like room
-/// doodads (`0x141ff43d0`): the `AOSet` pick draws from `rng`, continuing the doodad pass's
+/// `0x141d14e20`) and then of its own list (`+0x180`: the `.tdt`'s `tmd`) are placed like room
+/// doodads (`0x142002a00`): the `AOSet` pick draws from `rng`, continuing the doodad pass's
 /// stream, the entry cell turns within the tile's size by the record's orientation
-/// (`0x141fe7a50`). The objects do not enter the doodad hash. Not ported: the environment's
-/// `alttiles/<env>/<env>_<name>.tmd` variant of the art list (`0x141d11c50`) and the per-sub-tile
-/// objects of tiles with tile data `+0x16d & 2` (`0x141d07630`).
+/// (`0x141ff6080`). The objects do not enter the doodad hash. Not ported: the environment's
+/// `alttiles/<env>/<env>_<name>.tmd` variant of the art list (`0x141d1e680`) and the per-sub-tile
+/// objects of tiles with tile data `+0x16d & 2` (`0x141d14060`).
 pub fn tile_objects(gd: &poe_data::GameData, files: &dyn Files, rng: &mut TerrainRng, map: &crate::generate::TileMap) -> Vec<Doodad> {
     let mut cache = AoCache::new(files);
     let mut out = Vec::new();
@@ -785,7 +785,7 @@ pub fn tile_objects(gd: &poe_data::GameData, files: &dyn Files, rng: &mut Terrai
                         eprintln!("TMDDRAW tile ({tx},{ty}) {} n {:?} {}", c.path.rsplit('/').next().unwrap_or(""), ns, e.ao.rsplit('/').next().unwrap_or(""));
                     }
                     let Some(p) = picked else { continue };
-                    // `0x141ff43d0` checks the orientation mask after the pick (the draws happen).
+                    // `0x142002a00` checks the orientation mask after the pick (the draws happen).
                     if e.orientations != 0 && e.orientations & (1 << (o & 7)) == 0 {
                         continue;
                     }
@@ -842,7 +842,7 @@ pub fn tile_objects(gd: &poe_data::GameData, files: &dyn Files, rng: &mut Terrai
     out
 }
 
-/// `0x141fe8420`: the object types (MiscObjects `ObjectHASH32` keys) a later covering placement
+/// `0x141ff6a50`: the object types (MiscObjects `ObjectHASH32` keys) a later covering placement
 /// removes from an earlier room.
 const DOODAD_FAMILY: [&str; 15] = [
     "Metadata/MiscellaneousObjects/Doodad",
@@ -866,9 +866,9 @@ fn is_doodad_family(kind: &str) -> bool {
     DOODAD_FAMILY.iter().any(|k| k.eq_ignore_ascii_case(kind))
 }
 
-/// The angle checks of `0x141ff3490` and `0x141ff43d0`: with `a = angle - 0.7603982` (+2pi when
-/// negative), `AntiTallWallDoodad` (`0x141fe8860`) is dropped for `a >= 3.1915927` and the
-/// upper-tile types (`0x141fe86f0`) for `a < 3.1915927`.
+/// The angle checks of `0x142001ac0` and `0x142002a00`: with `a = angle - 0.7603982` (+2pi when
+/// negative), `AntiTallWallDoodad` (`0x141ff6e90`) is dropped for `a >= 3.1915927` and the
+/// upper-tile types (`0x141ff6d20`) for `a < 3.1915927`.
 fn dropped_by_type(kind: &str, angle: f32) -> bool {
     const UPPER: [&str; 5] = [
         "Metadata/MiscellaneousObjects/TileUpperDoodad",
@@ -884,8 +884,8 @@ fn dropped_by_type(kind: &str, angle: f32) -> bool {
     (kind.eq_ignore_ascii_case("Metadata/MiscellaneousObjects/AntiTallWallDoodad") && a >= 3.1915927) || (UPPER.iter().any(|k| k.eq_ignore_ascii_case(kind)) && a < 3.1915927)
 }
 
-/// The no-overlap object types (`0x141fe8040`: three type hashes). The generator defers their
-/// objects (`0x141ff4a50`) and places them in `doodads_post` ([`no_overlap`]). The one with hash
+/// The no-overlap object types (`0x141ff6670`: three type hashes). The generator defers their
+/// objects (`0x142003080`) and places them in `doodads_post` ([`no_overlap`]). The one with hash
 /// `0x91b983f1` (`DoodadNoOverlap3`) goes to a separate list, the others into groups.
 const NO_OVERLAP: [&str; 3] = [
     "Metadata/MiscellaneousObjects/DoodadNoOverlap",
@@ -893,20 +893,20 @@ const NO_OVERLAP: [&str; 3] = [
     "Metadata/MiscellaneousObjects/TileUpperDoodadNoOverlap",
 ];
 /// The no-overlap type of hash `0x91b983f1` (MiscObjects `ObjectHASH32`; its own list in
-/// `0x141ff4a50`).
+/// `0x142003080`).
 const NO_OVERLAP_LISTED: &str = "Metadata/MiscellaneousObjects/DoodadNoOverlap3";
 
 fn is_no_overlap(kind: &str) -> bool {
     NO_OVERLAP.iter().any(|k| k.eq_ignore_ascii_case(kind))
 }
 
-/// `doodads_post` (`0x141ff4cd0`): the deferred no-overlap objects of one pass are placed. It runs
+/// `doodads_post` (`0x142003300`): the deferred no-overlap objects of one pass are placed. It runs
 /// twice, each time with an empty placed set: for the room doodads at the end of
-/// `TerrainGen_Doodads` (`0x141ff6e88`, before the tile-object pass draws), and for the tile
-/// objects after that pass (`0x141fff1bc`). Groups go in descending key order (the map's vector
+/// `TerrainGen_Doodads` (`0x1420054b8`, before the tile-object pass draws), and for the tile
+/// objects after that pass (`0x14200d8fc`). Groups go in descending key order (the map's vector
 /// from its end; room doodads are one group): `below(n)`, a Fisher-Yates shuffle (`uniform(n - k)`
 /// for k = 0.., swapping element k with k + draw), then each object is placed unless a placed one
-/// lies within its 3 x 3 cells (`0x1420006e0`; the placed cells are a set, `0x141fffb30`). Objects
+/// lies within its 3 x 3 cells (`0x14200ee20`; the placed cells are a set, `0x14200e270`). Objects
 /// of the listed type are placed afterwards, in order, unless a placed object or another listed
 /// object lies within their 3 x 3 cells. Only objects the generator's filter keeps take part (the
 /// no-overlap types have no side flag, so on either side).

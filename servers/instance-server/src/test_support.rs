@@ -20,15 +20,9 @@ pub(crate) const MOVE_SKILL: u32 = 0x2000_2909;
 pub(crate) const ROLL_SKILL: u32 = 0x8000_0040;
 pub(crate) const ROLL_ACTION_TYPE: u16 = 60748;
 
-/// The build whose opcodes the tests use (`modules/protocol/versions/<version>.toml`).
-pub(crate) const CAPTURE_VERSION: &str = "0.5.5e.hotfix1";
-
-/// The opcode folder of [`CAPTURE_VERSION`].
+/// The opcode tables the official captures were recorded with (Poe2Protocol keeps them for replay).
 pub(crate) fn capture_opcodes_dir() -> std::path::PathBuf {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    poe_config::VersionFile::load(&root, CAPTURE_VERSION)
-        .expect("version file of the captures' build")
-        .opcodes_dir(&root)
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../modules/protocol/capture-opcodes/0.5.5e.hotfix1")
 }
 
 /// The protocol tables, with `ActionEvent` added when `instance.toml` does not list it (so the

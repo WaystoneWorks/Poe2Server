@@ -9,7 +9,7 @@
 //! cancel (trade). **Not implemented (gate G-PARTY):** accepting and declining a party
 //! invitation or a trade, timeouts, members that joined, leaving a party. What the invitee's
 //! client receives was never captured either: it is derived from the client's handlers
-//! (`0x142106bb0` case `0xc8`, `0x1402c3cb0`) and verified in game with two clients (WP C3, 2026-10-21): the popups appear.
+//! (`0x142115ad0` case `0xc8`, `0x1402cb290`) and verified in game with two clients (WP C3, 2026-10-21): the popups appear.
 
 use std::{collections::HashMap, sync::Mutex};
 
@@ -52,7 +52,7 @@ const TRADE_INVENTORY: Inventory = Inventory {
     flags: 0x40,
 };
 /// `TradeState.unk_c` for the player who asked (capture: `0x31`) and, verified in game, for the
-/// target: bit 1 set and bit 0 clear is what the client's invite popup tests (`0x1402c3cb0`).
+/// target: bit 1 set and bit 0 clear is what the client's invite popup tests (`0x1402cb290`).
 const TRADE_FLAGS_REQUESTER: u8 = 0x31;
 const TRADE_FLAGS_TARGET: u8 = 0x32;
 /// `TradeEvent` kinds and values sent after a cancel (capture: `(1, 2)` then `(1, 1)`).

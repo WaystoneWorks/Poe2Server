@@ -12,7 +12,7 @@ How to run the server so people on other machines can play on it: getting the se
 | **A release package** | A machine you manage (home server, VPS) | [Getting a server release](#getting-a-server-release) |
 | **From source** | Developers | [Running from source](#running-from-source), [setup.md](https://github.com/WaystoneWorks/Poe2ModdingProject/blob/main/docs/guides/setup.md) |
 
-Checklist: (1) a legal 0.5.5e Hotfix 1 client install on the server machine, (2) a config with your `public_host`, (3) ports open and forwarded, (4) accounts, (5) the web API behind TLS if anyone outside a trusted network uses it, (6) the players' clients pointing at your address ([What a remote player needs](#what-a-remote-player-needs)).
+Checklist: (1) a legal 0.5.5f client install on the server machine, (2) a config with your `public_host`, (3) ports open and forwarded, (4) accounts, (5) the web API behind TLS if anyone outside a trusted network uses it, (6) the players' clients pointing at your address ([What a remote player needs](#what-a-remote-player-needs)).
 
 ## Host through the launcher
 
@@ -23,8 +23,8 @@ The launcher's **Servers > Host** tab does this on the machine you play on, for 
 Take a package from this repository's GitHub releases (tags `server-v<version>`, built by CI, see [releasing.md](releasing.md)). Each release has, per platform, `poe-server-v<version>-game-<game version>-<linux|windows>-x86_64.tar.gz` (Linux) or `.zip` (Windows), a `.sha256` file and a combined `SHA256SUMS`. The game version in the name must be your players' client build.
 
 ```sh
-sha256sum -c poe-server-v0.5.1-game-0.5.5e.hotfix1-linux-x86_64.sha256    # Windows: certutil -hashfile <zip> SHA256
-tar xzf poe-server-v0.5.1-game-0.5.5e.hotfix1-linux-x86_64.tar.gz && cd poe-server-v0.5.1-game-0.5.5e.hotfix1-linux-x86_64
+sha256sum -c poe-server-v0.5.1-game-0.5.5f-linux-x86_64.sha256    # Windows: certutil -hashfile <zip> SHA256
+tar xzf poe-server-v0.5.1-game-0.5.5f-linux-x86_64.tar.gz && cd poe-server-v0.5.1-game-0.5.5f-linux-x86_64
 cp config/server.example.toml config/server.toml
 # edit config/server.toml: game_dir (your own game install, the folder with Bundles2), [network] public_host,
 # and static_dir = "web-admin" to serve the web admin
@@ -200,7 +200,7 @@ Then set `[security] trust_forwarded_for = true` and add the server in the launc
 
 ## What a remote player needs
 
-1. **Their own legal install** of Path of Exile 2 0.5.5e Hotfix 1, and Steam running when they start the client (otherwise `Unable to init Steam API`).
+1. **Their own legal install** of Path of Exile 2 0.5.5f, and Steam running when they start the client (otherwise `Unable to init Steam API`).
 2. **The client hook** (`version.dll`, `poe_hook.dll`, `poe_hook_core.dll`, `poe-hook.toml`) with a gateway entry and trust list pointing at your server. Either:
    - **the launcher** ([launcher.md](https://github.com/WaystoneWorks/Poe2ModdingProject/blob/main/docs/guides/launcher.md)): installs the game from Steam depots, deploys the hook, takes the server's web API address (which must be reachable, behind TLS outside a trusted network); or
    - **`cargo xtask deploy-client`** from a checkout, with a `config/server.toml` holding your `public_host` and ports, and the client files in `GameFiles/`: `cargo xtask build-dll` (once), then `cargo xtask deploy-client --no-build --login-mode standalone`. It writes the gateway entry `public_host:login port`, `login_mode`, `position_sync_port` and `trusted_servers = ["<public_host>:<login port>", "<public_host>:<instance port>"]`. Add servers by hand in `GameFiles/poe-hook.toml`, e.g. `"203.0.113.7:*"`.
@@ -236,7 +236,7 @@ Trusted entries mean: connections are not blocked, the read-only latch stays off
 
 ## Local two-client test
 
-`scripts/test-mp.sh` runs two real game clients against one server on one machine (Steam must be running), connecting through the LAN IP so the trusted-remote path of the DLL runs, each as its own account (`mp1`, `mp2`) with a remember-me token. Commands (`setup`, `server`, `clients`, `keys`, `shot`, `stop`) and environment variables: [setup.md](https://github.com/WaystoneWorks/Poe2ModdingProject/blob/main/docs/guides/setup.md#two-client-test-lan). Verified with client 0.5.5e Hotfix 1: both accounts log in through the LAN IP and share one `G1_town` instance (entities 12000 and 12001, `players=2`), see each other, relay walk, roll and chat, and spawn at least `[spawn] player_spacing` (8) cells apart. A transfer (`POST /admin/players/<name>/transfer {"area":"G1_1"}`) sends the leave sequence, and a duplicate login kicks the first session. The remote roll order and look are in [entities.md](https://github.com/WaystoneWorks/Poe2ModdingProject/blob/main/docs/protocol/entities.md#remote-roll-check-wp-c2).
+`scripts/test-mp.sh` runs two real game clients against one server on one machine (Steam must be running), connecting through the LAN IP so the trusted-remote path of the DLL runs, each as its own account (`mp1`, `mp2`) with a remember-me token. Commands (`setup`, `server`, `clients`, `keys`, `shot`, `stop`) and environment variables: [setup.md](https://github.com/WaystoneWorks/Poe2ModdingProject/blob/main/docs/guides/setup.md#two-client-test-lan). Verified with client 0.5.5f: both accounts log in through the LAN IP and share one `G1_town` instance (entities 12000 and 12001, `players=2`), see each other, relay walk, roll and chat, and spawn at least `[spawn] player_spacing` (8) cells apart. A transfer (`POST /admin/players/<name>/transfer {"area":"G1_1"}`) sends the leave sequence, and a duplicate login kicks the first session. The remote roll order and look are in [entities.md](https://github.com/WaystoneWorks/Poe2ModdingProject/blob/main/docs/protocol/entities.md#remote-roll-check-wp-c2).
 
 Town freeze: `InitialState` flags `04` for towns and hideouts. Flags `7` start the client's world paused (`+0x868/+0x869`); in a zone the client sends `PauseRequest(1)` and `PauseRequest(0)` itself and the server releases it, in a town it sends none.
 

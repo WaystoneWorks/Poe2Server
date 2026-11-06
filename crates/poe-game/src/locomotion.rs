@@ -1004,7 +1004,7 @@ impl Locomotion {
         let target = self.target_of(&req);
         // Whatever the first skill use asks for (the client's first click targets (0, 0)), the
         // character only wakes, on its own cell (2026-10-14, 4 of 4). The client refuses any
-        // other action while it lies there (`Actor_QueueAction` `0x141e3f100`).
+        // other action while it lies there (`Actor_QueueAction` `0x141e4cf00`).
         if self.washed_up {
             self.washed_up = false;
             self.waking_until = Some(ctx.frame + u64::from(ctx.config.wake_frames));
@@ -1149,7 +1149,7 @@ impl Locomotion {
         // Verified (2026-10-20): a standing roll gets the same batch and ends in Idle with no
         // `MoveAck`. The client rolls along the WASD vector when a key is held, else towards
         // the cursor (`target`, steered every 2 frames); `target` is the cursor either way.
-        // The client's roll heading (`0x141b76da0` neighbourhood, `0x141b8bda0`): the held input
+        // The client's roll heading (`0x141b84fb0` neighbourhood, `0x141b99fb0`): the held input
         // vector, else the direction to the action's target, and the entity's facing when the
         // target is the player's own cell.
         self.roll_cursor = offset;
@@ -1732,7 +1732,7 @@ impl Locomotion {
     /// unscaled direction.
     ///
     /// `first`: no `0x64` goes out in this frame, so the sprint-off has `(player, 9, 4)`. Its seq is
-    /// the phase at which the client's `SprintPart_End` runs (world `+0x67e`; hub
+    /// the phase at which the client's `SprintPart_End` runs (world `+0x6aa`; hub
     /// `docs/re/movement-sprint.md`, "Keys of the sprint-off"): a later seq runs after the end, and
     /// the `SprintEnd` clip takes the sprint's rate (game test crazy-keys, 8 of 8).
     fn end_sprint(&mut self, first: bool, ctx: &mut StepCtx, out: &mut Out) {
@@ -1815,9 +1815,9 @@ impl Locomotion {
         // The stream's last `0x64` carried the scaled vector: the next frame sends the unscaled
         // one (official sprints with a stream, 6 of 6: `0x64` unscaled at r+1). Without a
         // stream the client's direction (Actor +0x400) was never scaled, so that `0x64` would
-        // change nothing but could snap: in lockstep the Actor handler (`0x1421497c0`) places
+        // change nothing but could snap: in lockstep the Actor handler (`0x142158b60`) places
         // the entity at any non-zero `0x64` whose cell differs from its grid (+0x444)
-        // (`0x141ddb6f0`, which stops the `SprintEnd` root move via `0x141de5f50`). The
+        // (`0x141de88a0`, which stops the `SprintEnd` root move via `0x141df31b0`). The
         // official server's cell equals the client's; ours can be a cell off after the roll,
         // so it sends none (2026-11-02: one cell off, the client stood instead of coasting).
         if self.wasd != (0, 0) && run.streaming {
@@ -1844,7 +1844,7 @@ impl Locomotion {
     }
 
     /// The sprint ran into a wall: the client's Move action ran out and it ended the sprint
-    /// itself (`0x141b76da0`, no action left -> `SprintEndBonk`, whatever the keys do). Official
+    /// itself (`0x141b84fb0`, no action left -> `SprintEndBonk`, whatever the keys do). Official
     /// (3 of 3): the sprint-off in the batch where the server's own cell stops advancing, the
     /// unscaled `0x64` one frame later when a stream ran, `all_hits_stun_you` off 7 to 8 frames
     /// later; no restart while the key stays down.

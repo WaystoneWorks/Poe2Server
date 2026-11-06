@@ -36,17 +36,11 @@ pub(crate) const MOVE_SKILL: u32 = 0x2000_2909;
 pub(crate) const ROLL_SKILL: u32 = 0x8000_0040;
 pub(crate) const ROLL_ACTION_TYPE: u16 = 60748;
 
-/// The build whose opcodes replay the official captures of these tests (recorded on 0.5.5e, same
-/// protocol; kept under `dumps/0.5.5e.hotfix1/captures`). Its opcode folder comes from
-/// `modules/protocol/versions/<version>.toml`.
-pub(crate) const CAPTURE_VERSION: &str = "0.5.5e.hotfix1";
-
-/// The opcode folder of [`CAPTURE_VERSION`].
+/// The opcode tables the official captures of these tests were recorded with (0.5.5e and 0.5.5e
+/// Hotfix 1, kept under `dumps/0.5.5f/captures`): Poe2Protocol keeps them for replay in
+/// `capture-opcodes/`.
 pub(crate) fn capture_opcodes_dir() -> std::path::PathBuf {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    poe_config::VersionFile::load(&root, CAPTURE_VERSION)
-        .expect("version file of the captures' build")
-        .opcodes_dir(&root)
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../modules/protocol/capture-opcodes/0.5.5e.hotfix1")
 }
 
 /// The protocol tables of the captures' build, with `ActionEvent` added when `instance.toml` does not list it
@@ -737,7 +731,7 @@ fn action_event_is_skipped_while_instance_toml_lacks_it() {
 
 /// WASD held since before the roll: the sprint has no `MoveDirectionUpdate` stream and its end
 /// sends none either (the client's direction was never scaled; a cell one off would snap it out
-/// of the `SprintEnd` coast, `0x1421497c0`). Server and client coast, then the held key walks on.
+/// of the `SprintEnd` coast, `0x142158b60`). Server and client coast, then the held key walks on.
 #[cfg_attr(not(game_files), ignore = "needs the game files")]
 #[test]
 fn a_sprint_without_a_stream_coasts_without_a_direction_update() {

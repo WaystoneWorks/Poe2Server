@@ -937,7 +937,7 @@ pub struct InstanceConfig {
     /// Close instances that have been empty this long (towns and hideouts stay); 0 = never.
     #[serde(default = "default_idle_minutes")]
     pub idle_minutes: u64,
-    /// Simulation frame interval: a tick marker (0x2f4) is sent this often.
+    /// Simulation frame interval: a tick marker (0x2f7) is sent this often.
     #[serde(default = "default_tick_ms")]
     pub tick_ms: u64,
     /// First entity id an instance hands out (one counter per instance, shared by all
@@ -1257,12 +1257,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let text = std::fs::read_to_string(root.join("config/server.toml"))
             .unwrap()
-            .replacen("version = \"0.5.5e.hotfix1\"", "version = \"9.9.9z\"", 1);
+            .replacen("version = \"0.5.5f\"", "version = \"9.9.9z\"", 1);
         let bad = dir.join("server.toml");
         std::fs::write(&bad, text).unwrap();
         let e = Config::load_in(&bad, &root).unwrap_err().to_string();
         assert!(
-            e.contains("9.9.9z") && e.contains("not a supported build") && e.contains("0.5.5e.hotfix1"),
+            e.contains("9.9.9z") && e.contains("not a supported build") && e.contains("0.5.5f"),
             "{e}"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -1540,7 +1540,7 @@ mod tests {
         assert!(e.message.contains("interval_secs"), "{e:?}");
 
         // Unknown game version: the version file is missing; points at the key.
-        let c = Config::check_text(&good.replace("version = \"0.5.5e.hotfix1\"", "version = \"9.9.9\""), &root);
+        let c = Config::check_text(&good.replace("version = \"0.5.5f\"", "version = \"9.9.9\""), &root);
         let e = c.error.expect("version error");
         assert!(e.message.contains("version") && e.line.is_some(), "{e:?}");
 

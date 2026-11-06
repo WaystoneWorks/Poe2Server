@@ -173,7 +173,7 @@ impl CharacterClass {
 }
 
 /// An `Inventories` row: a kind of inventory (main bag, an equipment slot, ...). The row index
-/// is the slot index the client uses (inventory +0x144; 121 rows in 0.5.5e.hotfix1).
+/// is the slot index the client uses (inventory +0x144; 121 rows in 0.5.5f).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InventorySlot {
     pub index: u8,
@@ -213,7 +213,7 @@ pub fn league_flag_index(data: &GameData, id: &str) -> Result<Option<u32>> {
 
 /// A `LeagueFlag` row: a league's banner art. The client takes it by row + 1 from
 /// CharacterEntry +0x4d (select screen) and LeagueEntry +0xc2 (creation banner,
-/// `0x140e77810`).
+/// `0x140e80330`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeagueFlagRow {
     pub row: u32,

@@ -197,7 +197,7 @@ impl PlacedTile {
     }
 
     /// A facing given in the tile's own orientation on the map. Facings are
-    /// `atan2(dy, dx) + pi/2` in radians (`0x141ddc820`), wrapped to 0..2pi.
+    /// `atan2(dy, dx) + pi/2` in radians (`0x141de99d0`), wrapped to 0..2pi.
     pub fn facing_to_map(&self, facing: f32) -> f32 {
         let (dy, dx) = (f64::from(facing) - FRAC_PI_2).sin_cos();
         // With a size of 0 the placement is its linear part: directions have no origin.

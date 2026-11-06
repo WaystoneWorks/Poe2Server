@@ -2,12 +2,12 @@
 //! hub): where each area of an act sits on the act's world map. The natural topology choice reads
 //! the directions between connected pins, so it needs these positions.
 //!
-//! The client lays the act's world map out in a town's prepare phase (`0x141fa5a80`, seed = the generation state's seed): it picks one of the world-map area's
+//! The client lays the act's world map out in a town's prepare phase (`0x141fb40a0`, seed = the generation state's seed): it picks one of the world-map area's
 //! topologies with [`lcg_index`], loads its graph (seeded preparation: offsets, comma-list room
 //! types, existence rolls, shuffle groups) and walks its nodes without generating the map
 //! ([`graph_objects`]), recording where objects whose type is a pin's `MetadataId` land: the
 //! node's rooms' entries (`.arm`) and their tile slots' model data (`.tmd`). Each pin type with
-//! several positions is reduced to one (`0x141fa3fc0`): the positions sorted by (x, y), then
+//! several positions is reduced to one (`0x141fb25e0`): the positions sorted by (x, y), then
 //! index [`lcg_index`]`(murmur2(MetadataId, 0) ^ seed, n)`. Pins are the act's `MapPins` rows
 //! with `WorldAreasKeys`, in row order. Checked against the client's `map_pins` trace lines of
 //! acts 1, 2, 3, 4, 6 (state seed 0, the value in batch jobs and in a live load through this
@@ -87,15 +87,15 @@ pub fn tile_objects(files: &dyn Files, map: &TileMap) -> Vec<MapObject> {
     out
 }
 
-/// The objects the client records for a world map's pins (`0x141fb8b50`, 0.5.5e.hotfix1): a walk
+/// The objects the client records for a world map's pins (`0x141fc7170`, 0.5.5f): a walk
 /// over the `.dgr`'s nodes, not the generated layout. `graph` nodes recurse into their `.dgr`
 /// (offset by their position); every other node with an orientation below 8 takes every room of
-/// its type that allows that orientation (`0x141f9bb90`), and for each (`0x141fb8fc0`) the room's
+/// its type that allows that orientation (`0x141faa1b0`), and for each (`0x141fc75e0`) the room's
 /// objects turned by the node's orientation within the room, plus, for the room's tagged tile
-/// slots, the `.tmd` objects of the first tile with that tag (`0x141fb9c50`), turned by the first
+/// slots, the `.tmd` objects of the first tile with that tag (`0x141fc8270`), turned by the first
 /// orientation whose key equals the slot's composed with the node's. Base: the node's unit
 /// (`/23`) times `RoomUnitSize − RoomOverlap` tiles, plus the master's `OuterBufferSize` left / top.
-/// `.tgr` sub-graphs (`0x141fba130`) are not walked yet; their names go to `skipped`.
+/// `.tgr` sub-graphs (`0x141fc8750`) are not walked yet; their names go to `skipped`.
 pub fn graph_objects(files: &dyn Files, path: &str, rng: &mut TerrainRng, offset: (i32, i32), out: &mut Vec<MapObject>, skipped: &mut Vec<String>, depth: u32) -> Result<(), GenError> {
     let raw = Graph::parse_bytes(&files.read(&path.to_ascii_lowercase())?).map_err(|e| GenError::Data(path.into(), format!("{e:?}")))?;
     let graph = crate::area::prepared_graph(&raw, rng)?;
@@ -191,7 +191,7 @@ pub struct MapPin {
     pub y: i32,
 }
 
-/// `0x141fa3fc0`: the position a pin type with several candidates keeps.
+/// `0x141fb25e0`: the position a pin type with several candidates keeps.
 pub fn consolidate(metadata_id: &str, seed: u32, mut positions: Vec<(i32, i32)>) -> Option<(i32, i32)> {
     positions.retain(|&p| p != (0, 0));
     positions.sort_unstable();
@@ -214,7 +214,7 @@ pub fn world_map_area(gd: &GameData, act: i64) -> Result<Option<String>, GenErro
     Ok(None)
 }
 
-/// The act's world map as the client lays it out for its pins (`0x141fa5a80`): topology
+/// The act's world map as the client lays it out for its pins (`0x141fb40a0`): topology
 /// [`lcg_index`]`(seed, n)` of the world-map area (league mode 1, the default), generated with
 /// `seed`, orientation 0.
 pub fn world_map(gd: &GameData, files: &dyn Files, act: i64, seed: u32) -> Result<Option<Generated>, GenError> {
@@ -239,7 +239,7 @@ pub fn act_pins_generated(gd: &GameData, files: &dyn Files, act: i64, seed: u32)
     pins_from(gd, act, seed, &objects)
 }
 
-/// The pins of act `act` laid out with the generation state's `seed` (`0x141fa5a80`): topology
+/// The pins of act `act` laid out with the generation state's `seed` (`0x141fb40a0`): topology
 /// [`lcg_index`]`(seed, n)` of the act's world map, the graph prepared with a fresh
 /// [`TerrainRng`] from `seed` (world maps are area kind 0x21: no sub-seed draw), its objects from
 /// [`graph_objects`], then [`consolidate`] per pin type. Matches the client's `map_pins` trace
@@ -282,7 +282,7 @@ fn pins_from(gd: &GameData, act: i64, seed: u32, objects: &[MapObject]) -> Resul
 mod tests {
     use super::*;
 
-    /// Act 1's pins against the client's `map_pins` trace (client 0.5.5e.hotfix1, state seed 0).
+    /// Act 1's pins against the client's `map_pins` trace (client 0.5.5f, state seed 0).
     /// Needs the game files (`GameFiles/` of the hub, `POE_GAME_DIR` to point elsewhere); skipped
     /// without them.
     #[test]
@@ -308,7 +308,7 @@ mod tests {
     }
 
     /// Act 1's pin types with several positions on the seed-0 world map (`act1_NE_01.dgr`), and
-    /// the one the client kept (its `map_pins` trace, client 0.5.5e.hotfix1).
+    /// the one the client kept (its `map_pins` trace, client 0.5.5f).
     #[test]
     fn consolidation_keeps_the_clients_positions() {
         let base = "Metadata/Terrain/WorldMaps/Act1/Objects/";

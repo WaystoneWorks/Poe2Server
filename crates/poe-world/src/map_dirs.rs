@@ -1,10 +1,10 @@
 //! The natural topology choice (`docs/re/terrain/shared-passes.md` "World-map pin directions in
 //! detail" in the hub): which of an area's topologies and region orientations the client picks
-//! when the server forces none. Client addresses are 0.5.5e Hotfix 1 ones.
+//! when the server forces none. Client addresses are 0.5.5f ones.
 //!
-//! The generation state (world `+0x4b0`) holds a direction list (`+0x70`: per pin, the direction
+//! The generation state (world `+0x4b8`) holds a direction list (`+0x70`: per pin, the direction
 //! from the area's pin to it). A town or an area of kind 2 (`WorldAreas` `+0x14`, `+0x1b4`)
-//! rebuilds it on every load (`0x141fa60b0`): its act's pins ([`crate::map_pins::act_pins`]), the
+//! rebuilds it on every load (`0x141fb46d0`): its act's pins ([`crate::map_pins::act_pins`]), the
 //! direction of every connected pin (`MapConnections`, [`neighbours`]), adjusted for the whole act
 //! so that every area keeps a matching topology ([`layout`]). The area's connections then select
 //! the topologies whose direction keys match ([`candidates`]: exact, then with wildcards, then
@@ -28,7 +28,7 @@ fn data(e: impl std::fmt::Display) -> GenError {
     GenError::Unsupported(e.to_string())
 }
 
-/// `0x141f8c5b0`: direction `d` (0 N, 1 E, 2 S, 3 W, 4 NW, 5 NE, 6 SE, 7 SW, 8 none) under turn
+/// `0x141f9abd0`: direction `d` (0 N, 1 E, 2 S, 3 W, 4 NW, 5 NE, 6 SE, 7 SW, 8 none) under turn
 /// code `t` is `TURN[t][d]`. Row 2 is the opposite direction.
 const TURN: [[u8; 9]; 9] = [
     [0, 1, 2, 3, 4, 5, 6, 7, 8],
@@ -42,13 +42,13 @@ const TURN: [[u8; 9]; 9] = [
     [0, 1, 2, 3, 4, 5, 6, 7, 8],
 ];
 
-/// Turn code of a region orientation (`0x142f0bf50`).
+/// Turn code of a region orientation (`0x142f1f068`).
 const ORIENTATION_TURN: [u8; 8] = [0, 3, 2, 1, 4, 5, 6, 7];
 
-/// The directions next to each one (pass 3, `0x141fa6cc0`).
+/// The directions next to each one (pass 3, `0x141fb52e0`).
 const ADJACENT: [[u8; 2]; 8] = [[4, 5], [5, 6], [6, 7], [4, 7], [0, 3], [0, 1], [1, 2], [2, 3]];
 
-/// `0x142f10780`: the angle (u16, 0x8000 = 180°) of the cosine `(i − 127) / 127`, i = 0..254.
+/// `0x142f237a0`: the angle (u16, 0x8000 = 180°) of the cosine `(i − 127) / 127`, i = 0..254.
 const ACOS: [u16; 255] = [
     0x8000, 0x7ae2, 0x78c2, 0x7720, 0x75bf, 0x7487, 0x736d, 0x7269, 0x7176, 0x7092, 0x6fb9, 0x6eeb, 0x6e25, 0x6d67,
     0x6cb0, 0x6bff, 0x6b54, 0x6aad, 0x6a0b, 0x696d, 0x68d3, 0x683c, 0x67a8, 0x6718, 0x668a, 0x65ff, 0x6576, 0x64f0,
@@ -78,7 +78,7 @@ pub struct PinDir {
     pub pin: usize,
 }
 
-/// What the client's generation state keeps for the natural choice: its seed (world `+0x4b0`, the
+/// What the client's generation state keeps for the natural choice: its seed (world `+0x4b8`, the
 /// load's instance word; 0 with this server) and the direction list (`+0x70`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PinState {
@@ -165,7 +165,7 @@ fn int_list(v: Value) -> Vec<i64> {
     }
 }
 
-/// `0x141fdffb0`: the area's topologies of league mode `mode` (else those marked 0x39, else mode
+/// `0x141fee5e0`: the area's topologies of league mode `mode` (else those marked 0x39, else mode
 /// 1), as [`crate::area::topology_entries`] lists them.
 fn topologies(gd: &GameData, area: usize, mode: i64) -> Result<Vec<Topology>, GenError> {
     let areas = gd.table("WorldAreas").map_err(data)?;
@@ -195,7 +195,7 @@ fn topologies(gd: &GameData, area: usize, mode: i64) -> Result<Vec<Topology>, Ge
     Ok(any)
 }
 
-/// `0x1421c5090(a, b)`: the angle between two vectors (u16, 0x8000 = 180°).
+/// `0x1421d4f10(a, b)`: the angle between two vectors (u16, 0x8000 = 180°).
 fn angle(a: (i32, i32), b: (i32, i32)) -> u16 {
     if a == (0, 0) || b == (0, 0) {
         return 0;
@@ -209,7 +209,7 @@ fn angle(a: (i32, i32), b: (i32, i32)) -> u16 {
     ACOS[c.clamp(0, 0xfe) as usize]
 }
 
-/// The direction of the offset `(dx, dy)` (map cells, y down) in `0x141fa4930`.
+/// The direction of the offset `(dx, dy)` (map cells, y down) in `0x141fb2f50`.
 fn direction(dx: i32, dy: i32) -> u8 {
     match (dx, dy) {
         (0, 0) => 8,
@@ -222,7 +222,7 @@ fn direction(dx: i32, dy: i32) -> u8 {
     }
 }
 
-/// `0x141fa4930`: the direction from `pin` to every other pin of `pins` it shares a
+/// `0x141fb2f50`: the direction from `pin` to every other pin of `pins` it shares a
 /// `MapConnections` row with, sorted by pin row.
 pub fn neighbours(gd: &GameData, pin: usize, pins: &[MapPin]) -> Result<Vec<PinDir>, GenError> {
     let t = tables(gd)?;
@@ -236,7 +236,7 @@ pub fn neighbours(gd: &GameData, pin: usize, pins: &[MapPin]) -> Result<Vec<PinD
     Ok(others.into_iter().map(|(row, (x, y))| PinDir { dir: direction(x - own.0, y - own.1), pin: row }).collect())
 }
 
-/// `0x141fa62d0`: the direction of each of the area's connections, in `WorldAreas.Connections`
+/// `0x141fb48f0`: the direction of each of the area's connections, in `WorldAreas.Connections`
 /// order, once per area hash: the list entry of the connected area's pin (or of a pin whose
 /// `ParentMapPin` it is). Connections whose pin also lists `area` are skipped.
 fn connection_dirs(t: &Tables, area: usize, list: &[PinDir]) -> Vec<(usize, u8)> {
@@ -259,7 +259,7 @@ fn connection_dirs(t: &Tables, area: usize, list: &[PinDir]) -> Vec<(usize, u8)>
     out
 }
 
-/// One pass of `0x141fa65c0` (`0x141fa6ae0` exact, `0x141fa6bd0` key 8 = any, `0x141fa6cc0` also
+/// One pass of `0x141fb4be0` (`0x141fb5100` exact, `0x141fb51f0` key 8 = any, `0x141fb52e0` also
 /// the adjacent directions): do the connections, turned by orientation `o`, match the keys?
 fn matches(pass: u8, dirs: &[(usize, u8)], keys: &[u8], o: u8) -> bool {
     if dirs.len() != keys.len() {
@@ -274,10 +274,10 @@ fn matches(pass: u8, dirs: &[(usize, u8)], keys: &[u8], o: u8) -> bool {
     })
 }
 
-/// `0x141fa65c0`: the (topology, orientation) pairs whose direction keys match the area's
+/// `0x141fb4be0`: the (topology, orientation) pairs whose direction keys match the area's
 /// connections under `list`; `orientation` < 8 tries only that one (`map_force_orientation`),
 /// else each topology's allowed list (an entry 8 = all eight). The candidates are a set sorted by
-/// (`Topologies` row, orientation) (`0x141fa98e0`), not in list order. Empty when the list is empty or
+/// (`Topologies` row, orientation) (`0x141fb7f00`), not in list order. Empty when the list is empty or
 /// the first topology has no keys; the client throws when the area has no connection with a pin
 /// in the list ("is not connected to any areas with connected MapPins!").
 pub fn candidates(gd: &GameData, area: usize, list: &[PinDir], mode: i64, orientation: u8) -> Result<Vec<Candidate>, GenError> {
@@ -316,7 +316,7 @@ pub fn candidates(gd: &GameData, area: usize, list: &[PinDir], mode: i64, orient
     Ok(out.into_values().collect())
 }
 
-/// `0x141fa4f20`: every pin's direction list, adjusted so each area keeps a candidate. Pins with
+/// `0x141fb3540`: every pin's direction list, adjusted so each area keeps a candidate. Pins with
 /// world areas, sorted by row and then (stably) by neighbour count, most first; each takes the
 /// keys of the topology the LCG (seeded with `seed`, afresh for each pin) picks among its first
 /// area's candidates, one direction at a time and only while candidates remain; then each
@@ -371,7 +371,7 @@ pub fn layout(gd: &GameData, pins: &[MapPin], seed: u32, mode: i64) -> Result<BT
     Ok(lists)
 }
 
-/// `0x141fa60b0`: the direction list a town or kind-2 area loads with: its pin's list of the act
+/// `0x141fb46d0`: the direction list a town or kind-2 area loads with: its pin's list of the act
 /// [`layout`] (its plain [`neighbours`] when the layout has none for it); empty without a pin.
 pub fn area_dirs(gd: &GameData, area: usize, pins: &[MapPin], seed: u32, mode: i64) -> Result<Vec<PinDir>, GenError> {
     let t = tables(gd)?;
@@ -385,7 +385,7 @@ pub fn area_dirs(gd: &GameData, area: usize, pins: &[MapPin], seed: u32, mode: i
     }
 }
 
-/// `0x141fa6e00`: after a natural pick, the chosen topology's keys (≠ 8) replace the directions
+/// `0x141fb5420`: after a natural pick, the chosen topology's keys (≠ 8) replace the directions
 /// of the list entries the area's connections matched, in connection order; only when the
 /// topology has as many keys as the list has entries.
 pub fn write_back(gd: &GameData, area: usize, list: &mut [PinDir], topology: usize, mode: i64) -> Result<(), GenError> {
@@ -403,7 +403,7 @@ pub fn write_back(gd: &GameData, area: usize, list: &mut [PinDir], topology: usi
     Ok(())
 }
 
-/// The act pins a load lays out (`0x141ffe970` prepare phase: towns and kind-2 areas), cached per
+/// The act pins a load lays out (`0x14200d0a0` prepare phase: towns and kind-2 areas), cached per
 /// (act, seed).
 pub fn cached_act_pins(gd: &GameData, files: &dyn Files, act: i64, seed: u32) -> Result<Vec<MapPin>, GenError> {
     thread_local! {
@@ -417,7 +417,7 @@ pub fn cached_act_pins(gd: &GameData, files: &dyn Files, act: i64, seed: u32) ->
     Ok(pins)
 }
 
-/// The natural choice of `0x141ff9400` for the area (`WorldAreas` row), before the pick: the
+/// The natural choice of `0x142007a30` for the area (`WorldAreas` row), before the pick: the
 /// direction list is rebuilt for a town or kind-2 area (into `state`), then the candidates. The
 /// caller draws the index (`lcg_index(sub, n)`, `sub` the `below(0xffffffff)` draw, or the state
 /// seed for kind 0x21), then calls [`write_back`].
@@ -451,7 +451,7 @@ mod tests {
     }
 
     /// `G1_2` seed 1001 without a forced layout, as a live load through this server generated it
-    /// (client 0.5.5e.hotfix1, 2026-10-28): topology 15 (`felling_S_N_W`), orientation 0. Needs
+    /// (client 0.5.5f, 2026-10-28): topology 15 (`felling_S_N_W`), orientation 0. Needs
     /// the game files (`GameFiles/` of the hub, `POE_GAME_DIR` to point elsewhere); skipped
     /// without them.
     #[test]

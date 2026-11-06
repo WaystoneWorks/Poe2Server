@@ -1,6 +1,6 @@
 //! Compares the port's corner lattice with the client's final lattice of batch exports
 //! (`lattice.bin`: u32 points per row, u32 rows, then 3 bytes per point: ground index, height,
-//! flags; flag 8 marks an unwalkable corner, which the collision grid reads, `0x141d118a0`):
+//! flags; flag 8 marks an unwalkable corner, which the collision grid reads, `0x141d1e2d0`):
 //!
 //! `cargo run --release -p poe-world --example check_lattice -- <export or run dir>... [--list N]`
 //!

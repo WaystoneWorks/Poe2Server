@@ -687,7 +687,7 @@ impl InstanceServer {
             let g = poe_world::area::generate_with_files(&data, &files, &area, &mut rng, forced).map_err(|e| e.to_string())?;
             let hashes = terrain_check::Hashes { tile: g.map.tile_hash(), doodad: g.doodad_hash() };
             // The client's live grid is its own generation (client side) plus the hull of every static
-            // entity the server sends (`0x141d0ce70`). This server sends none of the `server_only`
+            // entity the server sends (`0x141d198a0`). This server sends none of the `server_only`
             // static objects yet, so the grid it must agree with is the client side one; a
             // `Side::Server` grid would block cells (healing wells, benches) the client walks through.
             let mut objects = poe_world::objects::travel_objects(&data, &area, &g).map_err(|e| e.to_string())?;

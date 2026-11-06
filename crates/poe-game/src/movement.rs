@@ -36,7 +36,7 @@ pub trait Walkable {
         if self.walkable(x, y) { 5 } else { 0 }
     }
 
-    /// The client's cell value on a layer (`FUN_141d0df50`, the walk mode picks the layer).
+    /// The client's cell value on a layer (`FUN_141d1a980`, the walk mode picks the layer).
     fn layer(&self, _layer: usize, x: i32, y: i32) -> u8 {
         self.nibble(x, y)
     }
@@ -135,7 +135,7 @@ pub enum MoveInput {
     /// `0x200`: the stance request sent with an input-mode toggle and with the first skill use
     /// in mouse mode (value 1 click-to-move, 4 WASD/combat); echoed in the next stance delta.
     StanceRequest { value: u8 },
-    /// `0xfe`: switch to weapon set `set` (client `0x1421150d0`). The lockstep client applies
+    /// `0xfe`: switch to weapon set `set` (client `0x142124030`). The lockstep client applies
     /// nothing itself and blocks skill use and swaps until the answer.
     WeaponSwap { set: u8 },
     /// `0x2e8`: the client's option `sprint_continues_with_move_input` (Player `+0x20a`).
@@ -251,7 +251,7 @@ pub enum MoveEvent {
     BuffRemoved { index: u16 },
     /// `0x1dc` SetAimTarget kind 0: the cursor cell echoed.
     AimEcho { cell: Cell },
-    /// `0x2f9` ComponentDelta of the Player component: the combat stance (`0x0400`) and, when
+    /// `0x2fc` ComponentDelta of the Player component: the combat stance (`0x0400`) and, when
     /// the client asked with `0x200`, its value (`0x1000`).
     StanceChanged { combat: bool, request: Option<u8> },
     /// `0x2a6`: sent before every stance delta (0.05 to combat, 0.2 out of it).
@@ -268,7 +268,7 @@ pub enum MoveEvent {
 
 
 /// Where in the client's frame a message runs: its header order key (`+0x14`, `+0x18`, `+0x1a`).
-/// The client drains the head of its frame queue at each position of `0x142130360` (hub
+/// The client drains the head of its frame queue at each position of `0x14213f410` (hub
 /// `docs/re/wasd-movement.md`, "Frame order"), so a frame's messages must go out sorted by this key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Drain {
@@ -379,7 +379,7 @@ impl MovementConfig {
 }
 
 /// The character's stats that change its speed. The client reads only the results
-/// (`Pathfinding_GetSpeed` `0x141dccfa0`: `movement_velocity_+permyriad`, `virtual_action_speed_+%`,
+/// (`Pathfinding_GetSpeed` `0x141dda090`: `movement_velocity_+permyriad`, `virtual_action_speed_+%`,
 /// `movement_velocity_cap`), which the server computes and sends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SpeedStats {

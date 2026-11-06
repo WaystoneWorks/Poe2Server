@@ -10,7 +10,7 @@
 # The supported client build: versions/<version>.toml is its single definition (depots, exe
 # checksum, opcode folder, signature table, accepted client hashes; docs/guides/new-game-version.md).
 # `{version}` in the path settings below is replaced by it.
-version = "0.5.5e.hotfix1"
+version = "0.5.5f"
 # Provided copy of the client install; game data is read from <game_dir>/Bundles2.
 game_dir = "GameFiles"
 # Community .datc64 schema (third_party/fetch-tools.sh downloads it).
@@ -58,7 +58,7 @@ max_pre_auth_per_ip = 16
 [instance]
 # Empty instances close after this many minutes (towns and hideouts stay open); 0 = never.
 idle_minutes = 15
-# Simulation frame interval in ms (one 0x2f4 tick marker per frame; also sent in
+# Simulation frame interval in ms (one 0x2f7 tick marker per frame; also sent in
 # InitialState as the frame length).
 tick_ms = 33
 # First entity id of an instance's counter, shared by all its players (official: players start

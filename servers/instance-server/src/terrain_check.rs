@@ -346,7 +346,7 @@ mod tests {
             server: Some(Hashes { tile: 0x5e6f7081, doodad: 0x11111111 }),
             reason: Reason::Tile,
             server_build: "abc123".into(),
-            client_build: "0.5.5e.hotfix1".into(),
+            client_build: "0.5.5f".into(),
         }
     }
 
@@ -366,7 +366,7 @@ mod tests {
         assert!(alert.contains("area\tG1_2 (Clearfell)\n"));
         assert!(alert.contains("tile\tclient 0x1a2b3c4d  server 0x5e6f7081\n"));
         assert!(alert.contains("doodad\tclient 0x11111111  server 0x11111111\n"));
-        assert!(alert.contains("report\tterrain-mismatch build=0.5.5e.hotfix1 server=abc123 area=G1_2 seed=123456789 topo=3 orient=1 tile=1a2b3c4d/5e6f7081 doodad=11111111/11111111"));
+        assert!(alert.contains("report\tterrain-mismatch build=0.5.5f server=abc123 area=G1_2 seed=123456789 topo=3 orient=1 tile=1a2b3c4d/5e6f7081 doodad=11111111/11111111"));
     }
 
     #[test]

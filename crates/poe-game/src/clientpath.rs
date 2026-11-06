@@ -1,4 +1,4 @@
-//! A port of the client's grid pathfinder (`FUN_141ed0510`; the algorithm and the
+//! A port of the client's grid pathfinder (`FUN_141ede540`; the algorithm and the
 //! addresses are in `docs/re/pathfinding.md`), for static terrain.
 //!
 //! The client plans every walk, WASD step, roll frame and sprint frame with this search, so a
@@ -91,8 +91,8 @@ pub struct Params {
     pub radius: i8,
     /// The entity's exact position on the line it is moving along, in cell coordinates with
     /// cell centres on whole numbers (position - 0.5), when it moves along a line whose current
-    /// cell is the start cell (`FUN_141b87580`). The line-of-sight tests that end at the start
-    /// then run from this point (`FUN_141edc6e0`) instead of from the start cell.
+    /// cell is the start cell (`FUN_141b95790`). The line-of-sight tests that end at the start
+    /// then run from this point (`FUN_141eea7b0`) instead of from the start cell.
     pub moving: Option<(f32, f32)>,
 }
 
@@ -537,7 +537,7 @@ impl Search<'_> {
     }
 
     /// Line of sight from the start to `d`, or from the moving entity's exact point `p` when
-    /// it moves along a line ([`Params::moving`]; `FUN_141eca7f0` + `FUN_141edc6e0`).
+    /// it moves along a line ([`Params::moving`]; `FUN_141ed8820` + `FUN_141eea7b0`).
     ///
     /// The client projects the start cell onto the line `p -> d` (`q`, rounded), walks from the
     /// start cell to `q` one step on each axis at a time, then walks the float line from `p` to

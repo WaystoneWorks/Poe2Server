@@ -51,7 +51,7 @@ impl Curve {
         (positions.len() >= 2).then(|| Self::new(ms / 1000.0, positions))
     }
 
-    /// The time at which the curve reaches `v`, linear between positions (`0x141ecd760`), `length`
+    /// The time at which the curve reaches `v`, linear between positions (`0x141edb790`), `length`
     /// past its end.
     pub fn time_of(&self, v: f32) -> f32 {
         let n = self.positions.len();
@@ -68,7 +68,7 @@ impl Curve {
     }
 
     /// The curve's position at `t` seconds; looping past the end adds the whole curve's
-    /// travel per loop (`FUN_141ecccc0`).
+    /// travel per loop (`FUN_141edacf0`).
     pub fn value(&self, t: f32) -> f32 {
         let n = self.positions.len();
         if n < 2 || t < 0.0 {
@@ -99,7 +99,7 @@ pub struct MotionCurves {
     /// `GP_sprinting_end_base_01` event `move` `end_time`).
     pub sprint_end_move_time: f32,
     /// The `SprintEnd` animation's base speed (`Character.act` `sprinting_end_*_01 : speed`), the
-    /// clip's rate denominator in `0x141e56ae0`.
+    /// clip's rate denominator in `0x141e649d0`.
     pub sprint_end_base_speed: f32,
 }
 

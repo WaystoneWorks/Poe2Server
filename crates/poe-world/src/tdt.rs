@@ -9,7 +9,7 @@
 //! data, doodads, entities) is kept raw for now.
 //!
 //! A tile that inherits another (`*_Reorient_N.tdt`) has a `u8` of override flags after the
-//! `inherits` reference (`0x142915630`) and carries only the overridden parts: 1 `tgt`, 8 the
+//! `inherits` reference (`0x1429278b0`) and carries only the overridden parts: 1 `tgt`, 8 the
 //! header from `feature` on and the corner points, 0x10 the size and sub-tile geometry, 0x20 the
 //! orientation mask. [`Tdt::resolve`] applies them to the parent.
 
@@ -36,32 +36,32 @@ pub struct Tdt {
     /// Height per corner point (data +0xc0; empty when the file has none).
     pub point_heights: Vec<i8>,
     /// Orientations the tile may be used in (data +0x171, bit per orientation; 0 or 0xff:
-    /// all), intersected with the `.tst` rotation list by the tile-set index (`0x141d09c30`).
+    /// all), intersected with the `.tst` rotation list by the tile-set index (`0x141d16660`).
     pub orientation_mask: u8,
-    /// Data `+0x16f` bit 1 (`0x141d05520`): the tile's model data (the `.tmd` the tile data names) has an
+    /// Data `+0x16f` bit 1 (`0x141d11f50`): the tile's model data (the `.tmd` the tile data names) has an
     /// object whose type path contains `Spawner`. Only filled by `load_tdt` for tiles without a
     /// real edge (the only ones `place_tile` asks).
     pub spawner: bool,
-    /// The tile's model data path (`.tmd`, the string after the corner points; `0x141d068b0`).
+    /// The tile's model data path (`.tmd`, the string after the corner points; `0x141d132e0`).
     pub tmd: Option<String>,
     /// Override flags of an inheriting tile (see the module docs).
     pub inherit_flags: u8,
     /// Sub-tiles (row-major in the tile's own orientation, `size.0 × size.1`) with their cell
     /// maps; empty when the file has none.
     pub subtiles: Vec<SubTile>,
-    /// The body's flag word (`0x142915630`'s first u16; tile data `+0x16c`): bit 0 corner
+    /// The body's flag word (`0x1429278b0`'s first u16; tile data `+0x16c`): bit 0 corner
     /// heights, bit 1 corner grounds, bit 0x40 marks a tile `OuterGroundIsOutside` may treat as
-    /// outside (`0x141fe1150`).
+    /// outside (`0x141fef780`).
     pub body_flags: u16,
     /// Object group (tile data `+0x170`, the byte after the `tmd` string): the no-overlap
-    /// objects of the tile-object pass are resolved per group (`0x141ff4a50`, `0x141ff4cd0`).
+    /// objects of the tile-object pass are resolved per group (`0x142003080`, `0x142003300`).
     pub object_group: u8,
     /// Hull plane masks (data +0x173, `n` bytes; `[0]` for a single plane): plane `i` serves the
     /// orientations in its mask bits, 0 meaning all.
     pub hull_masks: Vec<u8>,
 }
 
-/// One sub-tile's data (`0x142915630`): flag byte, the 23×23 byte map of cell codes and the
+/// One sub-tile's data (`0x1429278b0`): flag byte, the 23×23 byte map of cell codes and the
 /// byte list that follows it.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SubTile {
@@ -217,7 +217,7 @@ impl Tdt {
         if (1..0xff).contains(&self.orientation_mask) { m & self.orientation_mask } else { m }
     }
 
-    /// The body up to the corner points (`0x142915630`): flags, hull planes, sub-tiles (each
+    /// The body up to the corner points (`0x1429278b0`): flags, hull planes, sub-tiles (each
     /// with an optional compressed byte map and a byte list), then per-point grounds (flag 2)
     /// and heights (flag 1).
     fn read_points(&mut self, r: &mut Reader) -> Result<(), TdtError> {
@@ -317,8 +317,8 @@ impl Tdt {
         if has(2) {
             self.tmd = r.string().ok().flatten().filter(|s| !s.is_empty());
         }
-        // `0x142915630` then reads a string (sink `+0x50`) and the object group byte (sink
-        // `+0x58`, `0x141d06610`: tile data `+0x170`; inheriting tiles only with flag 0x20).
+        // `0x1429278b0` then reads a string (sink `+0x50`) and the object group byte (sink
+        // `+0x58`, `0x141d13040`: tile data `+0x170`; inheriting tiles only with flag 0x20).
         if has(0x20) && r.string().is_ok() {
             self.object_group = r.u8().unwrap_or(0);
         }
@@ -326,7 +326,7 @@ impl Tdt {
     }
 }
 
-/// A sub-tile byte map (`0x142917c00`): raw 0x211 bytes before version 10, else a header byte
+/// A sub-tile byte map (`0x142929e80`): raw 0x211 bytes before version 10, else a header byte
 /// (kind in bits 0..2, extra size bytes in bits 3..4, size in bits 5..7) and, for kinds 1..4, an
 /// LZ4 block of that size that decodes to 69 (kind 1: 2 palette bytes and 1 bit per cell),
 /// 137 (kind 2: 4 palette bytes, 2 bits), 281 (kind 3: 16 palette bytes, 4 bits) or 529 bytes

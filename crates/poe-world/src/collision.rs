@@ -1,5 +1,5 @@
 //! The collision grid (`docs/re/terrain/doodads.md` in the hub): the four 4-bit cell layers the client
-//! builds from the generated tile map in `0x141d0e770` (phase `terrain_e5f0`), in the `PWG1`
+//! builds from the generated tile map in `0x141d1b1a0` (phase `terrain_e5f0`), in the `PWG1`
 //! format of `poe_game::grid::Grid`.
 //!
 //! Every layer starts at 5 ("open"). Walking the tile records row by row, each record's sub-tile
@@ -67,7 +67,7 @@ struct Plane {
     data: Vec<u8>,
 }
 
-/// `0x141d05050` + `0x142917610`: the plane of a sub-tile without a hull list.
+/// `0x141d11a80` + `0x142929890`: the plane of a sub-tile without a hull list.
 fn default_plane(f: u8, b1: u8) -> Plane {
     let x0 = if b1 & 1 != 0 { -4 } else { 0 };
     let xe = if f & 0x40 != 0 { 27 } else { 23 };
@@ -116,7 +116,7 @@ fn default_plane(f: u8, b1: u8) -> Plane {
     Plane { x0, y0, w, h, data }
 }
 
-/// `0x141d051c0`: the plane for orientation `o`: the default plane without a list, else plane
+/// `0x141d11bf0`: the plane for orientation `o`: the default plane without a list, else plane
 /// `index` of the sub-tile's LZ4 stack.
 fn plane(st: &SubTile, index: usize) -> Option<Plane> {
     let (f, b1) = (st.flags, st.b1);
@@ -133,7 +133,7 @@ fn plane(st: &SubTile, index: usize) -> Option<Plane> {
     Some(Plane { x0, y0, w, h, data })
 }
 
-/// `0x142f02118`: the cell of tile-local `(x, y)` (a 23×23 tile, positions may lie outside)
+/// `0x142f15238`: the cell of tile-local `(x, y)` (a 23×23 tile, positions may lie outside)
 /// under orientation `o`.
 fn turn(x: i32, y: i32, o: u8) -> (i32, i32) {
     const T: [[usize; 3]; 9] = [[0, 1, 1], [1, 0, 1], [0, 0, 0], [1, 1, 0], [0, 0, 1], [1, 0, 0], [0, 1, 0], [1, 1, 1], [0, 1, 1]];
@@ -296,10 +296,10 @@ pub fn build<'a>(map: &TileMap, files: &dyn Files, doodads: impl IntoIterator<It
     Ok(grid)
 }
 
-/// `0x141d0f610` on a whole tile: the layers named by the mask (bit 3 layer 0, bit 4 layer 1)
+/// `0x141d1c040` on a whole tile: the layers named by the mask (bit 3 layer 0, bit 4 layer 1)
 /// are blocked over its 23×23 block, and the blocked plane also reaches 4 cells into each
 /// neighbour (up, right, down, left) that has a sub-tile open on one of those layers
-/// (`0x141d0fbe0`), with the default plane's 1..4 ramp.
+/// (`0x141d1c610`), with the default plane's 1..4 ramp.
 fn clear(grid: &mut CellGrid, rec: &[Option<u8>], w: i32, h: i32, tx: i32, ty: i32, l0: bool, l1: bool) {
     let mut f = (if l0 { 8 } else { 0 }) | (if l1 { 0x10 } else { 0 });
     let mut b1 = 0;
@@ -339,13 +339,13 @@ fn clear(grid: &mut CellGrid, rec: &[Option<u8>], w: i32, h: i32, tx: i32, ty: i
 
 
 // ---------------------------------------------------------------------------------------------
-// Doodad hulls (0x141d10650): every created object whose .ao has a Hull stamps its walk
+// Doodad hulls (0x141d1d080): every created object whose .ao has a Hull stamps its walk
 // and projectile shapes into layers 0 and 1.
 
-/// 0x1434bfc30: the clearance stamped around a triangle corner, (dx, dy, value).
+/// 0x1434d3ca0: the clearance stamped around a triangle corner, (dx, dy, value).
 const CORNER_KERNEL: [(i32, i32, u8); 48] = [(-4,0,4),(-3,-2,4),(-3,-1,3),(-3,0,3),(-3,1,3),(-3,2,4),(-2,-3,4),(-2,-2,3),(-2,-1,2),(-2,0,2),(-2,1,2),(-2,2,3),(-2,3,4),(-1,-3,3),(-1,-2,2),(-1,-1,1),(-1,0,1),(-1,1,1),(-1,2,2),(-1,3,3),(0,-4,4),(0,-3,3),(0,-2,2),(0,-1,1),(0,1,1),(0,2,2),(0,3,3),(0,4,4),(1,-3,3),(1,-2,2),(1,-1,1),(1,0,1),(1,1,1),(1,2,2),(1,3,3),(2,-3,4),(2,-2,3),(2,-1,2),(2,0,2),(2,1,2),(2,2,3),(2,3,4),(3,-2,4),(3,-1,3),(3,0,3),(3,1,3),(3,2,4),(4,0,4)];
 
-/// One hull section's shapes (0x141d6d830): triangles x0 y0 x1 y1 x2 y2 and circles
+/// One hull section's shapes (0x141d7a8b0): triangles x0 y0 x1 y1 x2 y2 and circles
 /// x y r, walk and projectile.
 #[derive(Debug, Clone, Default)]
 pub struct HullSection {
@@ -353,7 +353,7 @@ pub struct HullSection {
     pub proj_tri: Vec<[f32; 6]>,
     pub walk_circle: Vec<[f32; 3]>,
     pub proj_circle: Vec<[f32; 3]>,
-    /// `disable_rotation = true` (`0x141d6e4b0`, hull `+0x88`, one flag for the whole hull, kept
+    /// `disable_rotation = true` (`0x141d7b530`, hull `+0x88`, one flag for the whole hull, kept
     /// on every section): the hull is stamped unrotated.
     pub disable_rotation: bool,
 }
@@ -397,7 +397,7 @@ impl Stamp<'_> {
         x >= 0 && y >= 0 && (x as usize) < self.grid.cells_x && (y as usize) < self.grid.cells_y
     }
 
-    /// Zero the nibble at local (x, y) (0x141d1d3d0).
+    /// Zero the nibble at local (x, y) (0x141d29e00).
     fn clear(&mut self, x: i32, y: i32) {
         let (x, y) = (self.origin.0 + x, self.origin.1 + y);
         if self.inside(x, y) {
@@ -443,7 +443,7 @@ fn normalize(a: V2) -> V2 {
     }
 }
 
-/// 0x141d1d3d0 / 0x141d18ee0: the cells (4-bit fixed point, top-left rule) a triangle covers,
+/// 0x141d29e00 / 0x141d25910: the cells (4-bit fixed point, top-left rule) a triangle covers,
 /// as local (x, y).
 fn scan(a: V2, b: V2, c: V2, mut act: impl FnMut(i32, i32)) {
     let fx = |v: f32| (v * 16.0 + 0.5).floor() as i32;
@@ -493,7 +493,7 @@ fn scan(a: V2, b: V2, c: V2, mut act: impl FnMut(i32, i32)) {
     }
 }
 
-/// 0x141d10d60: one triangle of the object at its origin.
+/// 0x141d1d790: one triangle of the object at its origin.
 fn stamp_triangle(st: &mut Stamp, v: [V2; 3]) {
     if v[0] == v[1] || v[0] == v[2] || v[1] == v[2] {
         return;
@@ -536,7 +536,7 @@ fn stamp_triangle(st: &mut Stamp, v: [V2; 3]) {
     }
 }
 
-/// 0x141d194f0: one circle.
+/// 0x141d25f20: one circle.
 fn stamp_circle(st: &mut Stamp, c: V2, r: f32) {
     let (cx, cy) = ((c.0 + 0.5).floor() as i32, (c.1 + 0.5).floor() as i32);
     let reach = (r + 5.0) - 1.0;
@@ -556,7 +556,7 @@ fn stamp_circle(st: &mut Stamp, c: V2, r: f32) {
     }
 }
 
-/// Stamps an object's hull at cell (x, y) with angle, scale and mirroring (0x141d10650:
+/// Stamps an object's hull at cell (x, y) with angle, scale and mirroring (0x141d1d080:
 /// walk and projectile shapes into layer 0, projectile shapes into layer 1).
 pub fn stamp_hull(grid: &mut CellGrid, sections: &[HullSection], (x, y): (i32, i32), angle: f32, scale: f32, flip: bool) {
     // The client's angle reaches the stamp in [0, 2π): the gate is byte-identical only with a full

@@ -333,6 +333,11 @@ pub struct Locomotion {
     /// The next roll started is one deferred by a click's Move: its timeline runs one frame
     /// behind its `StartAction` (see `on_use_skill`).
     roll_late: bool,
+    /// Lying washed up: the first skill use is answered with the wake-up, see `on_use_skill`.
+    washed_up: bool,
+    /// The frame the running wake-up ends: until then the client's `WashedUp` action plays and
+    /// it starts nothing, so the server's character stands too.
+    waking_until: Option<u64>,
     /// The sprint that just ended by key release, see [`SprintEnd`].
     sprint_end: Option<SprintEnd>,
     /// The running `SprintEnd` of the model is a wall's `SprintEndBonk`.
@@ -399,6 +404,8 @@ impl Locomotion {
             roll_late: false,
             release_pending: false,
             release_due: false,
+            washed_up: config.washed_up,
+            waking_until: None,
             sprint_end: None,
             bonk: false,
             cursor_mode: false,
@@ -591,6 +598,14 @@ impl Locomotion {
                 self.resume_walking();
             }
         }
+        // The wake-up is over: the client's Actor tick walks on a held key by itself in this frame.
+        if self.waking_until.is_some_and(|end| ctx.frame >= end) {
+            self.waking_until = None;
+            if self.wasd != (0, 0) {
+                self.sim.on_move_ack(self.wasd, self.sim.grid(), ctx.terrain);
+                self.resume_walking();
+            }
+        }
         // Keyed to the Actor: the `0x64` with the grid after the Positioned tick, the starts of
         // the server's own, the sprint's end.
         if let Some(cell) = self.teleport.take() {
@@ -671,6 +686,8 @@ impl Locomotion {
         let cfg = ctx.config;
         let t = ctx.terrain;
         match *event {
+            // The client's `WashedUp` plays: it starts no walk from the answer (movement log).
+            MoveEvent::MoveAck { cell, .. } if self.waking_until.is_some() => self.sim.on_move_ack((0, 0), cell, t),
             MoveEvent::MoveAck { dir, cell } => self.sim.on_move_ack(dir, cell, t),
             // The two `0x64` of a teleport (`Codec`).
             MoveEvent::Teleport { cell } => {
@@ -837,6 +854,14 @@ impl Locomotion {
         self.cursor_mode = cursor;
         self.ack_wanted = true;
         let moving = dir != (0, 0);
+        if self.waking_until.is_some() {
+            // Answered from where the character lies; the key, if still down when the wake-up
+            // ends, walks then (see `tick`).
+            if moving {
+                self.facing = dir;
+            }
+            return;
+        }
         if (!cursor || self.bonk) && self.sim.is_coasting() {
             // The client's `SprintEnd` animation still plays: `Actor_StartWasdWalk` starts no
             // walk and the coast goes on; the key, if still down at its end, walks on then.
@@ -977,6 +1002,32 @@ impl Locomotion {
 
     fn on_use_skill(&mut self, req: UseSkill, ctx: &mut StepCtx, out: &mut Out) {
         let target = self.target_of(&req);
+        // Whatever the first skill use asks for (the client's first click targets (0, 0)), the
+        // character only wakes, on its own cell (2026-10-14, 4 of 4). The client refuses any
+        // other action while it lies there (`Actor_QueueAction` `0x141e3f100`).
+        if self.washed_up {
+            self.washed_up = false;
+            self.waking_until = Some(ctx.frame + u64::from(ctx.config.wake_frames));
+            let cell = self.sim.grid();
+            tracing::info!(?cell, "washed-up character: wake-up");
+            out.push(MoveEvent::ActionStart {
+                kind: ActionKind::Other,
+                skill: ctx.config.wake_skill,
+                flags: 0,
+                action: Self::alloc_action(ctx),
+                cell,
+                target: cell,
+                entity: None,
+                unk: 0xff,
+            });
+            out.push(MoveEvent::ActionEvent);
+            out.push(Self::skill_ack(&req, target));
+            return;
+        }
+        if self.waking_until.is_some() {
+            out.push(Self::skill_ack(&req, target));
+            return;
+        }
         if req.skill == ctx.config.interact_skill
             && let Some(entity) = req.entity
         {

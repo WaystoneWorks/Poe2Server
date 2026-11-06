@@ -65,6 +65,7 @@ pub fn sim_config(
         },
         config.sprint_buff_rows,
     );
+    cfg.wake_frames = config.wake_frames;
     cfg.walk_speed = speed;
     cfg.roll_travel_distance = roll
         .and_then(|s| s.granted.constant_stat("dodge_roll_base_travel_distance"))

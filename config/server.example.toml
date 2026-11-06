@@ -82,6 +82,8 @@ skip_objects = ["HealingWell"]
 # the client's code behind the movement seam: docs/architecture/instance-world.md in the hub).
 # BuffDefinitions rows of the three buffs a sprint adds.
 sprint_buff_rows = [2758, 2737, 2853]
+# Frames the client's WashedUp action plays: a washed-up character stands until it ends.
+wake_frames = 187
 
 [dev]
 # Development tools; none are needed for normal play.
@@ -248,12 +250,14 @@ intro_areas = ["G1_1"]
 # (0 = off).
 player_spacing = 8
 
-# Start tile per area, and the start point inside it in the tile's own orientation (grid cells
-# from its corner); the spawn is then snapped to the nearest walkable cell.
-# The Riverbank: washed up on the shore beside the intro tree.
+# Start tile per area, and the start cell inside it in the tile's own orientation (grid cells
+# from its corner); the spawn is then snapped to the nearest walkable cell. `facing` (radians, in
+# the tile's own orientation) is the direction a character starting there looks in.
+# The Riverbank: washed up on the shore beside the intro tree (official cell and facing).
 [spawn.start_tiles.G1_1]
 tile = "Intro_Tree"
-point = [9, 33]
+point = [8, 31]
+facing = 3.46041
 
 # Chat: the channel given to "join any" requests (global/trade); lines are routed by channel.
 [chat]

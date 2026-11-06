@@ -8,6 +8,8 @@
 //! The point is then snapped to the nearest walkable cell of the generated grid. Standing on a
 //! non-walkable cell inside the playable area leaves the view grey.
 
+use std::f64::consts::{FRAC_PI_2, TAU};
+
 use poe_config::{SpawnConfig, StartTile};
 use poe_game::movement::Walkable;
 use tracing::{info, warn};
@@ -59,6 +61,17 @@ impl Layout {
             height,
             tiles,
         })
+    }
+
+    /// The facing on the map of a character starting on the area's start tile (`None`: none
+    /// configured, or the tile is not on this layout).
+    pub fn start_facing(&self, start: &StartTile) -> Option<f32> {
+        let hits: Vec<&Tile> = self
+            .tiles
+            .iter()
+            .filter(|t| t.path.contains(&start.tile))
+            .collect();
+        Some(PlacedTile::fit(&hits)?.facing_to_map(start.facing?))
     }
 
     /// Grid position: the configured point inside the area's start tile (or the tile's
@@ -168,18 +181,28 @@ impl PlacedTile {
             })
     }
 
-    /// A point given in the tile's own orientation (grid cells from its corner) on the map.
+    /// A cell given in the tile's own orientation (grid cells from its corner) on the map: its
+    /// centre goes through the placement, so a cell stays one cell under every transform.
     pub fn to_map(&self, x: i32, y: i32) -> (i32, i32) {
         let g = GRID_PER_TILE as f64;
         let (u, v) = Self::inverse(
             self.transform,
             (self.width as f64, self.height as f64),
-            (x as f64 / g, y as f64 / g),
+            ((x as f64 + 0.5) / g, (y as f64 + 0.5) / g),
         );
         (
-            ((self.x as f64 + u) * g).round() as i32,
-            ((self.y as f64 + v) * g).round() as i32,
+            ((self.x as f64 + u) * g).floor() as i32,
+            ((self.y as f64 + v) * g).floor() as i32,
         )
+    }
+
+    /// A facing given in the tile's own orientation on the map. Facings are
+    /// `atan2(dy, dx) + pi/2` in radians (`0x141ddc820`), wrapped to 0..2pi.
+    pub fn facing_to_map(&self, facing: f32) -> f32 {
+        let (dy, dx) = (f64::from(facing) - FRAC_PI_2).sin_cos();
+        // With a size of 0 the placement is its linear part: directions have no origin.
+        let (du, dv) = Self::inverse(self.transform, (0.0, 0.0), (dx, dy));
+        (dv.atan2(du) + FRAC_PI_2).rem_euclid(TAU) as f32
     }
 }
 
@@ -242,12 +265,14 @@ pub fn spread(
 }
 
 /// The spawn point of `layout`: the area's start (`[spawn.start_tiles]`), snapped to the nearest
-/// walkable cell of `grid`.
-pub fn from_layout(layout: &Layout, grid: &Grid, config: &SpawnConfig, area: &str) -> Option<(i32, i32)> {
-    let target = layout.start(config.start_tiles.get(area), FILLER)?;
-    let start = grid.nearest_walkable(target, 400).or(Some(target));
-    info!(?target, ?start, width = layout.width, height = layout.height, "spawn from layout");
-    start
+/// walkable cell of `grid`, and the facing there (0 when the area configures none).
+pub fn from_layout(layout: &Layout, grid: &Grid, config: &SpawnConfig, area: &str) -> Option<((i32, i32), f32)> {
+    let tile = config.start_tiles.get(area);
+    let target = layout.start(tile, FILLER)?;
+    let start = grid.nearest_walkable(target, 400).unwrap_or(target);
+    let facing = tile.and_then(|t| layout.start_facing(t)).unwrap_or(0.0);
+    info!(?target, ?start, facing, width = layout.width, height = layout.height, "spawn from layout");
+    Some((start, facing))
 }
 
 #[cfg(test)]
@@ -262,6 +287,7 @@ mod tests {
         let tree = StartTile {
             tile: "Intro_Tree".into(),
             point: None,
+            facing: None,
         };
         // Centre of tiles (1,1) and (2,1).
         assert_eq!(layout.start(Some(&tree), filler), Some((45, 34)));
@@ -269,6 +295,7 @@ mod tests {
         // A point in the tile's own orientation; identity placement here.
         let tree = StartTile {
             point: Some([30, 5]),
+            facing: None,
             ..tree
         };
         assert_eq!(layout.start(Some(&tree), filler), Some((53, 28)));
@@ -291,7 +318,7 @@ mod tests {
         let refs: Vec<&Tile> = tiles.iter().collect();
         let p = PlacedTile::fit(&refs).unwrap();
         assert_eq!(p.transform, 2);
-        assert_eq!(p.to_map(9, 33), (285, 1140));
+        assert_eq!(p.to_map(9, 33), (285, 1139));
         // A rotated placement (90 degrees: canonical (a, b) at map (5 - b, a)).
         let rotated: Vec<Tile> = (0..6)
             .flat_map(|v| {
@@ -305,12 +332,46 @@ mod tests {
             .collect();
         let refs: Vec<&Tile> = rotated.iter().collect();
         let p = PlacedTile::fit(&refs).unwrap();
-        let (a, b) = (9.0 / 23.0, 33.0 / 23.0);
-        let expect = (
-            ((6.0 - b) * 23.0_f64).round() as i32,
-            (a * 23.0_f64).round() as i32,
-        );
-        assert_eq!(p.to_map(9, 33), expect);
+        // Tile size 138 cells: canonical cell (a, b) is map cell (137 - b, a).
+        assert_eq!(p.to_map(9, 33), (137 - 33, 9));
+    }
+
+    /// The two placements in the official captures (2026-10-14, four sessions, layouts generated
+    /// from their seeds): the player's cell and facing in the `AddObject`.
+    #[test]
+    fn official_washed_up_spawns() {
+        let tiles = |x0: i32, sub: fn(i32, i32) -> i32| -> Vec<Tile> {
+            (0..6)
+                .flat_map(|v| {
+                    (0..6).map(move |u| Tile {
+                        x: x0 + u,
+                        y: 45 + v,
+                        path: "Intro_Tree_01.tdt".into(),
+                        sub: sub(u, v) as u32,
+                    })
+                })
+                .collect()
+        };
+        // Seeds 3288279597 and 70523716: (a, b) = (5 - v, u). Seeds 3491751247 and 2108363952:
+        // (a, b) = (u, 5 - v).
+        let cases: [(Vec<Tile>, u8, (i32, i32), u32); 2] = [
+            (tiles(9, |u, v| u * 6 + 5 - v), 5, (238, 1164), 0x3ff1dedc),
+            (tiles(12, |u, v| (5 - v) * 6 + u), 2, (284, 1141), 0x40bedc1a),
+        ];
+        let start = StartTile {
+            tile: "Intro_Tree".into(),
+            point: Some([8, 31]),
+            facing: Some(3.460_41),
+        };
+        for (tiles, transform, cell, facing) in cases {
+            let refs: Vec<&Tile> = tiles.iter().collect();
+            let p = PlacedTile::fit(&refs).unwrap();
+            assert_eq!(p.transform, transform);
+            assert_eq!(p.to_map(8, 31), cell);
+            let layout = Layout { width: 40, height: 60, tiles };
+            let got = layout.start_facing(&start).unwrap();
+            assert!((got - f32::from_bits(facing)).abs() < 1e-3, "{got} against {}", f32::from_bits(facing));
+        }
     }
 
     #[test]

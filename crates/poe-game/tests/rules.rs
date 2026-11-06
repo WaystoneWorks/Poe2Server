@@ -15,6 +15,7 @@ use poe_game::{
 const MOVE: u32 = 0x2000_2909;
 const ROLL: u32 = 0x8000_0040;
 const ATTACK: u32 = 0x8040_0040;
+const WAKE: u32 = 0x2000_b7d9;
 
 fn world(grid: Arc<dyn GridSource>, cell: (i32, i32)) -> (World, EntityId) {
     world_with(grid, cell, |_| {})
@@ -478,4 +479,87 @@ fn the_aim_echo_sets_the_facing_and_a_key_walk_keeps_it() {
     tick(&mut w);
     tick(&mut w);
     assert!((facing(&w) - ang(1.0, 0.0)).abs() < 0.1, "facing {} after the second aim", facing(&w));
+}
+
+fn washed_up_world(cell: (i32, i32)) -> (World, EntityId) {
+    world_with(Arc::new(Open), cell, |c| {
+        c.wake_skill = WAKE;
+        c.washed_up = true;
+        c.wake_frames = 20;
+    })
+}
+
+/// The client's first skill use targets (0, 0) (2026-10-14, 4 of 4): it only wakes the character,
+/// with the wake-up on its cell, the action event and the ack, in that order of answers.
+#[test]
+fn the_first_skill_use_of_a_washed_up_character_wakes_it_where_it_lies() {
+    let (mut w, p) = washed_up_world((284, 1141));
+    w.input(p, MoveInput::UseSkill(skill(MOVE, -284, -1141)));
+    let events = tick(&mut w);
+    let start = events.iter().find_map(|e| match e {
+        MoveEvent::ActionStart { skill, cell, target, flags, unk, entity, .. } => Some((*skill, *cell, *target, *flags, *unk, *entity)),
+        _ => None,
+    });
+    assert_eq!(start, Some((WAKE, (284, 1141), (284, 1141), 0, 0xff, None)));
+    assert!(events.iter().any(|e| matches!(e, MoveEvent::ActionEvent)));
+    assert!(events.iter().any(|e| matches!(e, MoveEvent::SkillAck { skill: MOVE, .. })));
+    for _ in 0..40 {
+        tick(&mut w);
+    }
+    assert_eq!(cell(&w, p), (284, 1141));
+}
+
+/// Only the first one wakes: an ordinary character walks at once.
+#[test]
+fn a_character_that_is_not_washed_up_walks() {
+    let (mut w, p) = world_with(Arc::new(Open), (284, 1141), |c| c.wake_skill = WAKE);
+    w.input(p, MoveInput::Direction { x: 127, y: 127 });
+    for _ in 0..10 {
+        tick(&mut w);
+    }
+    assert_ne!(cell(&w, p), (284, 1141));
+}
+
+/// The bug of B1: a key pressed during the wake-up must not walk the server's character while the
+/// client plays `WashedUp`, or the client's next move snaps to where the server got to.
+#[test]
+fn nothing_moves_the_character_during_the_wake_up() {
+    let (mut w, p) = washed_up_world((284, 1141));
+    w.input(p, MoveInput::UseSkill(skill(MOVE, -284, -1141)));
+    tick(&mut w);
+    w.input(p, MoveInput::Direction { x: 127, y: 127 });
+    tick(&mut w);
+    w.input(p, MoveInput::UseSkill(skill(MOVE, 50, 50)));
+    let answers = tick(&mut w);
+    assert!(answers.iter().any(|e| matches!(e, MoveEvent::SkillAck { .. })));
+    assert!(!answers.iter().any(|e| matches!(e, MoveEvent::ActionStart { .. })));
+    for _ in 0..10 {
+        tick(&mut w);
+        assert_eq!(cell(&w, p), (284, 1141));
+    }
+}
+
+/// A key still down when the wake-up ends walks in that frame (movement log: `Move` starts in the
+/// frame `WashedUp` ends); a key released before does not.
+#[test]
+fn a_key_held_through_the_wake_up_walks_when_it_ends() {
+    let (mut w, p) = washed_up_world((284, 1141));
+    w.input(p, MoveInput::UseSkill(skill(MOVE, -284, -1141)));
+    tick(&mut w);
+    w.input(p, MoveInput::Direction { x: 127, y: 127 });
+    for _ in 0..30 {
+        tick(&mut w);
+    }
+    assert_ne!(cell(&w, p), (284, 1141));
+
+    let (mut w, p) = washed_up_world((284, 1141));
+    w.input(p, MoveInput::UseSkill(skill(MOVE, -284, -1141)));
+    tick(&mut w);
+    w.input(p, MoveInput::Direction { x: 127, y: 127 });
+    tick(&mut w);
+    w.input(p, MoveInput::Direction { x: 0, y: 0 });
+    for _ in 0..30 {
+        tick(&mut w);
+    }
+    assert_eq!(cell(&w, p), (284, 1141));
 }

@@ -332,6 +332,12 @@ pub struct MovementConfig {
     pub sprint_clearance_level: i32,
     /// The `Interaction` basic action (`u32::MAX`: none): a click on an object.
     pub interact_skill: u32,
+    /// The `WashedUp` basic action (`u32::MAX`: none): the wake-up of a washed-up character.
+    pub wake_skill: u32,
+    /// The character plays the washed-up opening: its first skill use wakes it.
+    pub washed_up: bool,
+    /// How long the client's `WashedUp` action plays, in frames.
+    pub wake_frames: u32,
     /// From this distance (cells) an interaction acts; from farther the player walks there first
     /// (the capture's click from 41 cells ended 26 cells from the waypoint).
     pub interact_range: i32,
@@ -359,6 +365,9 @@ impl MovementConfig {
             sprint_bonus_percent: Some(50.0),
             sprint_clearance_level: 0,
             interact_skill: u32::MAX,
+            wake_skill: u32::MAX,
+            washed_up: false,
+            wake_frames: 187,
             interact_range: 26,
             sprint_buff_rows,
             curves: None,

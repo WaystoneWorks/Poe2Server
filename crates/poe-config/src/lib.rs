@@ -710,6 +710,10 @@ pub struct StartTile {
     pub tile: String,
     #[serde(default)]
     pub point: Option<[i32; 2]>,
+    /// Radians, in the tile's own orientation (client facing: `atan2(dy, dx) + pi/2`); mapped
+    /// like the point. Without it the character faces 0.
+    #[serde(default)]
+    pub facing: Option<f32>,
 }
 
 /// Player inventories created on instance entry. Slots come from `Inventories.dat`; grid
@@ -972,6 +976,10 @@ pub struct MovementConfig {
     /// 2853).
     #[serde(default = "default_sprint_buff_rows")]
     pub sprint_buff_rows: [u16; 3],
+    /// How long the client's `WashedUp` action plays, in frames (the movement log of a game
+    /// test: 187). A washed-up character stands until it ends.
+    #[serde(default = "default_wake_frames")]
+    pub wake_frames: u32,
 }
 
 /// `[travel]`: reaches of the world's travel objects (docs/re/world-travel.md).
@@ -1000,8 +1008,13 @@ impl Default for MovementConfig {
     fn default() -> Self {
         Self {
             sprint_buff_rows: default_sprint_buff_rows(),
+            wake_frames: default_wake_frames(),
         }
     }
+}
+
+fn default_wake_frames() -> u32 {
+    187
 }
 
 fn default_sprint_buff_rows() -> [u16; 3] {

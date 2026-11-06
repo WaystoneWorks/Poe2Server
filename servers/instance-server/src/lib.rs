@@ -296,12 +296,12 @@ impl InstanceServer {
             .map(|(_, x, y)| (x, y));
         // Through a gate or waypoint: at the matching object.
         let arrival = ticket.character.arrive.and_then(|a| travel::arrival_cell(&objects, a));
-        let spawn = match (spawn_override().or(arrival).or(saved), &generated) {
-            (Some(p), _) => Some(p),
+        let (spawn, facing) = match (spawn_override().or(arrival).or(saved), &generated) {
+            (Some(p), _) => Some((p, 0.0)),
             (None, Some((grid, layout))) => spawn::from_layout(layout, grid, &self.config.spawn, &ticket.area),
             (None, None) => None,
         }
-        .unwrap_or((0, 0));
+        .unwrap_or(((0, 0), 0.0));
         let grid = generated.map(|(grid, _)| grid);
         let mut cell = spawn;
         if saved.is_some() {
@@ -343,7 +343,7 @@ impl InstanceServer {
             !ticket.character.intro_done && self.config.spawn.intro_areas.contains(&ticket.area);
         let unlocked = self.store.waypoints(ticket.character.id)?;
         let quest_flags = travel::quest_flags(&self.data, &unlocked.iter().cloned().collect())?;
-        let appearance = self.appearance(&ticket.character, &class, cell, &setup.skills, washed_up, quest_flags)?;
+        let appearance = self.appearance(&ticket.character, &class, cell, facing, &setup.skills, washed_up, quest_flags)?;
         let (frames_tx, mut frames) = tokio::sync::mpsc::unbounded_channel();
         let grid: Option<Arc<dyn poe_game::grid::GridSource>> = grid.map(|g| Arc::new(g) as _);
         let request = actor::JoinRequest {
@@ -352,7 +352,7 @@ impl InstanceServer {
             account: account.clone(),
             admin: self.is_admin(&account),
             spawn: cell,
-            movement: setup.movement.clone(),
+            movement: poe_game::movement::MovementConfig { washed_up, ..setup.movement.clone() },
             grid,
             appearance,
             want_debug: self.config.dev.drift_check || self.config.dev.debug_link,
@@ -1406,6 +1406,9 @@ impl InstanceServer {
         movement.sprint_clearance_level = sprint_clearance;
         if let Some(key) = poe_data::views::action_type_key(&self.data, "Interaction")? {
             movement.interact_skill = player::BASIC_ACTION_SKILL | u32::from(key);
+        }
+        if let Some(key) = poe_data::views::action_type_key(&self.data, "WashedUp")? {
+            movement.wake_skill = player::BASIC_ACTION_SKILL | u32::from(key);
         }
         movement.interact_range = self.config.travel.interact_range;
         let template_stat = |key: &str| {

@@ -53,6 +53,8 @@ pub struct RemoteInit<'a> {
     /// `Characters.IntegerId`.
     pub class: u8,
     pub cell: (i32, i32),
+    /// Radians (Positioned +0x44c).
+    pub facing: f32,
     pub team: u16,
     /// Base stats as (network key, value), `level` among them.
     pub stats: Vec<(u32, i32)>,
@@ -161,7 +163,7 @@ pub fn remote_blob(init: &RemoteInit<'_>) -> PlayerBlob {
         links: Vec::new(),
         grid_x: init.cell.0,
         grid_y: init.cell.1,
-        facing: 0,
+        facing: init.facing.to_bits(),
         team: init.team,
         stats: PlayerStats {
             base: init.stats.clone(),
@@ -213,6 +215,7 @@ impl InstanceServer {
         character: &TicketCharacter,
         class: &CharacterClass,
         cell: (i32, i32),
+        facing: f32,
         skills: &[OwnedSkill],
         washed_up: bool,
         quest_flags: Vec<(u8, u64)>,
@@ -263,6 +266,7 @@ impl InstanceServer {
             let mut components = vec![Component::Positioned(Positioned {
                 grid_x: cell.0,
                 grid_y: cell.1,
+                unk_44c: facing.to_bits(),
                 // Team (low 15 bits), from the template's Positioned section.
                 unk_1e0: team,
                 ..Default::default()
@@ -279,6 +283,7 @@ impl InstanceServer {
             name: &character.name,
             class: class.integer_id as u8,
             cell,
+            facing,
             team,
             stats: remote_network,
             stat_sets: unarmed_stat_sets(&remote_stats, &self.stats),

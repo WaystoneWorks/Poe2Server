@@ -65,7 +65,7 @@ fn apply(sim: &mut ClientSim, e: &MoveEvent, t: &dyn Walkable, skills: &SkillIds
             ActionKind::Roll => sim.on_start_roll(cell, target, TRAVEL, t),
             ActionKind::Move => sim.on_start_move(cell, target, t),
             ActionKind::Other => sim.on_start_other(cell, t),
-            ActionKind::Interaction => sim.on_start_interaction(cell),
+            ActionKind::Interaction => sim.on_start_interaction(cell, t),
         },
         MoveEvent::Stats(ref s) => {
             for &(stat, v) in s {

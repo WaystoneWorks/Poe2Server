@@ -703,7 +703,7 @@ impl Locomotion {
                 ActionKind::Roll => self.sim.on_start_roll(cell, target, cfg.roll_travel_distance, t),
                 ActionKind::Move => self.sim.on_start_move(cell, target, t),
                 ActionKind::Other => self.sim.on_start_other(cell, t),
-                ActionKind::Interaction => self.sim.on_start_interaction(cell),
+                ActionKind::Interaction => self.sim.on_start_interaction(cell, t),
             },
             MoveEvent::Stats(ref stats) => {
                 for &(stat, value) in stats {
@@ -972,7 +972,7 @@ impl Locomotion {
             self.move_start_frame = Some(ctx.frame);
             self.interact_walk = Some((entity, flags));
         } else if matches!(self.state, MoveState::Walking(_)) {
-            self.sim.stop_for_interaction(ctx.terrain);
+            // The sim stops at the `StartAction` (`on_start_interaction`).
             self.state = MoveState::Idle;
         }
         self.queued_roll = None;

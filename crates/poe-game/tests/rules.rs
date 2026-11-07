@@ -382,6 +382,52 @@ fn a_second_click_during_the_coast_walk_still_acts_on_the_ring() {
     assert_eq!(cell(&w, p), (at.0, target.1 - 20));
 }
 
+/// A key walk towards a checkpoint, clicked in reach on the way (`G1_2` seed 1, the user's test of
+/// 2026-11-07 and game test `b4-interact-wasd` "checkpoint, key held"). Returns the frame of the
+/// `StartAction`'s tick and the cell there.
+fn click_in_reach_with_a_key_held(w: &mut World, p: EntityId) -> (i32, i32) {
+    with_object(w, CHECKPOINT);
+    w.input(p, MoveInput::Direction { x: 0, y: 180 });
+    for _ in 0..10 {
+        tick(w);
+    }
+    let at = cell(w, p);
+    click_object(w, p, (at.0, at.1 + 12));
+    let ev = tick(w);
+    assert!(ev.iter().any(|e| matches!(e, MoveEvent::Interact { entity: 500, .. })), "{ev:?}");
+    cell(w, p)
+}
+
+/// The `Interaction` holds slot 0 for its 0.1 s (`0x14198e070`); the held key, pointing the way it
+/// pointed at the start, does not cancel it (`Actor_StartWasdWalk` `0x141e5da30`). Its end
+/// (`0x141e53140`) walks on at once. Hook, scale 0.1: slot 0 from 12188 to 13279 ms, then a Move.
+#[test]
+fn a_key_held_through_a_click_in_reach_waits_for_the_interaction() {
+    let (mut w, p) = interact_world((100, 100));
+    let stop = click_in_reach_with_a_key_held(&mut w, p);
+    // The start frame's own update counts: 0.1 - 3 x 1/30 <= 0 in the third tick from it.
+    for _ in 0..2 {
+        tick(&mut w);
+        assert_eq!(cell(&w, p), stop);
+    }
+    for _ in 0..6 {
+        tick(&mut w);
+    }
+    assert!(cell(&w, p).1 > stop.1, "walks on: {:?} from {stop:?}", cell(&w, p));
+}
+
+/// Axes against the ones held at the start cancel the `Interaction` and walk at once.
+#[test]
+fn a_reversed_key_cancels_the_interaction() {
+    let (mut w, p) = interact_world((100, 100));
+    let stop = click_in_reach_with_a_key_held(&mut w, p);
+    w.input(p, MoveInput::Direction { x: 0, y: -180 });
+    for _ in 0..3 {
+        tick(&mut w);
+    }
+    assert!(cell(&w, p).1 < stop.1, "walks back: {:?} from {stop:?}", cell(&w, p));
+}
+
 /// Without `interact_skill` set the click is an ordinary skill: no interaction.
 #[test]
 fn other_skills_never_interact() {

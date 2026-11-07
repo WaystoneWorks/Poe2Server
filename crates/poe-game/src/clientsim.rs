@@ -37,6 +37,9 @@ const SPRINT_END_MOVE_TIME: f32 = 0.75;
 const SPRINT_END_BASE_SPEED: f32 = 600.0;
 /// `0x141e50540`: the plan timer of an entity with a Player component.
 const PLAN_TIMER: f32 = 0.05;
+/// `Interaction` start `0x14198e070`: an object with no channel time (a waypoint, a checkpoint),
+/// outside Player `+999` modes 2 and 3, acts after `0x3dcccccd` seconds.
+const INTERACTION_TIME: f32 = 0.1;
 /// Recursion the client's own delegates cannot reach on real paths (waypoints on the start cell).
 const MAX_DEPTH: u32 = 8;
 
@@ -329,6 +332,15 @@ impl PathReach {
     }
 }
 
+/// An `Interaction` in slot 0 (`A+0x238`): it reached its object and waits its timer out.
+#[derive(Debug, Clone, Copy)]
+struct SlotInteraction {
+    /// `M+0x358`, counted down in its update (`0x14198ef30`).
+    timer: f32,
+    /// `A+0x40c`, `A+0x410`: the axes at the action's start (`0x141e5cbb0`).
+    start_axes: (i32, i32),
+}
+
 /// The roll action's movement part (`docs/re/movement-roll.md`).
 #[derive(Debug, Clone)]
 struct Roll {
@@ -442,6 +454,8 @@ pub struct ClientSim {
     /// `+0x2a1` bit 2.
     in_plan: bool,
     roll: Option<Roll>,
+    /// Slot 0 holds an `Interaction`.
+    interaction: Option<SlotInteraction>,
     /// `A + 0x248`: a server Move that waits for the roll to end, `(start, target)`.
     queued_move: Option<(Cell, Cell)>,
     /// The sprint part runs its end check.
@@ -500,6 +514,7 @@ impl ClientSim {
             plan_timer: 0.0,
             in_plan: false,
             roll: None,
+            interaction: None,
             queued_move: None,
             sprint: false,
             sprint_end: None,
@@ -1087,6 +1102,11 @@ impl ClientSim {
     /// `Actor_OnPathEnded` `0x141e5be90`.
     fn on_path_ended(&mut self, arrived: bool, t: &dyn Walkable) {
         self.reached = arrived && self.reach.is_some();
+        // `Actor_OnPathArrived` `0x141e5c610`: the `Interaction` moves from the Move slot to slot 0
+        // and starts (`0x141e5cbb0`).
+        if self.reached {
+            self.start_slot_interaction();
+        }
         self.reach = None;
         self.moving = false;
         self.line.curve.clear();
@@ -1104,12 +1124,6 @@ impl ClientSim {
         PathReach::new(object, clearance).arrived(self.grid, goal, t)
     }
 
-    /// A click in reach during a walk: `Pathfinding_FollowPath` arrives at once and stops the line.
-    pub fn stop_for_interaction(&mut self, t: &dyn Walkable) {
-        self.end_move(true, t);
-        self.reached = false;
-    }
-
     /// The next `0x1c8` Move is an interaction's walk to an object.
     pub fn set_next_reach(&mut self, object: crate::movement::ObjectReach, clearance: i32) {
         self.next_reach = Some(PathReach::new(object, clearance));
@@ -1125,12 +1139,48 @@ impl ClientSim {
         std::mem::take(&mut self.reached)
     }
 
-    /// `0x1c8` of an `Interaction` in reach: only the start cell matters to the movement.
-    pub fn on_start_interaction(&mut self, start: Cell) {
+    /// `0x1c8` of an `Interaction` in reach: `Actor_StartQueuedAction` ends a running Move, and
+    /// `Pathfinding_FollowPath` arrives at once and stops the line; `Actor_OnPathArrived` puts the
+    /// action in slot 0.
+    pub fn on_start_interaction(&mut self, start: Cell, t: &dyn Walkable) {
         self.end_sprint_clip();
         if start != self.grid {
             self.snap(start);
         }
+        self.end_move(true, t);
+        self.reached = false;
+        self.start_slot_interaction();
+    }
+
+    fn start_slot_interaction(&mut self) {
+        self.interaction = Some(SlotInteraction { timer: INTERACTION_TIME, start_axes: self.axes });
+    }
+
+    /// `Actor_StartWasdWalk` `0x141e5da30` with slot 0 running and its vf `+0x50` false: the held
+    /// axes cancel the action only when they point against the axes held at its start, or, with
+    /// none held then, against the facing (`0x14016d130` x 100, truncated). The later checks
+    /// (`+0x420`, vf `+0x290` `0x141986540`) pass for an `Interaction`: no animation runs.
+    fn axes_cancel_interaction(&self, i: SlotInteraction) -> bool {
+        let (ax, ay) = self.axes;
+        let dot = if i.start_axes == (0, 0) {
+            let f = ((self.facing.sin() * 100.0) as i32, (-self.facing.cos() * 100.0) as i32);
+            f.0 * ax + f.1 * ay
+        } else {
+            i.start_axes.0 * ax + i.start_axes.1 * ay
+        };
+        dot < 0
+    }
+
+    /// Slot 0's update in the Actor tick (`0x14198ef30`): the timer runs out, the object acts and
+    /// the action ends (`0x141e53140`), which starts a walk on the held axes at once.
+    fn interaction_tick(&mut self, dt: f32, t: &dyn Walkable) {
+        let Some(i) = self.interaction.as_mut() else { return };
+        i.timer -= dt;
+        if i.timer > 0.0 {
+            return;
+        }
+        self.interaction = None;
+        self.start_wasd_walk(t);
     }
 
     /// A new action ends the `SprintEnd` clip and its move event: the line stops where it is.
@@ -1192,6 +1242,12 @@ impl ClientSim {
         if self.roll.is_some() {
             return;
         }
+        if let Some(i) = self.interaction {
+            if !self.axes_cancel_interaction(i) {
+                return;
+            }
+            self.interaction = None;
+        }
         let goal = self.axes_goal();
         let from_server = self.mv.is_some_and(|m| m.from_server);
         self.mv = Some(MoveAction { target: goal, from_server });
@@ -1226,6 +1282,7 @@ impl ClientSim {
     /// Actor tick steps 10 to 13: action update, the sprint's end check, timers.
     pub fn actor_tick_actions(&mut self, dt: f32, t: &dyn Walkable) {
         self.roll_tick(dt, t);
+        self.interaction_tick(dt, t);
         self.sprint_end_check(t);
         self.action_slow_tick(dt, t);
         self.plan_timer = (self.plan_timer - dt).max(0.0);
@@ -1266,6 +1323,8 @@ impl ClientSim {
         if self.sprint_end.is_some() && reach.is_none() {
             return;
         }
+        // A new action cancels slot 0's `Interaction` (its vf `+0x50` is false).
+        self.interaction = None;
         self.end_sprint_clip();
         self.end_move(false, t);
         if start != self.grid {
@@ -1285,6 +1344,7 @@ impl ClientSim {
         }
         // Another attack asked for meanwhile waits for this one: the ramp goes on.
         self.action_slow.get_or_insert(self.frames);
+        self.interaction = None;
         if self.roll.is_some() {
             self.roll = None;
             self.stop_next_tick(t);
@@ -1400,6 +1460,7 @@ impl ClientSim {
         // own steps, and the walk after it was at full speed.
         self.action_slow = None;
         self.speed_factor = 1.0;
+        self.interaction = None;
         let Some(cs) = self.curves.clone() else { return };
         // `Actor_InstallQueuedMove` `0x141e4fa60` snaps, then `0x141e5c930` ends a running Move with a
         // stop (`Actor_EndMoveAction(A, 1)`) before the action's start, so the path's end does not

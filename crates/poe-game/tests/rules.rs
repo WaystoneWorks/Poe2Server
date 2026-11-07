@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use poe_game::{
+    clientpath::Obstacle,
     grid::{GridSource, VecGrid},
     locomotion::ClientModel,
     movement::{ActionKind, MoveEvent, MoveInput, MovementConfig, ObjectReach, Open, SkillIds, UseSkill},
@@ -426,6 +427,32 @@ fn a_reversed_key_cancels_the_interaction() {
         tick(&mut w);
     }
     assert!(cell(&w, p).1 < stop.1, "walks back: {:?} from {stop:?}", cell(&w, p));
+}
+
+/// A blocking object (`CheckpointBase.ot`: `blocking`, size 2) is a ring of walls in the client's
+/// path search (`0x141ee0360`, radius size level 4 + size 2): a key walk at it bends round it, as
+/// the client's did at the `G1_2` checkpoint (about 6 cells from its centre).
+#[test]
+fn a_key_walk_bends_round_a_blocking_object() {
+    let walk = |obstacles: Vec<Obstacle>| {
+        let (mut w, p) = interact_world((100, 100));
+        w.set_obstacles(obstacles);
+        tick(&mut w);
+        w.input(p, MoveInput::Direction { x: 0, y: 180 });
+        let mut cells = Vec::new();
+        for _ in 0..40 {
+            tick(&mut w);
+            cells.push(cell(&w, p));
+        }
+        cells
+    };
+    let straight = walk(Vec::new());
+    assert!(straight.iter().all(|c| c.0 == 100), "{straight:?}");
+    let round = walk(vec![Obstacle { cell: (100, 112), size: 2 }]);
+    let d2 = |c: &(i32, i32)| (c.0 - 100).pow(2) + (c.1 - 112).pow(2);
+    assert!(round.iter().all(|c| d2(c) > 16), "enters the ring: {round:?}");
+    assert!(round.iter().any(|c| c.0 != 100), "{round:?}");
+    assert!(round.last().unwrap().1 > 120, "walks past it: {round:?}");
 }
 
 /// Without `interact_skill` set the click is an ordinary skill: no interaction.

@@ -91,6 +91,7 @@ pub struct World {
     entities: BTreeMap<EntityId, Entity>,
     paused: bool,
     objects: crate::movement::ObjectReaches,
+    obstacles: Vec<crate::clientpath::Obstacle>,
 }
 
 impl World {
@@ -109,12 +110,18 @@ impl World {
             entities: BTreeMap::new(),
             paused: false,
             objects: Default::default(),
+            obstacles: Vec::new(),
         }
     }
 
     /// The clickable objects of this world (`ActorSpawn`: sent once per instance).
     pub fn set_objects(&mut self, objects: crate::movement::ObjectReaches) {
         self.objects = objects;
+    }
+
+    /// The blocking objects of this world, which the client's path search walls off.
+    pub fn set_obstacles(&mut self, obstacles: Vec<crate::clientpath::Obstacle>) {
+        self.obstacles = obstacles;
     }
 
     /// Frames ticked so far (the number of the last batch).
@@ -256,11 +263,12 @@ impl World {
         let paused = self.paused;
         let dt = self.config.tick_ms as f32 / 1000.0;
         let mut out = Vec::new();
+        let terrain = crate::movement::WithObstacles { terrain: &*self.grid, obstacles: &self.obstacles };
         for e in self.entities.values_mut() {
             let mut ctx = StepCtx {
                 frame: self.frame,
                 dt,
-                terrain: &*self.grid,
+                terrain: &terrain,
                 config: e.config.as_ref().unwrap_or(&self.config.movement),
                 next_action: &mut self.next_action,
                 next_buff: &mut e.next_buff,

@@ -94,6 +94,10 @@ pub struct Params {
     /// cell is the start cell (`FUN_141b95790`). The line-of-sight tests that end at the start
     /// then run from this point (`FUN_141eea7b0`) instead of from the start cell.
     pub moving: Option<(f32, f32)>,
+    /// The entity's size level for the object rings (`local_658`, `FUN_141dd4df0`: the larger of
+    /// `object_size` and `secondary_object_size`, 4 for a player also when walking; the terrain
+    /// test uses `object_size` alone). `None`: the terrain level.
+    pub size_level: Option<i32>,
 }
 
 impl Default for Params {
@@ -103,9 +107,24 @@ impl Default for Params {
             max_dist: 0,
             radius: -1,
             moving: None,
+            size_level: None,
         }
     }
 }
+
+/// A blocking object the search walls off: an entity on layer 0 of the terrain's entity buckets
+/// (`0x141d11870`: `.ot` `Positioned { blocking = true }`, not `static`, not `trigger_blocking`)
+/// that passes the search's filter (`0x141edfbb0`: size not -1, not `non_blocking_but_hittable`)
+/// and cannot be pushed (`0x141defdf0`; objects have no push priority).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Obstacle {
+    pub cell: Cell,
+    /// The larger of `object_size` and `secondary_object_size` (`Positioned +0x1f8`, `+0x1f9`).
+    pub size: i32,
+}
+
+/// Entity buckets are 23 cells square (`0x17`).
+const BUCKET: i32 = 0x17;
 
 /// Result of [`plan`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -274,6 +293,67 @@ impl Search<'_> {
         match self.bounds {
             Some((w, h)) => c.0 >= 0 && c.1 >= 0 && c.0 < w && c.1 < h,
             None => true,
+        }
+    }
+
+    /// Walls off the blocking objects in the entity buckets around the start (`0x141ee0a50`
+    /// collects them, `0x141ee0360` marks them): buckets from the start's bucket minus
+    /// `m / 23 + 1` to plus `m / 23 + 1`, `m = level - 1 + terrain +0x138` (the largest blocking
+    /// size + 1, `0x141d1c720`). Each object closes a ring of cells as walls in the window:
+    /// radius `R = level + size`, from `R - 2` (1 when `R < 3`, plus its own cell) to `R`.
+    fn wall_off_obstacles(&mut self, obstacles: &[Obstacle], level: i32) {
+        if obstacles.is_empty() {
+            return;
+        }
+        let largest = obstacles.iter().map(|o| o.size.max(0) + 1).max().unwrap_or(0);
+        let m = level - 1 + largest;
+        let span = m / BUCKET + 1;
+        let (bx, by) = (self.start.0 / BUCKET, self.start.1 / BUCKET);
+        let (lo, hi) = ((bx - span, by - span), (bx + span, by + span));
+        for o in obstacles {
+            let b = (o.cell.0 / BUCKET, o.cell.1 / BUCKET);
+            if b.0 < lo.0.max(0) || b.1 < lo.1.max(0) || b.0 > hi.0 || b.1 > hi.1 {
+                continue;
+            }
+            self.wall_off_ring(o.cell, (level + o.size.max(0)) as u32);
+        }
+    }
+
+    /// `0x141ee0360`'s marks for one object of ring radius `r`.
+    fn wall_off_ring(&mut self, at: Cell, r: u32) {
+        let ux = (at.0 - self.start.0 + HALF) as u32;
+        let uy = (at.1 - self.start.1 + HALF) as u32;
+        let mark = |s: &mut Self, x: u32, y: u32| {
+            if x < SIDE as u32 && y < SIDE as u32 {
+                s.node_mut(x as usize * SIDE + y as usize).flags |= CLOSED | BLOCKED;
+            }
+        };
+        let inner = if r < 3 { 1 } else { r - 2 };
+        if r < 3 {
+            mark(self, ux, uy);
+        }
+        for k in inner..=r {
+            if ux < SIDE as u32 {
+                mark(self, ux, uy.wrapping_sub(k));
+                mark(self, ux, uy.wrapping_add(k));
+            }
+        }
+        if uy < SIDE as u32 {
+            for k in inner..=r {
+                mark(self, ux.wrapping_sub(k), uy);
+                mark(self, ux.wrapping_add(k), uy);
+            }
+        }
+        for dy in 1..=r {
+            for dx in 1..=r {
+                let d2 = dx * dx + dy * dy;
+                if inner * inner <= d2 && d2 <= r * r {
+                    mark(self, ux.wrapping_sub(dx), uy.wrapping_sub(dy));
+                    mark(self, ux.wrapping_add(dx), uy.wrapping_sub(dy));
+                    mark(self, ux.wrapping_sub(dx), uy.wrapping_add(dy));
+                    mark(self, ux.wrapping_add(dx), uy.wrapping_add(dy));
+                }
+            }
         }
     }
 
@@ -784,6 +864,9 @@ pub fn plan(terrain: &dyn Walkable, start: Cell, goal: Cell, level: i32, params:
         };
         search.h_start = search.hcell(start);
         search.cap = ((search.h_start * 0.33f32) as u32).clamp(5, 22);
+        // The rings use the entity's size level (`local_658`), also when the terrain test falls
+        // back to level 0 below.
+        search.wall_off_obstacles(terrain.obstacles(), params.size_level.unwrap_or(level));
         if level > 0 && search.blocked_at(start) {
             search.level = 0;
             if search.blocked_at(start) {

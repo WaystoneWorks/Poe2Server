@@ -45,6 +45,39 @@ pub trait Walkable {
     fn bounds(&self) -> Option<(i32, i32)> {
         None
     }
+
+    /// The blocking objects on the terrain's layer 0 of entity buckets, which the client's path
+    /// search walls off ([`crate::clientpath::Obstacle`]).
+    fn obstacles(&self) -> &[crate::clientpath::Obstacle] {
+        &[]
+    }
+}
+
+/// A terrain with the world's blocking objects on it.
+pub struct WithObstacles<'a> {
+    pub terrain: &'a dyn Walkable,
+    pub obstacles: &'a [crate::clientpath::Obstacle],
+}
+
+impl Walkable for WithObstacles<'_> {
+    fn walkable(&self, x: i32, y: i32) -> bool {
+        self.terrain.walkable(x, y)
+    }
+    fn clearance(&self, x: i32, y: i32) -> u8 {
+        self.terrain.clearance(x, y)
+    }
+    fn nibble(&self, x: i32, y: i32) -> u8 {
+        self.terrain.nibble(x, y)
+    }
+    fn layer(&self, layer: usize, x: i32, y: i32) -> u8 {
+        self.terrain.layer(layer, x, y)
+    }
+    fn bounds(&self) -> Option<(i32, i32)> {
+        self.terrain.bounds()
+    }
+    fn obstacles(&self) -> &[crate::clientpath::Obstacle] {
+        self.obstacles
+    }
 }
 
 /// Everything is walkable (no terrain data).

@@ -599,6 +599,7 @@ impl Actor {
                 spawned.push(crate::travel::SpawnedObject { entity, object: o.object.clone(), arrival: o.arrival });
             }
             self.world.set_objects(spawned.iter().map(|o: &crate::travel::SpawnedObject| (o.entity, poe_game::movement::ObjectReach { reach: o.object.reach.reach, targeting: o.object.reach.targeting })).collect());
+            self.world.set_obstacles(spawned.iter().filter_map(|o| o.object.reach.obstacle.map(|size| poe_game::clientpath::Obstacle { cell: (o.object.x, o.object.y), size })).collect());
             self.objects = Arc::new(spawned);
             self.object_messages = messages;
             info!(instance = self.init.instance, objects = self.objects.len(), "spawned the travel objects");

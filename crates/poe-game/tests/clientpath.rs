@@ -118,6 +118,7 @@ fn plans_while_moving_test_sight_from_the_exact_point() {
             max_dist: p["max"].as_u64().unwrap() as u32,
             radius: p["radius"].as_i64().unwrap() as i8,
             moving,
+            size_level: None,
         };
         let (start, goal, level) = (
             cell(&p["start"]),

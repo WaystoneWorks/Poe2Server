@@ -96,6 +96,10 @@ pub struct WorldObject {
 pub struct Reach {
     pub reach: i32,
     pub targeting: i32,
+    /// The larger object size when the type blocks the client's path search: `Positioned`
+    /// `blocking`, not `static`, `trigger_blocking` or `non_blocking_but_hittable`, size not -1
+    /// (`0x141d11870`, `0x141edfbb0`; docs/re/pathfinding.md, "Blocking objects").
+    pub obstacle: Option<i32>,
 }
 
 fn reach_of(gd: &GameData, kind: &str) -> Reach {
@@ -111,7 +115,9 @@ fn reach_of(gd: &GameData, kind: &str) -> Reach {
         Some(v) => v.max(base),
         None => base,
     };
-    Reach { reach, targeting: int("Positioned", "object_targeting_size").unwrap_or(size.max(secondary)) }
+    let flag = |key: &str| t.component("Positioned").iter().rev().find(|(k, _)| k == key).is_some_and(|(_, v)| v == "true" || v == "1");
+    let blocks = flag("blocking") && !flag("static") && !flag("create_dynamic_height") && !flag("trigger_blocking") && !flag("non_blocking_but_hittable") && size != -1;
+    Reach { reach, targeting: int("Positioned", "object_targeting_size").unwrap_or(size.max(secondary)), obstacle: blocks.then_some(size.max(secondary)) }
 }
 
 /// The placed object's type, by its components (`.ot`): a gate has `AreaTransition`, a waypoint

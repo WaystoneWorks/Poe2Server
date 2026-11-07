@@ -1019,7 +1019,8 @@ impl ClientSim {
         let moving = self.on_line().then(|| self.line.point());
         // `Pathfinding_Plan` passes the request `pf+0x520`: the path of a walk to an object ends on
         // the ring and its line ends there, so `Pathfinding_EndPath` finds no line to run on.
-        let mut params = Params { moving, ..Params::default() };
+        // `sprint_level` is the class's larger object size: the size level of the rings.
+        let mut params = Params { moving, size_level: Some(self.sprint_level), ..Params::default() };
         if let Some(r) = self.reach {
             params.max_dist = r.r1 as u32;
             params.radius = r.targeting as i8;

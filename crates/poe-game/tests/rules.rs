@@ -247,7 +247,7 @@ fn a_far_click_walks_to_the_objects_ring_and_stops() {
             tick(&mut w);
         }
         let (x, y) = cell(&w, p);
-        assert!((160 - ring..=162 - ring).contains(&x) && y == 100, "stopped at ({x},{y}) for ring {ring}");
+        assert_eq!((x, y), (160 - ring, 100), "ring {ring}");
     }
 }
 

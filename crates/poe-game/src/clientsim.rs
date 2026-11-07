@@ -1002,7 +1002,13 @@ impl ClientSim {
             return p.2.clone();
         }
         let moving = self.on_line().then(|| self.line.point());
-        let params = Params { moving, ..Params::default() };
+        // `Pathfinding_Plan` passes the request `pf+0x520`: the path of a walk to an object ends on
+        // the ring and its line ends there, so `Pathfinding_EndPath` finds no line to run on.
+        let mut params = Params { moving, ..Params::default() };
+        if let Some(r) = self.reach {
+            params.max_dist = r.r1 as u32;
+            params.radius = r.targeting as i8;
+        }
         clientpath::plan(t, self.grid, goal, self.level, &params).path
     }
 

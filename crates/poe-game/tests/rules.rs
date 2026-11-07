@@ -306,6 +306,82 @@ fn a_click_in_reach_does_not_slow_the_next_walk() {
     assert_eq!(walked(true), walked(false));
 }
 
+/// A world with a sprint that just ended by key release: the client plays `SprintEnd` and coasts.
+fn coasting_after_a_sprint(object: ObjectReach) -> (World, EntityId) {
+    let rows: Vec<String> = (0..400).map(|_| ".".repeat(300)).collect();
+    let rows: Vec<&str> = rows.iter().map(|r| r.as_str()).collect();
+    let (mut w, p) = world_with(Arc::new(VecGrid::from_rows(&rows)), (150, 60), |c| {
+        c.interact_skill = INTERACT;
+        c.sprint_clearance_level = 4;
+    });
+    with_object(&mut w, object);
+    w.input(p, MoveInput::Direction { x: 0, y: 180 });
+    tick(&mut w);
+    w.input(p, MoveInput::SprintInput { held: true });
+    w.input(p, MoveInput::UseSkill(skill(ROLL, 0, 20)));
+    for _ in 0..60 {
+        tick(&mut w);
+    }
+    w.input(p, MoveInput::Direction { x: 0, y: 0 });
+    w.input(p, MoveInput::SprintInput { held: false });
+    w.input(p, MoveInput::SkillInputEnd);
+    for _ in 0..3 {
+        tick(&mut w);
+    }
+    (w, p)
+}
+
+/// Game test `b4-sprint-click`: a click in reach during the coast ends the `SprintEnd` clip, and
+/// the client stands where it is (position constant from the frame of the `StartAction`).
+#[test]
+fn a_click_in_reach_ends_the_coast() {
+    let (mut w, p) = coasting_after_a_sprint(CHECKPOINT);
+    let at = cell(&w, p);
+    click_object(&mut w, p, (at.0, at.1 + 10));
+    let ev = tick(&mut w);
+    assert!(ev.iter().any(|e| matches!(e, MoveEvent::Interact { entity: 500, .. })), "{ev:?}");
+    let stop = cell(&w, p);
+    for _ in 0..60 {
+        tick(&mut w);
+    }
+    assert_eq!(cell(&w, p), stop);
+}
+
+/// The user's snaps of 2026-11-06: `SprintEnd` does not drop an `Interaction` (vf70 = 0, a plain
+/// Move's is 1), so a far click during the coast walks to the ring and acts on arrival.
+#[test]
+fn a_far_click_during_the_coast_walks_to_the_ring_and_acts() {
+    let (mut w, p) = coasting_after_a_sprint(CHECKPOINT);
+    let at = cell(&w, p);
+    let target = (at.0, at.1 + 60);
+    click_object(&mut w, p, target);
+    let first = tick(&mut w);
+    assert!(first.iter().any(|e| matches!(e, MoveEvent::ActionStart { kind: ActionKind::Move, .. })), "{first:?}");
+    let done = (0..200).find(|_| tick(&mut w).iter().any(|e| matches!(e, MoveEvent::Interact { entity: 500, .. })));
+    assert!(done.is_some(), "never interacted, at {:?}", cell(&w, p));
+    for _ in 0..30 {
+        tick(&mut w);
+    }
+    let end = cell(&w, p);
+    assert_eq!(end, (at.0, target.1 - 20), "the first ring cell");
+}
+
+/// A second click during that walk: it goes on and acts once, from the same ring.
+#[test]
+fn a_second_click_during_the_coast_walk_still_acts_on_the_ring() {
+    let (mut w, p) = coasting_after_a_sprint(CHECKPOINT);
+    let at = cell(&w, p);
+    let target = (at.0, at.1 + 60);
+    click_object(&mut w, p, target);
+    for _ in 0..5 {
+        tick(&mut w);
+    }
+    click_object(&mut w, p, target);
+    let acted = (0..200).filter(|_| tick(&mut w).iter().any(|e| matches!(e, MoveEvent::Interact { entity: 500, .. }))).count();
+    assert_eq!(acted, 1);
+    assert_eq!(cell(&w, p), (at.0, target.1 - 20));
+}
+
 /// Without `interact_skill` set the click is an ordinary skill: no interaction.
 #[test]
 fn other_skills_never_interact() {

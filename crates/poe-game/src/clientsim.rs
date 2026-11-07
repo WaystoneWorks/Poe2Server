@@ -1127,8 +1127,18 @@ impl ClientSim {
 
     /// `0x1c8` of an `Interaction` in reach: only the start cell matters to the movement.
     pub fn on_start_interaction(&mut self, start: Cell) {
+        self.end_sprint_clip();
         if start != self.grid {
             self.snap(start);
+        }
+    }
+
+    /// A new action ends the `SprintEnd` clip and its move event: the line stops where it is.
+    fn end_sprint_clip(&mut self) {
+        if self.sprint_end.take().is_some() {
+            self.stop_move();
+            self.line.acc = 0.0;
+            self.line.pending = 0.0;
         }
     }
 
@@ -1251,9 +1261,12 @@ impl ClientSim {
         if d.0 * d.0 + d.1 * d.1 < 9 {
             return;
         }
-        if self.sprint_end.is_some() {
+        // `Actor_StartQueuedAction` drops a plain Move while `SprintEnd` plays (vf `+0x70` = 1), but
+        // not an `Interaction` (vf `+0x70` `0x140108d20` = 0): it ends the clip and walks.
+        if self.sprint_end.is_some() && reach.is_none() {
             return;
         }
+        self.end_sprint_clip();
         self.end_move(false, t);
         if start != self.grid {
             self.snap(start);
@@ -1421,11 +1434,7 @@ impl ClientSim {
         let length = curve.length;
         // The new action ends the clip and its move event: the roll's line starts on the grid
         // (seg1 f3578: y exactly 635).
-        if self.sprint_end.take().is_some() {
-            self.stop_move();
-            self.line.acc = 0.0;
-            self.line.pending = 0.0;
-        }
+        self.end_sprint_clip();
         // TEST: a roll queued into a running roll, at that clip's end in this frame's Animated tick:
         // the tick plays the old clip out and only the rest of its time goes to the new clip (user
         // tests 3 f1851, 4 f2319: line time 0.977 = 1.0 - (0.99 + 0.033 - 1.0)). The code is unread.

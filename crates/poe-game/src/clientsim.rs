@@ -297,6 +297,38 @@ struct MoveAction {
     from_server: bool,
 }
 
+/// The path request's radii of an action with a target entity (`Action_GetPathRequest`
+/// `0x141985f10`): `req[1]` and `req[2]`. `req[0] = 0`, `req[3] = 1`, `req[4] = 2` (no
+/// `requires_line_of_sight`).
+#[derive(Debug, Clone, Copy)]
+struct PathReach {
+    r1: i32,
+    targeting: i32,
+}
+
+impl PathReach {
+    /// `req[1] = max(vf228, 1) - 1`, `vf228 = 0x14198db20 + max(P+0x1f8, P+0x1f9)`.
+    fn new(object: crate::movement::ObjectReach, clearance: i32) -> Self {
+        Self { r1: (object.reach + clearance).max(1) - 1, targeting: object.targeting }
+    }
+
+    /// `0x141dd8d10`: the first ring; the one cell beyond it counts when the step in is blocked.
+    fn arrived(self, grid: Cell, goal: Cell, t: &dyn Walkable) -> bool {
+        let d = (grid.0 - goal.0, grid.1 - goal.1);
+        let d2 = d.0 * d.0 + d.1 * d.1;
+        let ring = self.targeting + self.r1;
+        if d2 <= ring * ring {
+            return true;
+        }
+        if d2 > (ring + 1) * (ring + 1) {
+            return false;
+        }
+        let scale = ring as f32 / (d2 as f32).sqrt();
+        let p = (goal.0 + (d.0 as f32 * scale) as i32, goal.1 + (d.1 as f32 * scale) as i32);
+        t.layer(0, p.0, p.1) < 1
+    }
+}
+
 /// The roll action's movement part (`docs/re/movement-roll.md`).
 #[derive(Debug, Clone)]
 struct Roll {
@@ -398,6 +430,12 @@ pub struct ClientSim {
     axes: (i32, i32),
     axes_fresh: bool,
     mv: Option<MoveAction>,
+    /// The running walk's request radii, when it goes to an entity.
+    reach: Option<PathReach>,
+    /// The next `0x1c8` Move's request radii.
+    next_reach: Option<PathReach>,
+    /// The walk with `reach` arrived (`Actor_OnPathArrived`).
+    reached: bool,
     /// `+0x2a0` bit 7.
     moving: bool,
     plan_timer: f32,
@@ -450,6 +488,9 @@ impl ClientSim {
             velocity_cap: 0,
             sprint_turn_rate: 150.0,
             action_slow: None,
+            reach: None,
+            next_reach: None,
+            reached: false,
             frames: 0,
             depth: 0,
             axes: (0, 0),
@@ -884,8 +925,11 @@ impl ClientSim {
         }
     }
 
-    /// `Pathfinding_IsArrived` `0x141dd8900` for a point goal (`r0 = r1 = 0`, `n = 1`).
+    /// `Pathfinding_IsArrived` `0x141dd8900`; a point goal has `r0 = r1 = 0`, `n = 1`.
     fn is_arrived(&self, g: Cell, t: &dyn Walkable) -> bool {
+        if let Some(r) = self.reach {
+            return r.arrived(self.grid, g, t);
+        }
         let d = (self.grid.0 - g.0, self.grid.1 - g.1);
         let d2 = d.0 * d.0 + d.1 * d.1;
         d2 == 0 || (d2 == 1 && t.layer(0, g.0, g.1) < 1)
@@ -1036,6 +1080,8 @@ impl ClientSim {
 
     /// `Actor_OnPathEnded` `0x141e5be90`.
     fn on_path_ended(&mut self, arrived: bool, t: &dyn Walkable) {
+        self.reached = arrived && self.reach.is_some();
+        self.reach = None;
         self.moving = false;
         self.line.curve.clear();
         let wasd = self.mv.is_some_and(|m| !m.from_server) && self.axes != (0, 0);
@@ -1046,9 +1092,38 @@ impl ClientSim {
         }
     }
 
-    /// An interaction's walk reached the object: the Move slot ends and the walk stops.
-    pub fn end_interaction_walk(&mut self, t: &dyn Walkable) {
+    /// The object is in reach from here (the entity's size is `clearance`): `Actor_PlanMove` would
+    /// arrive at once.
+    pub fn reaches(&self, goal: Cell, object: crate::movement::ObjectReach, clearance: i32, t: &dyn Walkable) -> bool {
+        PathReach::new(object, clearance).arrived(self.grid, goal, t)
+    }
+
+    /// A click in reach during a walk: `Pathfinding_FollowPath` arrives at once and stops the line.
+    pub fn stop_for_interaction(&mut self, t: &dyn Walkable) {
         self.end_move(true, t);
+        self.reached = false;
+    }
+
+    /// The next `0x1c8` Move is an interaction's walk to an object.
+    pub fn set_next_reach(&mut self, object: crate::movement::ObjectReach, clearance: i32) {
+        self.next_reach = Some(PathReach::new(object, clearance));
+    }
+
+    /// A walk to an object runs.
+    pub fn has_reach(&self) -> bool {
+        self.reach.is_some()
+    }
+
+    /// The walk to an object arrived since the last call.
+    pub fn take_reached(&mut self) -> bool {
+        std::mem::take(&mut self.reached)
+    }
+
+    /// `0x1c8` of an `Interaction` in reach: only the start cell matters to the movement.
+    pub fn on_start_interaction(&mut self, start: Cell) {
+        if start != self.grid {
+            self.snap(start);
+        }
     }
 
     /// `Actor_EndMoveAction` `0x141e53c90`.
@@ -1158,6 +1233,7 @@ impl ClientSim {
 
     /// `0x1c8` of a Move: `Actor_StartQueuedAction` `0x141e4e950`, Move branch.
     pub fn on_start_move(&mut self, start: Cell, target: Cell, t: &dyn Walkable) {
+        let reach = self.next_reach.take();
         // A running roll keeps slot 0: the Move stays queued (`A + 0x248`) until the Actor tick after
         // the roll's end; its start cell snaps then (`Actor_InstallQueuedMove`).
         if self.roll.is_some() {
@@ -1176,6 +1252,7 @@ impl ClientSim {
         if start != self.grid {
             self.snap(start);
         }
+        self.reach = reach;
         self.mv = Some(MoveAction { target, from_server: true });
         self.plan_move(t);
     }

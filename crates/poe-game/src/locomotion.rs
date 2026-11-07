@@ -304,7 +304,7 @@ pub struct Locomotion {
     teleport: Option<Cell>,
     /// A roll asked for while the previous roll's action still runs: it starts when that ends.
     /// The object an interaction walks to: (entity, its cell, the request's flags).
-    interact_walk: Option<(u32, Cell, u16)>,
+    interact_walk: Option<(u32, u16)>,
     queued_roll: Option<(UseSkill, Cell)>,
     /// Events that follow this frame's `MoveAck`.
     deferred: Vec<(Drain, MoveEvent)>,
@@ -565,9 +565,10 @@ impl Locomotion {
         if matches!(self.state, MoveState::Walking(Walk::Target { .. })) && !self.sim.has_move() {
             self.state = MoveState::Idle;
         }
-        self.step_interact_walk(ctx, &mut out);
+        self.step_interact_walk(&mut out);
         self.apply_up_to(Drain::at(1, 0), &mut out, ctx);
         self.sim.pathfinding_tick(ctx.dt, ctx.terrain);
+        self.step_interact_walk(&mut out);
         // The timeline: the model's clock tells what happens in this Animated tick.
         let mut unscaled_ack = false;
         if let MoveState::Rolling(_) = self.state {
@@ -702,6 +703,7 @@ impl Locomotion {
                 ActionKind::Roll => self.sim.on_start_roll(cell, target, cfg.roll_travel_distance, t),
                 ActionKind::Move => self.sim.on_start_move(cell, target, t),
                 ActionKind::Other => self.sim.on_start_other(cell, t),
+                ActionKind::Interaction => self.sim.on_start_interaction(cell),
             },
             MoveEvent::Stats(ref stats) => {
                 for &(stat, value) in stats {
@@ -945,29 +947,37 @@ impl Locomotion {
         }
     }
 
-    /// A click on an object in reach acts now; from farther the player walks into reach under
-    /// the interaction's own action (official: `StartAction` and the ack at the click, the
-    /// `ActionEvent` on arrival, no `0x64`). Rolling or sprinting: acked like any other action.
+    /// A click on an object: the client's `Interaction` action walks under the click's own action
+    /// until `Pathfinding_IsArrived` holds, at once if it holds already (`StartAction` and the ack
+    /// at the click, the `ActionEvent` on arrival, no `0x64`). Rolling or sprinting, or an entity
+    /// that is no object: acked like any other action.
     fn start_interaction(&mut self, req: UseSkill, entity: u32, target: Cell, ctx: &mut StepCtx, out: &mut Out) {
-        let cell = self.sim.grid();
-        let (dx, dy) = (i64::from(target.0 - cell.0), i64::from(target.1 - cell.1));
-        let range = i64::from(ctx.config.interact_range);
-        let flags = req.flags;
         let free = matches!(self.state, MoveState::Idle | MoveState::Walking(_));
-        if dx * dx + dy * dy <= range * range || !free {
-            self.interact_walk = None;
+        let flags = req.flags;
+        self.interact_walk = None;
+        let Some(object) = ctx.objects.get(&entity).copied().filter(|_| free) else {
             self.start_other(req, target, ctx, out);
             out.push(MoveEvent::Interact { entity, flags });
             return;
+        };
+        let cell = self.sim.grid();
+        let clearance = ctx.config.sprint_clearance_level;
+        let in_reach = self.sim.reaches(target, object, clearance, ctx.terrain);
+        if !in_reach {
+            self.sim.set_next_reach(object, clearance);
+            self.state = MoveState::Walking(Walk::Target { goal: target });
+            self.facing = (target.0 - cell.0, target.1 - cell.1);
+            self.sprint_end = None;
+            self.bonk = false;
+            self.move_start_frame = Some(ctx.frame);
+            self.interact_walk = Some((entity, flags));
+        } else if matches!(self.state, MoveState::Walking(_)) {
+            self.sim.stop_for_interaction(ctx.terrain);
+            self.state = MoveState::Idle;
         }
-        self.state = MoveState::Walking(Walk::Target { goal: target });
-        self.facing = (target.0 - cell.0, target.1 - cell.1);
-        self.sprint_end = None;
-        self.bonk = false;
-        self.move_start_frame = Some(ctx.frame);
-        self.interact_walk = Some((entity, target, flags));
+        self.queued_roll = None;
         out.push(MoveEvent::ActionStart {
-            kind: ActionKind::Move,
+            kind: if in_reach { ActionKind::Interaction } else { ActionKind::Move },
             skill: req.skill,
             flags: req.flags | ACTION_INPUT_FLAG,
             action: Self::alloc_action(ctx),
@@ -976,27 +986,27 @@ impl Locomotion {
             entity: req.entity,
             unk: req.unk,
         });
+        if in_reach {
+            out.push(MoveEvent::ActionEvent);
+        }
         out.push(Self::skill_ack(&req, target));
+        if in_reach {
+            out.push(MoveEvent::Interact { entity, flags });
+        }
     }
 
-    /// Ends an interaction's walk in reach of the object; another input took over: forgets it.
-    fn step_interact_walk(&mut self, ctx: &mut StepCtx, out: &mut Out) {
-        let Some((entity, target, flags)) = self.interact_walk else {
+    /// The walk to an object arrived: it acts. Another input took over: forgets it.
+    fn step_interact_walk(&mut self, out: &mut Out) {
+        let Some((entity, flags)) = self.interact_walk else {
             return;
         };
-        if !matches!(self.state, MoveState::Walking(Walk::Target { .. })) {
+        if self.sim.take_reached() {
             self.interact_walk = None;
-            return;
-        }
-        let cell = self.sim.grid();
-        let (dx, dy) = (i64::from(target.0 - cell.0), i64::from(target.1 - cell.1));
-        let range = i64::from(ctx.config.interact_range);
-        if dx * dx + dy * dy <= range * range {
-            self.interact_walk = None;
-            self.sim.end_interaction_walk(ctx.terrain);
             self.state = MoveState::Idle;
             out.push(MoveEvent::ActionEvent);
             out.push(MoveEvent::Interact { entity, flags });
+        } else if !self.sim.has_reach() {
+            self.interact_walk = None;
         }
     }
 

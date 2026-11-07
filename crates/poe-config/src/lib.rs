@@ -986,8 +986,6 @@ pub struct MovementConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct TravelConfig {
-    /// A click on an object acts from this many cells; from farther the player walks there first.
-    pub interact_range: i32,
     /// A waypoint or checkpoint within this many cells counts as touched.
     pub touch_range: i32,
     /// The `WorldAreas.Act` values `unlock` means by all (acts 1-4, the interludes are 6).
@@ -1000,7 +998,7 @@ pub struct TravelConfig {
 
 impl Default for TravelConfig {
     fn default() -> Self {
-        Self { interact_range: 26, touch_range: 40, acts: vec![1, 2, 3, 4, 6], skip_objects: vec!["HealingWell".to_string()] }
+        Self { touch_range: 40, acts: vec![1, 2, 3, 4, 6], skip_objects: vec!["HealingWell".to_string()] }
     }
 }
 
@@ -1355,7 +1353,6 @@ mod tests {
     fn the_example_spawns_travel_objects() {
         let ex = Config::parse(include_str!("../../../config/server.example.toml")).unwrap();
         assert!(ex.removed_keys.is_empty(), "{:?}", ex.removed_keys);
-        assert_eq!(ex.travel.interact_range, TravelConfig::default().interact_range);
         assert_eq!(ex.travel.skip_objects, TravelConfig::default().skip_objects);
     }
 

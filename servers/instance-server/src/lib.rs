@@ -1410,7 +1410,6 @@ impl InstanceServer {
         if let Some(key) = poe_data::views::action_type_key(&self.data, "WashedUp")? {
             movement.wake_skill = player::BASIC_ACTION_SKILL | u32::from(key);
         }
-        movement.interact_range = self.config.travel.interact_range;
         let template_stat = |key: &str| {
             template.component("Stats").iter().find(|(k, _)| k == key).and_then(|(_, v)| v.parse::<f32>().ok())
         };

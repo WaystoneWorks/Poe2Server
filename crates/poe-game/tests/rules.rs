@@ -8,7 +8,7 @@ use std::sync::Arc;
 use poe_game::{
     grid::{GridSource, VecGrid},
     locomotion::ClientModel,
-    movement::{ActionKind, MoveEvent, MoveInput, MovementConfig, Open, SkillIds, UseSkill},
+    movement::{ActionKind, MoveEvent, MoveInput, MovementConfig, ObjectReach, Open, SkillIds, UseSkill},
     world::{EntityId, World, WorldConfig},
 };
 
@@ -194,8 +194,16 @@ const INTERACT: u32 = 0x2000_c266;
 fn interact_world(cell: (i32, i32)) -> (World, EntityId) {
     world_with(Arc::new(Open), cell, |c| {
         c.interact_skill = INTERACT;
-        c.interact_range = 26;
+        c.sprint_clearance_level = 4;
     })
+}
+
+/// `Waypoint.ot` (`object_size` 5, override 10) and `CheckpointBase.ot` (2, override 10).
+const WAYPOINT: ObjectReach = ObjectReach { reach: 18, targeting: 5 };
+const CHECKPOINT: ObjectReach = ObjectReach { reach: 15, targeting: 2 };
+
+fn with_object(w: &mut World, object: ObjectReach) {
+    w.set_objects([(500, object)].into_iter().collect());
 }
 
 fn click_object(w: &mut World, p: EntityId, at: (i32, i32)) {
@@ -205,38 +213,97 @@ fn click_object(w: &mut World, p: EntityId, at: (i32, i32)) {
     w.input(p, MoveInput::UseSkill(s));
 }
 
-/// An object in reach acts at once (official: clicks from up to 25.5 cells).
+/// The object's ring: `reach + player size - 1 + targeting`; 26 for a waypoint (official: clicks
+/// from up to 25.5 cells act at once), 20 for a checkpoint.
 #[test]
-fn a_click_on_an_object_in_reach_interacts_at_once() {
-    let (mut w, p) = interact_world((100, 100));
-    tick(&mut w);
-    click_object(&mut w, p, (110, 115));
-    let ev = tick(&mut w);
-    assert!(ev.iter().any(|e| matches!(e, MoveEvent::Interact { entity: 500, .. })), "{ev:?}");
-    assert_eq!(cell(&w, p), (100, 100));
+fn a_click_acts_at_once_inside_the_objects_ring() {
+    for (object, ring) in [(WAYPOINT, 26), (CHECKPOINT, 20)] {
+        let (mut w, p) = interact_world((100, 100));
+        with_object(&mut w, object);
+        tick(&mut w);
+        click_object(&mut w, p, (100 + ring, 100));
+        let ev = tick(&mut w);
+        assert!(ev.iter().any(|e| matches!(e, MoveEvent::Interact { entity: 500, .. })), "{ev:?}");
+        assert!(!ev.iter().any(|e| matches!(e, MoveEvent::ActionStart { kind: ActionKind::Move, .. })), "{ev:?}");
+        assert_eq!(cell(&w, p), (100, 100));
+    }
 }
 
-/// A far object: walk under the click until about 26 cells away, then act (official: a click from
-/// 41.4 cells acted at 26.0).
+/// Official: a click from 41.4 cells acted at 26.0 of the waypoint; `ActionEvent` on arrival, and
+/// the player stops there.
 #[test]
-fn a_far_object_click_walks_into_reach_then_interacts() {
+fn a_far_click_walks_to_the_objects_ring_and_stops() {
+    for (object, ring) in [(WAYPOINT, 26), (CHECKPOINT, 20)] {
+        let (mut w, p) = interact_world((100, 100));
+        with_object(&mut w, object);
+        tick(&mut w);
+        click_object(&mut w, p, (160, 100));
+        let first = tick(&mut w);
+        assert!(first.iter().any(|e| matches!(e, MoveEvent::ActionStart { kind: ActionKind::Move, .. })), "{first:?}");
+        assert!(!first.iter().any(|e| matches!(e, MoveEvent::Interact { .. })), "{first:?}");
+        let done = (0..200).find(|_| tick(&mut w).iter().any(|e| matches!(e, MoveEvent::Interact { entity: 500, .. })));
+        assert!(done.is_some(), "never interacted, at {:?}", cell(&w, p));
+        for _ in 0..30 {
+            tick(&mut w);
+        }
+        let (x, y) = cell(&w, p);
+        assert!((160 - ring..=162 - ring).contains(&x) && y == 100, "stopped at ({x},{y}) for ring {ring}");
+    }
+}
+
+/// A click in reach during a walk stops the line: `Pathfinding_FollowPath` arrives at once.
+#[test]
+fn a_click_in_reach_stops_a_walk() {
     let (mut w, p) = interact_world((100, 100));
+    with_object(&mut w, WAYPOINT);
+    tick(&mut w);
+    w.input(p, MoveInput::UseSkill(skill(MOVE, 40, 0)));
+    for _ in 0..4 {
+        tick(&mut w);
+    }
+    let at = cell(&w, p);
+    click_object(&mut w, p, (at.0, at.1 + 10));
+    assert!(tick(&mut w).iter().any(|e| matches!(e, MoveEvent::Interact { entity: 500, .. })));
+    for _ in 0..30 {
+        tick(&mut w);
+    }
+    let end = cell(&w, p);
+    assert!(end.0 - at.0 <= 3 && end.1 == at.1, "walked on from {at:?} to {end:?}");
+}
+
+/// A new click forgets the walk to the object: nothing acts when it passes the ring.
+#[test]
+fn a_new_click_cancels_the_walk_to_an_object() {
+    let (mut w, p) = interact_world((100, 100));
+    with_object(&mut w, CHECKPOINT);
     tick(&mut w);
     click_object(&mut w, p, (160, 100));
-    let first = tick(&mut w);
-    assert!(first.iter().any(|e| matches!(e, MoveEvent::ActionStart { kind: ActionKind::Move, .. })), "{first:?}");
-    assert!(!first.iter().any(|e| matches!(e, MoveEvent::Interact { .. })), "{first:?}");
-    let mut done = None;
-    for frame in 0..200 {
-        if tick(&mut w).iter().any(|e| matches!(e, MoveEvent::Interact { entity: 500, .. })) {
-            done = Some(frame);
-            break;
-        }
+    tick(&mut w);
+    tick(&mut w);
+    w.input(p, MoveInput::UseSkill(skill(MOVE, 58, 0)));
+    for _ in 0..60 {
+        assert!(!tick(&mut w).iter().any(|e| matches!(e, MoveEvent::Interact { .. })));
     }
-    assert!(done.is_some(), "never interacted, at {:?}", cell(&w, p));
-    let (x, y) = cell(&w, p);
-    let d = (((160 - x).pow(2) + (100 - y).pow(2)) as f64).sqrt();
-    assert!((20.0..=26.5).contains(&d), "acted {d:.1} cells away at ({x},{y})");
+}
+
+/// The near click's action slows no walk after it: `Interaction` is no attack.
+#[test]
+fn a_click_in_reach_does_not_slow_the_next_walk() {
+    let walked = |click: bool| {
+        let (mut w, p) = interact_world((100, 100));
+        with_object(&mut w, WAYPOINT);
+        tick(&mut w);
+        if click {
+            click_object(&mut w, p, (110, 100));
+            tick(&mut w);
+        }
+        w.input(p, MoveInput::UseSkill(skill(MOVE, 50, 0)));
+        for _ in 0..20 {
+            tick(&mut w);
+        }
+        cell(&w, p).0
+    };
+    assert_eq!(walked(true), walked(false));
 }
 
 /// Without `interact_skill` set the click is an ordinary skill: no interaction.

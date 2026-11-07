@@ -86,6 +86,32 @@ pub struct WorldObject {
     pub angle: f32,
     pub target: Target,
     pub rule: Rule,
+    /// How near the player must come to click it, from the sent type.
+    pub reach: Reach,
+}
+
+/// `0x14198db20` for a mouse or WASD client, and `Positioned +0x1fa`
+/// (`docs/re/world-travel.md`, "Clicking an object").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Reach {
+    pub reach: i32,
+    pub targeting: i32,
+}
+
+fn reach_of(gd: &GameData, kind: &str) -> Reach {
+    let Ok(t) = ObjectTemplate::load(gd, kind) else {
+        return Reach::default();
+    };
+    let int = |component: &str, key: &str| t.component(component).iter().rev().find(|(k, _)| k == key).and_then(|(_, v)| v.parse::<i32>().ok());
+    let size = int("Positioned", "object_size").unwrap_or(0);
+    let secondary = int("Positioned", "secondary_object_size").unwrap_or(0);
+    let base = size + 13;
+    let reach = match int("InteractionAction", "interaction_distance_override").filter(|v| *v != 0) {
+        Some(v) if int("InteractionAction", "interaction_distance_override_ignores_minimum").unwrap_or(0) != 0 => v,
+        Some(v) => v.max(base),
+        None => base,
+    };
+    Reach { reach, targeting: int("Positioned", "object_targeting_size").unwrap_or(size.max(secondary)) }
 }
 
 /// The placed object's type, by its components (`.ot`): a gate has `AreaTransition`, a waypoint
@@ -265,7 +291,8 @@ pub fn travel_objects(gd: &GameData, area_id: &str, g: &Generated) -> Result<Vec
             (Target::None, Rule::None)
         };
         let kind = if captured.is_empty() { d.kind.clone() } else { sent_kind(gd, &d.kind, captured) };
-        out.push(WorldObject { class, kind, ao: d.path.clone(), x: d.x, y: d.y, angle: d.angle, target, rule });
+        let reach = reach_of(gd, &kind);
+        out.push(WorldObject { class, kind, ao: d.path.clone(), x: d.x, y: d.y, angle: d.angle, target, rule, reach });
     }
     Ok(out)
 }

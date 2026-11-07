@@ -518,7 +518,7 @@ mod tests {
         PreparedObject {
             type_key: 0,
             blob: Vec::new(),
-            object: WorldObject { class, kind: String::new(), ao: String::new(), x: cell.0, y: cell.1, angle: 0.0, target, rule: poe_world::objects::Rule::None },
+            object: WorldObject { class, kind: String::new(), ao: String::new(), x: cell.0, y: cell.1, angle: 0.0, target, rule: poe_world::objects::Rule::None, reach: Default::default() },
             arrival: cell,
         }
     }
@@ -540,7 +540,7 @@ mod tests {
     fn the_warp_list_starts_with_an_unlocked_waypoint_and_keeps_only_unlocked_checkpoints() {
         let spawned = |entity, class, cell: (i32, i32)| SpawnedObject {
             entity,
-            object: WorldObject { class, kind: String::new(), ao: String::new(), x: cell.0, y: cell.1, angle: 0.0, target: Target::None, rule: poe_world::objects::Rule::None },
+            object: WorldObject { class, kind: String::new(), ao: String::new(), x: cell.0, y: cell.1, angle: 0.0, target: Target::None, rule: poe_world::objects::Rule::None, reach: Default::default() },
             arrival: (cell.0 + 1, cell.1),
         };
         let objects = vec![spawned(1, Class::Checkpoint { boss: true }, (10, 10)), spawned(2, Class::Checkpoint { boss: false }, (20, 20)), spawned(3, Class::Waypoint, (30, 30))];

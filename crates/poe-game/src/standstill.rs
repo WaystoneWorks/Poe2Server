@@ -92,6 +92,7 @@ mod tests {
             config: &config,
             next_action: &mut action,
             next_buff: &mut buff,
+            objects: &Default::default(),
         };
         let mut m = StandStillModel.spawn((10, 10), &config);
         m.input(MoveInput::Direction { x: 180, y: 0 });

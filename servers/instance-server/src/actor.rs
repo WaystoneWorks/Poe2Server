@@ -598,6 +598,7 @@ impl Actor {
                 self.put(&mut messages, &crate::travel::add_objects(entity, o.type_key, o.blob.clone(), AFTER_ALL));
                 spawned.push(crate::travel::SpawnedObject { entity, object: o.object.clone(), arrival: o.arrival });
             }
+            self.world.set_objects(spawned.iter().map(|o: &crate::travel::SpawnedObject| (o.entity, poe_game::movement::ObjectReach { reach: o.object.reach.reach, targeting: o.object.reach.targeting })).collect());
             self.objects = Arc::new(spawned);
             self.object_messages = messages;
             info!(instance = self.init.instance, objects = self.objects.len(), "spawned the travel objects");

@@ -90,6 +90,7 @@ pub struct World {
     next_action: u16,
     entities: BTreeMap<EntityId, Entity>,
     paused: bool,
+    objects: crate::movement::ObjectReaches,
 }
 
 impl World {
@@ -107,7 +108,13 @@ impl World {
             frame: 0,
             entities: BTreeMap::new(),
             paused: false,
+            objects: Default::default(),
         }
+    }
+
+    /// The clickable objects of this world (`ActorSpawn`: sent once per instance).
+    pub fn set_objects(&mut self, objects: crate::movement::ObjectReaches) {
+        self.objects = objects;
     }
 
     /// Frames ticked so far (the number of the last batch).
@@ -257,6 +264,7 @@ impl World {
                 config: e.config.as_ref().unwrap_or(&self.config.movement),
                 next_action: &mut self.next_action,
                 next_buff: &mut e.next_buff,
+                objects: &self.objects,
             };
             let events = if paused {
                 e.movement.tick_paused(&mut ctx)

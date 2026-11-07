@@ -192,6 +192,8 @@ pub enum ActionKind {
     Roll,
     /// Any other skill (an attack).
     Other,
+    /// `Interaction`: holds slot 0 like `Other`, but slows no walk (no attack animation).
+    Interaction,
 }
 
 /// What the server tells the client about this entity's movement, in the order it is sent.
@@ -338,9 +340,6 @@ pub struct MovementConfig {
     pub washed_up: bool,
     /// How long the client's `WashedUp` action plays, in frames.
     pub wake_frames: u32,
-    /// From this distance (cells) an interaction acts; from farther the player walks there first
-    /// (the capture's click from 41 cells ended 26 cells from the waypoint).
-    pub interact_range: i32,
     /// `BuffDefinitions` rows of the three buffs a sprint adds (`[movement] sprint_buff_rows`).
     pub sprint_buff_rows: [u16; 3],
     /// The roll and sprint-end curves (required at player setup; `None` in tests).
@@ -368,7 +367,6 @@ impl MovementConfig {
             wake_skill: u32::MAX,
             washed_up: false,
             wake_frames: 187,
-            interact_range: 26,
             sprint_buff_rows,
             curves: None,
             offset_scale: 1.0,
@@ -422,7 +420,22 @@ pub struct StepCtx<'a> {
     pub next_action: &'a mut u16,
     /// The entity's next free buff index.
     pub next_buff: &'a mut u16,
+    /// The clickable objects of the world, by entity.
+    pub objects: &'a ObjectReaches,
 }
+
+/// How near an entity must come to act on an object: the object's part of the `Interaction`
+/// action's path request (`docs/re/world-travel.md`, "Clicking an object").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObjectReach {
+    /// `0x14198db20`: from the object's `Positioned` and `InteractionAction`.
+    pub reach: i32,
+    /// `Positioned +0x1fa`: `object_targeting_size`, else the larger of the two object sizes.
+    pub targeting: i32,
+}
+
+/// The objects of a world, by entity.
+pub type ObjectReaches = std::collections::HashMap<u32, ObjectReach>;
 
 /// One entity's movement.
 pub trait Mover: Send + std::fmt::Debug {

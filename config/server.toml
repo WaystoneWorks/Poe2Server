@@ -67,8 +67,6 @@ first_entity_id = 12000
 
 [travel]
 # Reaches of gates, waypoints and checkpoints, in cells (docs/re/world-travel.md in the hub).
-# A click acts from interact_range; from farther the player walks there first (official: 26).
-interact_range = 26
 # A waypoint or checkpoint this close counts as touched (official: inside about 40).
 touch_range = 40
 # The WorldAreas.Act values `unlock <character> all` covers: acts 1-4 and the interludes (6).

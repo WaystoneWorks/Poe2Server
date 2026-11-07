@@ -738,7 +738,7 @@ impl Locomotion {
         match input {
             MoveInput::Direction { x, y } => self.on_direction((x, y), false, ctx),
             MoveInput::CursorDirection { x, y } => self.on_direction((x, y), true, ctx),
-            MoveInput::UseSkill(req) => self.on_use_skill(req, ctx, out),
+            MoveInput::UseSkill(req) => self.on_use_skill(req, ctx, out, end_sprint),
             MoveInput::UpdateSkillTarget { x, y, skill } => {
                 let (cx, cy) = self.sim.grid();
                 let abs = (cx + x, cy + y);
@@ -1010,7 +1010,7 @@ impl Locomotion {
         }
     }
 
-    fn on_use_skill(&mut self, req: UseSkill, ctx: &mut StepCtx, out: &mut Out) {
+    fn on_use_skill(&mut self, req: UseSkill, ctx: &mut StepCtx, out: &mut Out, end_sprint: &mut bool) {
         let target = self.target_of(&req);
         // Whatever the first skill use asks for (the client's first click targets (0, 0)), the
         // character only wakes, on its own cell (2026-10-14, 4 of 4). The client refuses any
@@ -1041,6 +1041,17 @@ impl Locomotion {
         if req.skill == ctx.config.interact_skill
             && let Some(entity) = req.entity
         {
+            // The sprint key went up earlier in this batch (the client's frame before the click,
+            // both in one server tick: user 2026-11-07 14:59:46.717 and .745): the client was past
+            // its sprint when it clicked, so the sprint ends first and the click is an
+            // `Interaction` like any other. Left for the Actor key, the click met a running sprint
+            // and went out as an attack: the model walked on while the client stood, and the next
+            // `0x64` moved it 2 cells.
+            if std::mem::take(end_sprint) {
+                let no_ack = !out.items.iter().any(|k| matches!(k.event, MoveEvent::MoveAck { .. }));
+                self.end_sprint(no_ack, ctx, out);
+                out.key = Drain::Start;
+            }
             self.start_interaction(req, entity, target, ctx, out);
             return;
         }

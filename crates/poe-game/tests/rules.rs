@@ -348,6 +348,44 @@ fn a_click_in_reach_ends_the_coast() {
     assert_eq!(cell(&w, p), stop);
 }
 
+/// The user's snap of 2026-11-07 (14:59:46.717 and .745): the sprint key went up and the object
+/// was clicked in the next client frame, both in one server tick, with a key still held. The click
+/// is an `Interaction` in reach (the client was past its sprint), not an attack that ends the
+/// sprint: the server's model then runs the same action as the client. (The `0x64` of that tick is
+/// 2 cells on: the player's line runs one more Positioned tick after the stop, `0x141df1e90`.)
+#[test]
+fn a_click_in_the_batch_of_the_sprint_release_is_an_interaction() {
+    let rows: Vec<String> = (0..400).map(|_| ".".repeat(300)).collect();
+    let rows: Vec<&str> = rows.iter().map(|r| r.as_str()).collect();
+    let (mut w, p) = world_with(Arc::new(VecGrid::from_rows(&rows)), (150, 60), |c| {
+        c.interact_skill = INTERACT;
+        c.sprint_clearance_level = 4;
+    });
+    with_object(&mut w, CHECKPOINT);
+    w.input(p, MoveInput::Direction { x: 0, y: 180 });
+    tick(&mut w);
+    w.input(p, MoveInput::SprintInput { held: true });
+    w.input(p, MoveInput::UseSkill(skill(ROLL, 0, 20)));
+    for _ in 0..60 {
+        tick(&mut w);
+    }
+    let at = cell(&w, p);
+    w.input(p, MoveInput::SkillInputEnd);
+    w.input(p, MoveInput::SprintInput { held: false });
+    w.input(p, MoveInput::Direction { x: 127, y: 127 });
+    click_object(&mut w, p, (at.0, at.1 + 12));
+    w.input(p, MoveInput::SkillInputEnd);
+    let ev = tick(&mut w);
+    let start = ev.iter().find_map(|e| match e {
+        MoveEvent::ActionStart { kind, cell, skill, .. } if *skill == INTERACT => Some((*kind, *cell)),
+        _ => None,
+    });
+    let Some((kind, start)) = start else { panic!("no StartAction: {ev:?}") };
+    assert_eq!(kind, ActionKind::Interaction, "{ev:?}");
+    assert_eq!(start, at, "{ev:?}");
+    assert!(ev.iter().any(|e| matches!(e, MoveEvent::Interact { entity: 500, .. })), "{ev:?}");
+}
+
 /// The user's snaps of 2026-11-06: `SprintEnd` does not drop an `Interaction` (vf70 = 0, a plain
 /// Move's is 1), so a far click during the coast walks to the ring and acts on arrival.
 #[test]

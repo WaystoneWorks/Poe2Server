@@ -486,7 +486,7 @@ pub(crate) fn league_entry(l: &League, leagues: &[League], flag_row: &impl Fn(&s
         id: l.id.clone(),
         name: l.display_name.clone(),
         // SSF variants name their non-SSF sibling, hardcore ones their softcore sibling
-        // (`0x140e855a0` pairs the creation checkboxes through them).
+        // (`0x140e85960` pairs the creation checkboxes through them).
         text_60: if l.ssf { sibling(l.hardcore, false) } else { String::new() },
         text_80: if l.hardcore { sibling(false, l.ssf) } else { String::new() },
         text_a0: String::new(),
@@ -533,12 +533,12 @@ pub(crate) async fn send_character_list(
 /// Maps a stored character onto the list entry. Field placement is provisional
 /// (docs/protocol/login.md): +0x4e is the class (used for the 3D preview),
 /// +0x4c is assumed to be the level, +0x4a is the current area and +0x48 a fallback area
-/// (both WorldAreas.HASH16; select screen code at `0x140f0b6cf`).
+/// (both WorldAreas.HASH16; select screen code at `0x140f0ba8f`).
 fn character_entry(server: &LoginServer, c: &Character) -> anyhow::Result<CharacterEntry> {
     let area_hash = WorldArea::find(&server.data, &c.area)?
         .map(|a| a.hash16)
         .unwrap_or_default();
-    // +0x4d: LeagueFlag row + 1 (banner; select screen `0x1406bc927` -> `0x140c83e20`).
+    // +0x4d: LeagueFlag row + 1 (banner; select screen `0x1406bc927` -> `0x140c84280`).
     let flag = server.leagues.league(&c.league)?.and_then(|l| l.flag);
     let league_flag = match flag {
         Some(id) => league_flag_index(&server.data, &id)?.map_or(0, |i| (i + 1) as u8),
@@ -808,7 +808,7 @@ async fn send_instance_details(server: &LoginServer, conn: &mut Connection, tick
     };
     let mut out = server.protocol.login.encode(&details)?;
     // Official servers follow InstanceDetails with 0x0017 0x0014, which makes the client shut
-    // its login connection down (handler `0x1420f6190` -> `0x1420f6220`: `shutdown()`). We keep
+    // its login connection down (handler `0x1420f6510` -> `0x1420f65a0`: `shutdown()`). We keep
     // the connection: in-game transfers arrive on it (`[login] close_after_handoff`).
     if server.config.network.login.close_after_handoff {
         out.extend(

@@ -96,7 +96,7 @@ pub fn prepare(objects: Vec<WorldObject>, grid: &spawn::Grid, town: bool, here: 
                 (Class::Gate, Target::Area { hash16, index, .. }) => ObjectTail::Gate { area_hash: *hash16, index: *index, town },
                 // A teleport within the instance names its own area: with no area row behind the
                 // destination (HASH16 0) the client locks the gate and a click walks
-                // (`0x1416ebf90`); the server teleports on the click.
+                // (`0x1416ec3a0`); the server teleports on the click.
                 (Class::Gate, _) => ObjectTail::Gate { area_hash: here, index: 0, town },
                 (Class::Waypoint, _) => ObjectTail::Waypoint,
                 (Class::Checkpoint { .. }, _) => ObjectTail::Checkpoint,
@@ -131,7 +131,7 @@ pub fn arrival_cell(objects: &[PreparedObject], arrive: Arrive) -> Option<(i32, 
 }
 
 /// `WorldAreas.Id` per waypoint mask bit: rows in table order with `HasWaypoint` and column 45 in
-/// {1, 2, 31} (`0x141f76f80`).
+/// {1, 2, 31} (`0x141f77300`).
 pub fn waypoint_bits(data: &GameData) -> anyhow::Result<Vec<String>> {
     let mut out = Vec::new();
     for row in data.table("WorldAreas")?.rows() {
@@ -153,7 +153,7 @@ pub fn waypoint_mask(data: &GameData, areas: &BTreeSet<String>) -> anyhow::Resul
     Ok(mask)
 }
 
-/// The quest flags that make unlocked areas show on the World panel (`0x140b78790`): each area's
+/// The quest flags that make unlocked areas show on the World panel (`0x140b78a10`): each area's
 /// `FlagOnEntered` and `RequiredFlags`, its map pins' `QuestFlags1` and `QuestFlags2`.
 pub fn quest_flags(data: &GameData, areas: &BTreeSet<String>) -> anyhow::Result<Vec<(u8, u64)>> {
     let table = data.table("WorldAreas")?;

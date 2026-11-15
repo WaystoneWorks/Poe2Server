@@ -115,11 +115,11 @@ fn click_to_move_walks_around_a_wall_and_stops() {
     assert_eq!(cell(&w, p), (15, 0), "it stops");
 }
 
-/// The Move action starts only 9 cells or more from its target (`+0x1f0`, `0x141990470`): the
+/// The Move action starts only 9 cells or more from its target (`+0x1f0`, `0x141990880`): the
 /// client stands still for a closer click, and so does the server.
 #[test]
 fn a_click_closer_than_three_cells_does_not_walk() {
-    // vf `+0x1f0` `0x141990470` compares the squared length (`0x14016cb30`) with 9.
+    // vf `+0x1f0` `0x141990880` compares the squared length (`0x14016cb30`) with 9.
     for (d, walks) in [(2, false), (3, true)] {
         let (mut w, p) = world(Arc::new(Open), (50, 50));
         w.input(p, MoveInput::UseSkill(skill(MOVE, d, 0)));
@@ -352,7 +352,7 @@ fn a_click_in_reach_ends_the_coast() {
 /// was clicked in the next client frame, both in one server tick, with a key still held. The click
 /// is an `Interaction` in reach (the client was past its sprint), not an attack that ends the
 /// sprint: the server's model then runs the same action as the client. (The `0x64` of that tick is
-/// 2 cells on: the player's line runs one more Positioned tick after the stop, `0x141df1e90`.)
+/// 2 cells on: the player's line runs one more Positioned tick after the stop, `0x141df2210`.)
 #[test]
 fn a_click_in_the_batch_of_the_sprint_release_is_an_interaction() {
     let rows: Vec<String> = (0..400).map(|_| ".".repeat(300)).collect();
@@ -437,9 +437,9 @@ fn click_in_reach_with_a_key_held(w: &mut World, p: EntityId) -> (i32, i32) {
     cell(w, p)
 }
 
-/// The `Interaction` holds slot 0 for its 0.1 s (`0x14198e070`); the held key, pointing the way it
-/// pointed at the start, does not cancel it (`Actor_StartWasdWalk` `0x141e5da30`). Its end
-/// (`0x141e53140`) walks on at once. Hook, scale 0.1: slot 0 from 12188 to 13279 ms, then a Move.
+/// The `Interaction` holds slot 0 for its 0.1 s (`0x14198e480`); the held key, pointing the way it
+/// pointed at the start, does not cancel it (`Actor_StartWasdWalk` `0x141e5ddb0`). Its end
+/// (`0x141e534c0`) walks on at once. Hook, scale 0.1: slot 0 from 12188 to 13279 ms, then a Move.
 #[test]
 fn a_key_held_through_a_click_in_reach_waits_for_the_interaction() {
     let (mut w, p) = interact_world((100, 100));
@@ -468,7 +468,7 @@ fn a_reversed_key_cancels_the_interaction() {
 }
 
 /// A blocking object (`CheckpointBase.ot`: `blocking`, size 2) is a ring of walls in the client's
-/// path search (`0x141ee0360`, radius size level 4 + size 2): a key walk at it bends round it, as
+/// path search (`0x141ee06e0`, radius size level 4 + size 2): a key walk at it bends round it, as
 /// the client's did at the `G1_2` checkpoint (about 6 cells from its centre).
 #[test]
 fn a_key_walk_bends_round_a_blocking_object() {
@@ -643,7 +643,7 @@ fn a_backward_roll_out_of_the_sprint_end_stays_backward_after_the_event() {
     assert!(now.0 < before.0 - 0.1, "reversal from {before:?} to {now:?}: must turn through the west");
 }
 
-/// `0x1419894c0` (user test 4 f2319): a roll queued into a running roll does not face its target
+/// `0x1419898d0` (user test 4 f2319): a roll queued into a running roll does not face its target
 /// first, so keys along the running roll with the cursor behind give a forward roll, not a backward one.
 #[test]
 fn a_roll_queued_into_a_roll_keeps_the_facing() {
@@ -679,7 +679,7 @@ fn a_roll_queued_into_a_roll_keeps_the_facing() {
     assert!((steps[first + 1] - 3.3921).abs() < 0.005, "steps {:?}: not the forward curve", &steps[first..first + 3]);
 }
 
-/// `0x14198597b` (user test 4 f4016): the roll's target window opens with the axes of before a `0x64`
+/// `0x141985d8b` (user test 4 f4016): the roll's target window opens with the axes of before a `0x64`
 /// later in the batch, so a roll out of a cursor walk is locked against the cursor until the sprint switch.
 #[test]
 fn a_roll_started_with_the_axes_still_set_ignores_the_cursor() {
@@ -704,9 +704,9 @@ fn a_roll_started_with_the_axes_still_set_ignores_the_cursor() {
     assert!(now.0 > start.0 + 5.0, "from {start:?} to {now:?}: the cursor must not turn the roll");
 }
 
-/// `0x1dc` SetAimTarget (`0x141e5e830`): the echo of an aim turns the player towards the cell, a WASD
+/// `0x1dc` SetAimTarget (`0x141e5ebb0`): the echo of an aim turns the player towards the cell, a WASD
 /// walk keeps that facing (no `Positioned_SetFacing` from its waypoints, hook `FACE` rows,
-/// crazy-keys 2026-11-04), and a roll's start does not turn (`0x1419894c0` is 2*pi for a roll), so a
+/// crazy-keys 2026-11-04), and a roll's start does not turn (`0x1419898d0` is 2*pi for a roll), so a
 /// roll along the keys away from the aim is backward.
 #[test]
 fn the_aim_echo_sets_the_facing_and_a_key_walk_keeps_it() {

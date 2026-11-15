@@ -371,9 +371,9 @@ mod tests {
             }
         }
         let latest = VersionFile::latest(root).unwrap();
-        assert_eq!(latest.version, "0.5.5f");
+        assert_eq!(latest.version, "0.5.5g");
         assert_eq!(latest.app_id, 2694490);
-        assert_eq!(latest.exe.pe_timestamp, 0x6aed487d);
+        assert_eq!(latest.exe.pe_timestamp, 0x6af66fcd);
     }
 
     #[test]
@@ -381,7 +381,7 @@ mod tests {
         let e = VersionFile::load(Path::new(REPO), "9.9.9z")
             .unwrap_err()
             .to_string();
-        assert!(e.contains("9.9.9z") && e.contains("0.5.5f"), "{e}");
+        assert!(e.contains("9.9.9z") && e.contains("0.5.5g"), "{e}");
         assert!(VersionFile::load(Path::new(REPO), "../Cargo").is_err());
     }
 

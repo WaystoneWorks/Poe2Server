@@ -1,4 +1,4 @@
-{"tile":3935790039,"source":"client PATHPLAN logs (path_log hook, Positioned +0x1e0..+0x290), private game-test cliffs run 2026-11-02 (G1_1 seed 1, generated grid); moving = the line point FUN_141ec83d0 when FUN_141b87580 holds","plans":[{"start":[750,828],"goal":[761,839],"min":0,"max":0,"radius":-1,"level":0,"moving":null,"path":[[761,839],[750,828]],"reached":1},
+{"tile":3935790039,"source":"client PATHPLAN logs (path_log hook, Positioned +0x1e0..+0x290), private game-test cliffs run 2026-11-02 (G1_1 seed 1, generated grid); moving = the line point FUN_141ec8750 when FUN_141b87990 holds","plans":[{"start":[750,828],"goal":[761,839],"min":0,"max":0,"radius":-1,"level":0,"moving":null,"path":[[761,839],[750,828]],"reached":1},
 {"start":[751,829],"goal":[762,840],"min":0,"max":0,"radius":10002943,"level":0,"moving":[751.7268,829.7268],"path":[[762,840],[751,829]],"reached":1},
 {"start":[753,831],"goal":[769,831],"min":0,"max":0,"radius":-1,"level":0,"moving":null,"path":[[766,828],[753,831]],"reached":0},
 {"start":[755,831],"goal":[771,831],"min":0,"max":0,"radius":8091903,"level":0,"moving":[755.3795,830.4509],"path":[[766,831],[755,831]],"reached":0},

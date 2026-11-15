@@ -22,7 +22,7 @@ fn grid(tile: u64) -> Option<Grid> {
         .flat_map(|r| {
             ["terrain/grids-keep", "terrain/grids"].map(|d| {
                 here.join(r)
-                    .join("dumps/0.5.5f")
+                    .join("dumps/0.5.5g")
                     .join(d)
                     .join(&name)
             })

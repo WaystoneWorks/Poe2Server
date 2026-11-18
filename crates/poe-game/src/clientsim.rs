@@ -1,7 +1,7 @@
 //! Exact port of the client's movement code for one entity: Positioned (line, step check, facing),
 //! Pathfinding (follow path, waypoints, sprint turn, arrival) and the Actor's movement part (Move
 //! slot, WASD axes, plan timer, roll, sprint, coast). The spec is hub `docs/re/movement-*.md`;
-//! function comments give the client address (0.5.5g). All math is `f32`, like the client's.
+//! function comments give the client address (0.5.5h). All math is `f32`, like the client's.
 //!
 //! The client's delegates are direct calls here. A frame runs in the client's order: each component
 //! ticks in list order (0 Positioned, 2 Pathfinding, 5 Animated, 9 Actor), and the messages keyed to
@@ -28,16 +28,16 @@ const TO_CELL: f32 = 0.092;
 const PI: f32 = std::f32::consts::PI;
 const TAU: f32 = 6.283_185_5;
 const HALF_PI: f32 = 1.570_796_4;
-/// `DodgeRoll_StartSprint` `0x141ab66d0`: the optional line length of a roll that sprints.
+/// `DodgeRoll_StartSprint` `0x141ab6920`: the optional line length of a roll that sprints.
 const ROLL_SPRINT_LINE: i32 = 300;
 /// Without game data (tests without curves): the game's `GP_sprinting_end_base_01` move event end
 /// and `sprinting_end_*` speed. With curves the values come from the game data
 /// ([`MotionCurves`](crate::motion_data::MotionCurves)).
 const SPRINT_END_MOVE_TIME: f32 = 0.75;
 const SPRINT_END_BASE_SPEED: f32 = 600.0;
-/// `0x141e508c0`: the plan timer of an entity with a Player component.
+/// `0x141e50b10`: the plan timer of an entity with a Player component.
 const PLAN_TIMER: f32 = 0.05;
-/// `Interaction` start `0x14198e480`: an object with no channel time (a waypoint, a checkpoint),
+/// `Interaction` start `0x14198e6d0`: an object with no channel time (a waypoint, a checkpoint),
 /// outside Player `+999` modes 2 and 3, acts after `0x3dcccccd` seconds.
 const INTERACTION_TIME: f32 = 0.1;
 /// Recursion the client's own delegates cannot reach on real paths (waypoints on the start cell).
@@ -69,7 +69,7 @@ fn angle(dx: f32, dy: f32) -> f32 {
     wrap(dy.atan2(dx) + HALF_PI)
 }
 
-/// `0x1421a6900`.
+/// `0x1421a6b50`.
 fn rot(x: f32, y: f32, a: f32) -> (f32, f32) {
     let (s, c) = a.sin_cos();
     (x * c - y * s, x * s + y * c)
@@ -90,7 +90,7 @@ struct CurveRun {
 }
 
 impl CurveRun {
-    /// `0x141eda8f0`.
+    /// `0x141edab40`.
     fn load(&mut self, curve: Curve, s: f32, e: f32) {
         self.curve = Some(curve);
         self.set_time(s, e);
@@ -99,7 +99,7 @@ impl CurveRun {
         self.c_end = self.value(e);
     }
 
-    /// `0x141edaac0`.
+    /// `0x141edad10`.
     fn set_time(&mut self, t: f32, e: f32) {
         self.t = t;
         self.left = e - t;
@@ -110,7 +110,7 @@ impl CurveRun {
         self.curve.as_ref().map_or(0.0, |c| c.value(t))
     }
 
-    /// `0x141edab30`.
+    /// `0x141edad80`.
     fn advance(&mut self, dt: f32, r: f32) -> f32 {
         let old = self.value(self.t);
         self.t += self.left * r * dt;
@@ -154,7 +154,7 @@ impl Line {
         if self.swap { (v.1, v.0) } else { v }
     }
 
-    /// `Line_Point` `0x141ed6780`, unswapped.
+    /// `Line_Point` `0x141ed69d0`, unswapped.
     fn point(&self) -> (f32, f32) {
         let f = if self.distance_mode {
             self.distance / self.len
@@ -167,7 +167,7 @@ impl Line {
         if self.swap { (minor, major) } else { (major, minor) }
     }
 
-    /// `Line_Setup` `0x141ed6a50`, 2D.
+    /// `Line_Setup` `0x141ed6ca0`, 2D.
     fn setup(&mut self, s: Cell, e: Cell, speed: f32) {
         let sf = (s.0 as f32, s.1 as f32);
         let mut running = self.len != 0.0 && self.unswap(self.cur) == s;
@@ -227,7 +227,7 @@ impl Line {
             (p.1 - self.slope * k0) + if self.slope > 0.0 { 0.49 } else { 0.5 };
     }
 
-    /// `Line_Advance` `0x141ed6690`.
+    /// `Line_Advance` `0x141ed68e0`.
     fn advance(&mut self, dt: f32) {
         let mut x = dt + self.pending;
         self.pending = x;
@@ -247,7 +247,7 @@ impl Line {
         self.distance += x;
     }
 
-    /// `Line_Step` `0x141ed7060`: the cell and whether the line ended.
+    /// `Line_Step` `0x141ed72b0`: the cell and whether the line ended.
     fn step(&mut self) -> (Cell, bool) {
         if !self.flag {
             if self.thr <= self.acc {
@@ -274,7 +274,7 @@ impl Line {
         (cell, done)
     }
 
-    /// `Line_End` `0x141ed72b0`.
+    /// `Line_End` `0x141ed7500`.
     fn finish(&mut self) {
         if self.thr != 0.0 {
             self.pending = if self.distance_mode {
@@ -301,7 +301,7 @@ struct MoveAction {
 }
 
 /// The path request's radii of an action with a target entity (`Action_GetPathRequest`
-/// `0x141986320`): `req[1]` and `req[2]`. `req[0] = 0`, `req[3] = 1`, `req[4] = 2` (no
+/// `0x141986570`): `req[1]` and `req[2]`. `req[0] = 0`, `req[3] = 1`, `req[4] = 2` (no
 /// `requires_line_of_sight`).
 #[derive(Debug, Clone, Copy)]
 struct PathReach {
@@ -310,12 +310,12 @@ struct PathReach {
 }
 
 impl PathReach {
-    /// `req[1] = max(vf228, 1) - 1`, `vf228 = 0x14198df30 + max(P+0x1f8, P+0x1f9)`.
+    /// `req[1] = max(vf228, 1) - 1`, `vf228 = 0x14198e180 + max(P+0x1f8, P+0x1f9)`.
     fn new(object: crate::movement::ObjectReach, clearance: i32) -> Self {
         Self { r1: (object.reach + clearance).max(1) - 1, targeting: object.targeting }
     }
 
-    /// `0x141dd9090`: the first ring; the one cell beyond it counts when the step in is blocked.
+    /// `0x141dd92e0`: the first ring; the one cell beyond it counts when the step in is blocked.
     fn arrived(self, grid: Cell, goal: Cell, t: &dyn Walkable) -> bool {
         let d = (grid.0 - goal.0, grid.1 - goal.1);
         let d2 = d.0 * d.0 + d.1 * d.1;
@@ -335,9 +335,9 @@ impl PathReach {
 /// An `Interaction` in slot 0 (`A+0x238`): it reached its object and waits its timer out.
 #[derive(Debug, Clone, Copy)]
 struct SlotInteraction {
-    /// `M+0x358`, counted down in its update (`0x14198f340`).
+    /// `M+0x358`, counted down in its update (`0x14198f590`).
     timer: f32,
-    /// `A+0x40c`, `A+0x410`: the axes at the action's start (`0x141e5cf30`).
+    /// `A+0x40c`, `A+0x410`: the axes at the action's start (`0x141e5d180`).
     start_axes: (i32, i32),
 }
 
@@ -359,8 +359,8 @@ struct Roll {
     /// `+0x3e`.
     waiting: bool,
     /// `part+0x3d`: the per-frame step runs. A blocked step clears it (Positioned "blocked" delegates
-    /// `0x141dfd4f0` -> listener vtable `0x143469f00` `+0x10` `0x141b9bb00`), so the roll makes no more lines
-    /// until a reload (`DodgeRollMove_ReloadCurve` `0x141b9ba60`).
+    /// `0x141dfd740` -> listener vtable `0x143469ea0` `+0x10` `0x141b9bd50`), so the roll makes no more lines
+    /// until a reload (`DodgeRollMove_ReloadCurve` `0x141b9bcb0`).
     steering: bool,
     /// The action's `+0x24d`: the movement vector took over, `0x1af` no longer aims it.
     axes_aimed: bool,
@@ -380,7 +380,7 @@ struct Roll {
     permyriad: i32,
     /// Actor `+0x915`: the roll's key is held since its start. Set at the start, cleared when the key
     /// is released; a press during the roll does not set it again (user test 3 f1824-1837). The
-    /// sprint switch `0x141b85570` needs it.
+    /// sprint switch `0x141b857c0` needs it.
     key_held: bool,
 }
 
@@ -409,7 +409,7 @@ pub struct ClientSim {
     stop_pending: bool,
     /// `+0x1e3` orientation mode.
     orient: u8,
-    /// Search level (`FUN_141dd5170`).
+    /// Search level (`FUN_141dd53c0`).
     level: i32,
     // Pathfinding
     following: bool,
@@ -614,7 +614,7 @@ impl ClientSim {
         self.roll.as_ref().is_some_and(|r| r.elapsed + dt * r.rate >= r.length)
     }
 
-    /// `Pathfinding_GetSpeed` `0x141dda410`. `pf+0x554` (a fixed speed) and `pf+0x558` (its step and
+    /// `Pathfinding_GetSpeed` `0x141dda660`. `pf+0x554` (a fixed speed) and `pf+0x558` (its step and
     /// push test) are not set by anything the player does here.
     pub fn speed(&self) -> f32 {
         let mut f = self.permyriad.max(-10000) as f32 / 10000.0 + 1.0;
@@ -652,7 +652,7 @@ impl ClientSim {
 
     // ---- frame start: Positioned tick, Pathfinding tick, animation tick ----
 
-    /// Component 0: the Positioned tick `0x141de9e80`.
+    /// Component 0: the Positioned tick `0x141dea0d0`.
     pub fn positioned_tick(&mut self, dt: f32, t: &dyn Walkable) {
         if let Some(a) = self.sprint_end.as_mut() {
             a.this_frame = false;
@@ -661,7 +661,7 @@ impl ClientSim {
     }
 
     /// The action speed factor of a running attack (Actor `+0x444`, target `+0x448`, ramp
-    /// `0x141e5241b`, `0x14198a1b0`, `0x14198a280`). The client takes the target, ramp, contact
+    /// `0x141e5266b`, `0x14198a400`, `0x14198a4d0`). The client takes the target, ramp, contact
     /// event and lock from the skill's stats and the animation; those are not modelled, so this
     /// runs the values measured on the client's steps (hub `docs/protocol/movement.md`).
     fn action_slow_tick(&mut self, dt: f32, t: &dyn Walkable) {
@@ -691,7 +691,7 @@ impl ClientSim {
         }
     }
 
-    /// `Positioned_RunLine` `0x141de9f00`.
+    /// `Positioned_RunLine` `0x141dea150`.
     fn run_line(&mut self, dt: f32, t: &dyn Walkable) {
         if self.line.thr == 0.0 {
             return;
@@ -746,7 +746,7 @@ impl ClientSim {
         }
     }
 
-    /// `Positioned_CheckStep` `0x141dea4f0`, terrain part: outside, or below level 1 on the
+    /// `Positioned_CheckStep` `0x141dea740`, terrain part: outside, or below level 1 on the
     /// mode's layer (2 while sprinting, mode 0 otherwise); roll and curve lines use mode 0 too.
     /// Entity collision is not ported: see the open items of `docs/re/movement-positioned.md`.
     fn step_blocked(&self, c: Cell, t: &dyn Walkable) -> bool {
@@ -759,7 +759,7 @@ impl ClientSim {
         t.layer(layer, c.0, c.1) < 1
     }
 
-    /// Component 2: `Pathfinding_Tick` `0x141dda2f0`.
+    /// Component 2: `Pathfinding_Tick` `0x141dda540`.
     pub fn pathfinding_tick(&mut self, dt: f32, t: &dyn Walkable) {
         self.dt = dt;
         self.since_plan += dt;
@@ -781,13 +781,13 @@ impl ClientSim {
         }
     }
 
-    /// Component 5: `AnimPlayer_Advance` `0x141d52290` for the two clips the movement reads, and
-    /// the move event (`MoveEvent_Start` `0x141f6e020`).
+    /// Component 5: `AnimPlayer_Advance` `0x141d524e0` for the two clips the movement reads, and
+    /// the move event (`MoveEvent_Start` `0x141f6e270`).
     pub fn animated_tick(&mut self, dt: f32, t: &dyn Walkable) {
         if let Some(r) = &mut self.roll {
             let new = (r.elapsed + dt * r.rate).min(r.length);
             let ev = self.curves.as_ref().map(|c| c.roll_events);
-            // `AnimationController` event type `0x1a` -> `0x1419852d0`: the window opens.
+            // `AnimationController` event type `0x1a` -> `0x141985520`: the window opens.
             if let Some(ev) = ev
                 && new >= ev.target_update.0
             {
@@ -824,7 +824,7 @@ impl ClientSim {
                 self.sprint_end.as_mut().unwrap().rate = rate;
                 self.start_coast(rate, t);
             }
-            // The clip keeps the rate it was played at (`0x141e64d50` sets the state's rate once): at a
+            // The clip keeps the rate it was played at (`0x141e64fa0` sets the state's rate once): at a
             // wall the sprint-off's stats come right after the step that ended it (seg2 f800: walks are
             // refused to f828, 30 frames at walking speed); a Bonk of the Actor tick keeps the sprint's
             // (game test crazy-keys f439: the walk starts at f460, 20 frames).
@@ -842,7 +842,7 @@ impl ClientSim {
 
     // ---- Positioned ----
 
-    /// `Positioned_SetLocationForcedNoCallbacks` `0x141de8c20`.
+    /// `Positioned_SetLocationForcedNoCallbacks` `0x141de8e70`.
     fn snap(&mut self, cell: Cell) {
         self.grid = cell;
         if self.line.thr != 0.0 {
@@ -852,13 +852,13 @@ impl ClientSim {
         self.line.pending = 0.0;
     }
 
-    /// `Positioned_StopMove` `0x141df3530` (the world smoother is not modelled).
+    /// `Positioned_StopMove` `0x141df3780` (the world smoother is not modelled).
     fn stop_move(&mut self) {
         self.line.finish();
         self.stop_pending = false;
     }
 
-    /// `0x141df2210`: the line runs through the next Positioned tick, then stops (`+0x1e5` bit 7).
+    /// `0x141df2460`: the line runs through the next Positioned tick, then stops (`+0x1e5` bit 7).
     fn stop_next_tick(&mut self, t: &dyn Walkable) {
         if self.line.thr != 0.0 && !self.stop_pending {
             self.stop_pending = true;
@@ -866,7 +866,7 @@ impl ClientSim {
         }
     }
 
-    /// `0x141df23c0`: stop with callbacks.
+    /// `0x141df2610`: stop with callbacks.
     fn stop_with_callbacks(&mut self, t: &dyn Walkable) {
         if self.line.thr == 0.0 {
             return;
@@ -879,7 +879,7 @@ impl ClientSim {
         }
     }
 
-    /// `Positioned_MoveToWaypoint` `0x141df0780`. `reset_curves` is request `+0x9b`.
+    /// `Positioned_MoveToWaypoint` `0x141df09d0`. `reset_curves` is request `+0x9b`.
     fn move_to_waypoint(&mut self, target: Cell, speed: f32, reset_curves: bool, t: &dyn Walkable) -> bool {
         if reset_curves {
             self.line.curve.clear();
@@ -907,21 +907,21 @@ impl ClientSim {
         true
     }
 
-    /// `0x141b95ba0`: a line runs and its current cell is the grid.
+    /// `0x141b95df0`: a line runs and its current cell is the grid.
     fn on_line(&self) -> bool {
         self.line.len != 0.0 && self.line.unswap(self.line.cur) == self.grid
     }
 
     // ---- Pathfinding ----
 
-    /// Listener vtable `0x1434e7da8` `+0x18` (`0x141dda2d0`).
+    /// Listener vtable `0x1434e7d90` `+0x18` (`0x141dda520`).
     fn on_stopped(&mut self, t: &dyn Walkable) {
         if !self.in_step {
             self.end_path(true, t);
         }
     }
 
-    /// `Pathfinding_OnLineDone` `0x141dda220`.
+    /// `Pathfinding_OnLineDone` `0x141dda470`.
     fn on_line_done(&mut self, t: &dyn Walkable) {
         if !self.following {
             return;
@@ -940,7 +940,7 @@ impl ClientSim {
         }
     }
 
-    /// `Pathfinding_IsArrived` `0x141dd8c80`; a point goal has `r0 = r1 = 0`, `n = 1`.
+    /// `Pathfinding_IsArrived` `0x141dd8ed0`; a point goal has `r0 = r1 = 0`, `n = 1`.
     fn is_arrived(&self, g: Cell, t: &dyn Walkable) -> bool {
         if let Some(r) = self.reach {
             return r.arrived(self.grid, g, t);
@@ -950,7 +950,7 @@ impl ClientSim {
         d2 == 0 || (d2 == 1 && t.layer(0, g.0, g.1) < 1)
     }
 
-    /// `Pathfinding_FollowPath` `0x141dd93a0`.
+    /// `Pathfinding_FollowPath` `0x141dd95f0`.
     fn follow_path(&mut self, goal: Cell, t: &dyn Walkable) {
         self.goal = Some(goal);
         if self.is_arrived(goal, t) {
@@ -969,7 +969,7 @@ impl ClientSim {
         self.plan(t);
     }
 
-    /// `Pathfinding_Plan` `0x141dd9b10`.
+    /// `Pathfinding_Plan` `0x141dd9d60`.
     fn plan(&mut self, t: &dyn Walkable) {
         self.since_plan = 0.0;
         self.depth += 1;
@@ -1011,7 +1011,7 @@ impl ClientSim {
         self.depth -= 1;
     }
 
-    /// The search `0x141ede8c0` (`clientpath`, an exact port checked against the client's plans).
+    /// The search `0x141edeb10` (`clientpath`, an exact port checked against the client's plans).
     fn search(&self, goal: Cell, t: &dyn Walkable) -> Vec<Cell> {
         if let Some(p) = self.plan_hints.iter().find(|h| h.0 == self.grid && h.1 == goal) {
             return p.2.clone();
@@ -1028,16 +1028,16 @@ impl ClientSim {
         clientpath::plan(t, self.grid, goal, self.level, &params).path
     }
 
-    /// `Pathfinding_StepAlongPath` `0x141dd9580`.
+    /// `Pathfinding_StepAlongPath` `0x141dd97d0`.
     fn step_along(&mut self, i: i32, t: &dyn Walkable) {
         let w = if i >= 1 { self.path[i as usize - 1] } else { self.grid };
         let w = self.sprint_turn(w);
         let speed = self.speed();
         if self.following {
             // TEST: a WASD walk does not face its waypoints, a sprint and a server Move do (hook `FACE`
-            // rows, crazy-keys 2026-11-04: no `Positioned_SetFacing` from `0x141df0fa6` in any plain key
+            // rows, crazy-keys 2026-11-04: no `Positioned_SetFacing` from `0x141df11f6` in any plain key
             // walk, Positioned `+0x1e3` = 1 meanwhile, so the request's `+0x9a`/`+0x99` override set by a
-            // listener of the path (`FUN_140ecf180` calls in `0x141dd9580`) turns it off; which listener
+            // listener of the path (`FUN_140ecf320` calls in `0x141dd97d0`) turns it off; which listener
             // and on what condition is unread). The facing stays the aim echo's (`on_aim_target`).
             let sprinting = self.sprint || self.is_sprinting;
             if !self.mv.is_some_and(|m| m.from_server) && !sprinting {
@@ -1050,7 +1050,7 @@ impl ClientSim {
         }
     }
 
-    /// `Pathfinding_SprintTurnWaypoint` `0x141dd98d0`.
+    /// `Pathfinding_SprintTurnWaypoint` `0x141dd9b20`.
     fn sprint_turn(&self, w: Cell) -> Cell {
         if !self.is_sprinting {
             return w;
@@ -1079,13 +1079,13 @@ impl ClientSim {
         )
     }
 
-    /// `Pathfinding_EndPath` `0x141dd9f30`.
+    /// `Pathfinding_EndPath` `0x141dda180`.
     fn end_path(&mut self, keep_line: bool, t: &dyn Walkable) {
         if !self.following {
             return;
         }
         if !keep_line {
-            // Entity `+0x8c` bit 3 selects `0x141df2210` over `0x141df23c0`; the player's line runs on
+            // Entity `+0x8c` bit 3 selects `0x141df2460` over `0x141df2610`; the player's line runs on
             // one tick (measured: the stop step).
             let in_step = std::mem::replace(&mut self.in_step, true);
             self.stop_next_tick(t);
@@ -1100,11 +1100,11 @@ impl ClientSim {
 
     // ---- Actor ----
 
-    /// `Actor_OnPathEnded` `0x141e5c210`.
+    /// `Actor_OnPathEnded` `0x141e5c460`.
     fn on_path_ended(&mut self, arrived: bool, t: &dyn Walkable) {
         self.reached = arrived && self.reach.is_some();
-        // `Actor_OnPathArrived` `0x141e5c990`: the `Interaction` moves from the Move slot to slot 0
-        // and starts (`0x141e5cf30`).
+        // `Actor_OnPathArrived` `0x141e5cbe0`: the `Interaction` moves from the Move slot to slot 0
+        // and starts (`0x141e5d180`).
         if self.reached {
             self.start_slot_interaction();
         }
@@ -1157,10 +1157,10 @@ impl ClientSim {
         self.interaction = Some(SlotInteraction { timer: INTERACTION_TIME, start_axes: self.axes });
     }
 
-    /// `Actor_StartWasdWalk` `0x141e5ddb0` with slot 0 running and its vf `+0x50` false: the held
+    /// `Actor_StartWasdWalk` `0x141e5e000` with slot 0 running and its vf `+0x50` false: the held
     /// axes cancel the action only when they point against the axes held at its start, or, with
     /// none held then, against the facing (`0x14016d130` x 100, truncated). The later checks
-    /// (`+0x420`, vf `+0x290` `0x141986950`) pass for an `Interaction`: no animation runs.
+    /// (`+0x420`, vf `+0x290` `0x141986ba0`) pass for an `Interaction`: no animation runs.
     fn axes_cancel_interaction(&self, i: SlotInteraction) -> bool {
         let (ax, ay) = self.axes;
         let dot = if i.start_axes == (0, 0) {
@@ -1172,8 +1172,8 @@ impl ClientSim {
         dot < 0
     }
 
-    /// Slot 0's update in the Actor tick (`0x14198f340`): the timer runs out, the object acts and
-    /// the action ends (`0x141e534c0`), which starts a walk on the held axes at once.
+    /// Slot 0's update in the Actor tick (`0x14198f590`): the timer runs out, the object acts and
+    /// the action ends (`0x141e53710`), which starts a walk on the held axes at once.
     fn interaction_tick(&mut self, dt: f32, t: &dyn Walkable) {
         let Some(i) = self.interaction.as_mut() else { return };
         i.timer -= dt;
@@ -1193,7 +1193,7 @@ impl ClientSim {
         }
     }
 
-    /// `Actor_EndMoveAction` `0x141e54010`.
+    /// `Actor_EndMoveAction` `0x141e54260`.
     fn end_move(&mut self, stop: bool, t: &dyn Walkable) {
         self.mv = None;
         if stop && self.moving {
@@ -1201,7 +1201,7 @@ impl ClientSim {
         }
     }
 
-    /// `Actor_PlanMove` `0x141e508c0`.
+    /// `Actor_PlanMove` `0x141e50b10`.
     fn plan_move(&mut self, t: &dyn Walkable) {
         let Some(m) = self.mv else { return };
         self.plan_timer = PLAN_TIMER;
@@ -1210,7 +1210,7 @@ impl ClientSim {
         self.in_plan = false;
     }
 
-    /// `Actor_ReaimWasdWalk` `0x141e5e590`.
+    /// `Actor_ReaimWasdWalk` `0x141e5e7e0`.
     fn reaim(&mut self, t: &dyn Walkable) {
         let Some(m) = self.mv else { return };
         if m.from_server || self.in_plan || self.roll.is_some() {
@@ -1229,7 +1229,7 @@ impl ClientSim {
         )
     }
 
-    /// `Actor_StartWasdWalk` `0x141e5ddb0`.
+    /// `Actor_StartWasdWalk` `0x141e5e000`.
     fn start_wasd_walk(&mut self, t: &dyn Walkable) {
         if self.in_plan || self.sprint_end.is_some() {
             return;
@@ -1255,15 +1255,15 @@ impl ClientSim {
         self.plan_move(t);
     }
 
-    /// The Actor tick `0x141e50c70`, the steps that move the player.
+    /// The Actor tick `0x141e50ec0`, the steps that move the player.
     pub fn actor_tick(&mut self, dt: f32, t: &dyn Walkable) {
         self.actor_tick_axes(t);
         self.actor_tick_actions(dt, t);
     }
 
-    /// Actor tick steps 1 to 5: the queued action and the axes (`0x141e50c70` up to the phase step
-    /// `0x141e52175`). A message keyed `(9, 4)` or later runs after this part: the world's phase
-    /// reaches 4 no earlier than the re-aim's own step (`0x141e5e6f8`, hub
+    /// Actor tick steps 1 to 5: the queued action and the axes (`0x141e50ec0` up to the phase step
+    /// `0x141e523c5`). A message keyed `(9, 4)` or later runs after this part: the world's phase
+    /// reaches 4 no earlier than the re-aim's own step (`0x141e5e948`, hub
     /// `docs/re/movement-sprint.md`, "Keys of the sprint-off").
     pub fn actor_tick_axes(&mut self, t: &dyn Walkable) {
         if self.roll.is_none()
@@ -1292,7 +1292,7 @@ impl ClientSim {
 
     // ---- Messages ----
 
-    /// `0x64`, case 100 of `0x142158ee0`.
+    /// `0x64`, case 100 of `0x142159130`.
     pub fn on_move_ack(&mut self, dir: (i32, i32), cell: Cell, t: &dyn Walkable) {
         if dir != (0, 0) && cell != self.grid {
             self.snap(cell);
@@ -1305,7 +1305,7 @@ impl ClientSim {
         self.start_wasd_walk(t);
     }
 
-    /// `0x1c8` of a Move: `Actor_StartQueuedAction` `0x141e4ecd0`, Move branch.
+    /// `0x1c8` of a Move: `Actor_StartQueuedAction` `0x141e4ef20`, Move branch.
     pub fn on_start_move(&mut self, start: Cell, target: Cell, t: &dyn Walkable) {
         let reach = self.next_reach.take();
         // A running roll keeps slot 0: the Move stays queued (`A + 0x248`) until the Actor tick after
@@ -1314,7 +1314,7 @@ impl ClientSim {
             self.queued_move = Some((start, target));
             return;
         }
-        // Move vf `+0x1f0` `0x141990880`: `0x14016cb30` is the squared length, so the limit is 3 cells.
+        // Move vf `+0x1f0` `0x141990ad0`: `0x14016cb30` is the squared length, so the limit is 3 cells.
         let d = (self.grid.0 - target.0, self.grid.1 - target.1);
         if d.0 * d.0 + d.1 * d.1 < 9 {
             return;
@@ -1354,8 +1354,8 @@ impl ClientSim {
         }
     }
 
-    /// `0x1af`: `Player_ApplyServerSkillTarget` `0x141de1a80` -> `0x141e694c0`. Before the target
-    /// window it only stores the action's target; inside it `0x1419886c0` keeps the target relative
+    /// `0x1af`: `Player_ApplyServerSkillTarget` `0x141de1cd0` -> `0x141e69710`. Before the target
+    /// window it only stores the action's target; inside it `0x141988910` keeps the target relative
     /// to the grid for the action's update, unless the movement vector took over (`act + 0x24d`).
     pub fn on_skill_target(&mut self, target: Cell) {
         let g = self.grid;
@@ -1368,13 +1368,13 @@ impl ClientSim {
         }
     }
 
-    /// `0x1dc` SetAimTarget kind 0 (Actor handler `0x142158ee0` -> `0x141e5ebb0`): stores the aim
+    /// `0x1dc` SetAimTarget kind 0 (Actor handler `0x142159130` -> `0x141e5ee00`): stores the aim
     /// cell (Actor `+0x1d4`) and faces it when the Actor is free: `+0x2a1` bits 0, 1 and 7 clear (never
     /// set in play), and slot 0 (`+0x238`) empty or its vf `+0x338` true (a roll's is `0x140108d20`,
     /// false: no turn while a roll, its sprint or its SprintEnd clip runs). Not ported: the `+0x380`
     /// states `0x36a`/`0x36b`/`0x371`/`0x372` and object `0xe4fa`. A Move is not in slot 0, so a walk
     /// turns too (the next waypoint sets the facing again). This is how a roll gets its facing towards
-    /// the cursor: the roll's own start does not turn (`0x1419898d0` returns 2*pi for every roll, hook
+    /// the cursor: the roll's own start does not turn (`0x141989b20` returns 2*pi for every roll, hook
     /// `TOL` rows, crazy-keys 2026-11-03).
     pub fn on_aim_target(&mut self, cell: Cell) {
         if self.roll.is_some() || self.sprint_end.is_some() || cell == self.grid {
@@ -1383,7 +1383,7 @@ impl ClientSim {
         self.facing = angle((cell.0 - self.grid.0) as f32, (cell.1 - self.grid.1) as f32);
     }
 
-    /// `0x2e7`: the sprint key (`0x141e6a460`).
+    /// `0x2e7`: the sprint key (`0x141e6a6b0`).
     pub fn on_sprint_key(&mut self, held: bool) {
         self.sprint_key = held;
         if !held && let Some(r) = &mut self.roll {
@@ -1402,7 +1402,7 @@ impl ClientSim {
         self.velocity_cap = v;
     }
 
-    /// The roll's stat listener `0x141b9bb10` (`part+0x5f` is set): `ac+0x1b0` =
+    /// The roll's stat listener `0x141b9bd60` (`part+0x5f` is set): `ac+0x1b0` =
     /// `(1 + stat) / (1 + stat at start) * (trunc((sqrt(1 + stat at start) - 1) * 100) / 100 + 1)`.
     /// Its test of buff row `0xab2` and its new line with `part+0x3e` are not ported.
     fn roll_rate_update(&mut self) {
@@ -1431,9 +1431,9 @@ impl ClientSim {
         self.is_sprinting = v;
     }
 
-    /// The animation event `0xb91f`: `DodgeRoll_OnAnimationEvent` `0x141ab5dc0`, with the key held
-    /// the sprint child (`DodgeRoll_StartSprint` `0x141ab66d0`) and the switch of curve
-    /// (`DodgeRollMove_SwitchAnimation` `0x141b9b370`, `DodgeRollMove_ReloadCurve` `0x141b9ba60`).
+    /// The animation event `0xb91f`: `DodgeRoll_OnAnimationEvent` `0x141ab6010`, with the key held
+    /// the sprint child (`DodgeRoll_StartSprint` `0x141ab6920`) and the switch of curve
+    /// (`DodgeRollMove_SwitchAnimation` `0x141b9b5c0`, `DodgeRollMove_ReloadCurve` `0x141b9bcb0`).
     fn roll_event(&mut self) {
         if !self.sprint_key || !self.roll.as_ref().is_some_and(|r| r.key_held) {
             return;
@@ -1453,8 +1453,8 @@ impl ClientSim {
 
     // ---- Roll (`docs/re/movement-roll.md`) ----
 
-    /// `0x1c8` of a roll: `DodgeRoll_OnStart` `0x141ab58f0`, `DodgeRoll_InitHeading` `0x141b9a3c0`,
-    /// `DodgeRollMove_Start` `0x141b9a5c0`.
+    /// `0x1c8` of a roll: `DodgeRoll_OnStart` `0x141ab5b40`, `DodgeRoll_InitHeading` `0x141b9a610`,
+    /// `DodgeRollMove_Start` `0x141b9a810`.
     pub fn on_start_roll(&mut self, start: Cell, target: Cell, travel: f32, t: &dyn Walkable) {
         // The roll is the running action now: its own factor (1, no ramp) replaces an attack's.
         // Measured on one sample only: the attack a roll cut short (f4021) showed only the roll's
@@ -1463,14 +1463,14 @@ impl ClientSim {
         self.speed_factor = 1.0;
         self.interaction = None;
         let Some(cs) = self.curves.clone() else { return };
-        // `Actor_InstallQueuedMove` `0x141e4fde0` snaps, then `0x141e5ccb0` ends a running Move with a
+        // `Actor_InstallQueuedMove` `0x141e50030` snaps, then `0x141e5cf00` ends a running Move with a
         // stop (`Actor_EndMoveAction(A, 1)`) before the action's start, so the path's end does not
         // clear the roll's curve.
         if start != self.grid {
             self.snap(start);
         }
-        // No turn at the start: `0x141e5ccb0` faces the target only when the action's vf `+0x340`
-        // (`0x1413d31c0`: `+0x348` != 2*pi) is true, and the roll's `+0x348` (`0x1419898d0`) returns 2*pi
+        // No turn at the start: `0x141e5cf00` faces the target only when the action's vf `+0x340`
+        // (`0x1413d3410`: `+0x348` != 2*pi) is true, and the roll's `+0x348` (`0x141989b20`) returns 2*pi
         // in every roll (its `+0x142` bit 4 is set and it has no stat 18087
         // `action_required_target_facing_angle_tolerance_degrees`; hook `TOL` rows, crazy-keys
         // 2026-11-03). The facing a roll starts with comes from the aim echoes (`on_aim_target`), the
@@ -1511,7 +1511,7 @@ impl ClientSim {
             total: ((1.0 + self.permyriad as f32 / 10000.0).sqrt() * travel) as i32,
             waiting: false,
             steering: true,
-            // The window opens with `+0x24d = 0` and `0x1419887d0` at once (`0x141985d8b`), with the axes of
+            // The window opens with `+0x24d = 0` and `0x141988a20` at once (`0x141985fdb`), with the axes of
             // before a `0x64` later in the batch: the cursor stays locked out (user test 4 f4016-4030).
             axes_aimed: self.axes != (0, 0),
             opt_len: None,
@@ -1534,8 +1534,8 @@ impl ClientSim {
         }
     }
 
-    /// The target block of the action's update `0x14197f800` (`0x141980200`): the wanted target
-    /// `grid + act+0x250` is at most `dt * act+0x244` from the facing; vfunc `+0x130` `0x141b9acc0`
+    /// The target block of the action's update `0x14197fa50` (`0x141980450`): the wanted target
+    /// `grid + act+0x250` is at most `dt * act+0x244` from the facing; vfunc `+0x130` `0x141b9af10`
     /// aims the heading at the result. The roll's vfunc `+0x138` is false: the facing stays.
     fn roll_turn_to_target(&mut self, dt: f32) {
         let g = self.grid;
@@ -1560,8 +1560,8 @@ impl ClientSim {
         }
         let max = dt * rate;
         // TEST: the turn is not rate limited early in the clip. `+0x244` starts at 0 for the Player
-        // (`0x141985d37`, branch `0x1419802c7`) and is set only in the frame update (`0x14197ff68`), when
-        // the event is in the current animation's list (`0x14197fe52`). The time is fitted (user test 5:
+        // (`0x141985f87`, branch `0x141980517`) and is set only in the frame update (`0x1419801b8`), when
+        // the event is in the current animation's list (`0x1419800a2`). The time is fitted (user test 5:
         // f386, f802, f1223, f2506, f2550 unlimited at up to 0.132 s, f1005 limited at 0.165 s).
         let limited = r.elapsed >= ROLL_TURN_UNLIMITED_TIME;
         if limited && max < d.abs() {
@@ -1576,7 +1576,7 @@ impl ClientSim {
         }
     }
 
-    /// `DodgeRollMove_DistanceLeft` `0x141b9b590`.
+    /// `DodgeRollMove_DistanceLeft` `0x141b9b7e0`.
     fn roll_left(&self) -> f32 {
         let r = self.roll.as_ref().unwrap();
         let c = &self.line.curve;
@@ -1585,7 +1585,7 @@ impl ClientSim {
         (1.0 - f) * r.total as f32
     }
 
-    /// `DodgeRollMove_Speed` `0x141b9bd90`.
+    /// `DodgeRollMove_Speed` `0x141b9bfe0`.
     fn roll_speed(&self) -> f32 {
         let r = self.roll.as_ref().unwrap();
         if r.rate == 0.0 {
@@ -1595,7 +1595,7 @@ impl ClientSim {
         if left_t == 0.0 { 0.0 } else { self.roll_left() / left_t }
     }
 
-    /// `DodgeRollMove_Goal` `0x141b9b810`: the first waypoint towards the point `left` ahead.
+    /// `DodgeRollMove_Goal` `0x141b9ba60`: the first waypoint towards the point `left` ahead.
     fn roll_goal(&self, t: &dyn Walkable) -> (Cell, bool) {
         let heading = self.roll.as_ref().unwrap().heading;
         let v = rot(0.0, -self.roll_left().max(10.0), heading);
@@ -1612,7 +1612,7 @@ impl ClientSim {
         (path[path.len() - 2], false)
     }
 
-    /// `DodgeRollMove_Target` `0x141b9b620`.
+    /// `DodgeRollMove_Target` `0x141b9b870`.
     fn roll_target(&self, goal: Cell) -> Cell {
         let left = self.roll_left();
         if self.on_line() {
@@ -1627,7 +1627,7 @@ impl ClientSim {
         }
     }
 
-    /// The Bresenham walk of `0x141b9e440` and `0x141b9e680`.
+    /// The Bresenham walk of `0x141b9e690` and `0x141b9e8d0`.
     fn bresenham(from: Cell, to: Cell, mut f: impl FnMut(Cell) -> bool) {
         let d = (to.0 - from.0, to.1 - from.1);
         let (major, minor) = (d.0.abs().max(d.1.abs()), d.0.abs().min(d.1.abs()));
@@ -1651,7 +1651,7 @@ impl ClientSim {
         }
     }
 
-    /// `DodgeRollMove_ClipToWalkable` `0x141b9e680`.
+    /// `DodgeRollMove_ClipToWalkable` `0x141b9e8d0`.
     fn clip_to_walkable(&self, target: Cell, t: &dyn Walkable) -> Cell {
         let mut out = target;
         Self::bresenham(self.grid, target, |p| {
@@ -1664,9 +1664,9 @@ impl ClientSim {
         out
     }
 
-    /// `DodgeRollMove_Tick` `0x141b9ad40`, and the end of the action.
+    /// `DodgeRollMove_Tick` `0x141b9af90`, and the end of the action.
     fn roll_tick(&mut self, dt: f32, t: &dyn Walkable) {
-        // Action update (vfunc `+0x1c0` `0x141a48400` -> `0x14197f800` -> `0x1419887d0`), with the stat
+        // Action update (vfunc `+0x1c0` `0x141a48650` -> `0x14197fa50` -> `0x141988a20`), with the stat
         // `dynamic_target_updating_prioritises_movement_vector`: the target follows the axes.
         if self.roll.as_ref().is_some_and(|r| r.target_update) {
             if self.axes != (0, 0) {
@@ -1697,7 +1697,7 @@ impl ClientSim {
         }
     }
 
-    /// `DodgeRollMove_Step` `0x141b9ae10`.
+    /// `DodgeRollMove_Step` `0x141b9b060`.
     fn roll_step(&mut self, t: &dyn Walkable) {
         let (goal, _) = self.roll_goal(t);
         let target = self.roll_target(goal);
@@ -1714,7 +1714,7 @@ impl ClientSim {
             return;
         }
         self.line.curve.set_time(e, l);
-        // `DodgeRollMove_CheckClearCells` `0x141b9e440`.
+        // `DodgeRollMove_CheckClearCells` `0x141b9e690`.
         let mut counter = 2;
         let grid = self.grid;
         Self::bresenham(grid, target, |p| {
@@ -1747,13 +1747,13 @@ impl ClientSim {
         }
     }
 
-    /// `DodgeRoll_OnEnd` `0x141ab62e0`.
+    /// `DodgeRoll_OnEnd` `0x141ab6530`.
     fn roll_end(&mut self, t: &dyn Walkable) {
         let r = self.roll.take().unwrap();
         self.stop_next_tick(t);
         self.orient = 1;
         if r.sprints {
-            // `act+0x461` (stance `Standing`, `DodgeRoll_OnStart` 0x141ab5bba) was false in every
+            // `act+0x461` (stance `Standing`, `DodgeRoll_OnStart` 0x141ab5e0a) was false in every
             // session: no turn-around at the sprint event or at a non-sprint end. A backward roll
             // stays backward and the sprint start turns it (`vfunc +0xa8(part+0x3f && !act+0x461)`;
             // user test 2 f2398: 0.829 -> 3.970).
@@ -1771,7 +1771,7 @@ impl ClientSim {
 
     // ---- Sprint (`docs/re/movement-sprint.md`) ----
 
-    /// `SprintPart_Start` `0x141b85730`.
+    /// `SprintPart_Start` `0x141b85980`.
     fn sprint_start(&mut self, t: &dyn Walkable) {
         self.sprint = true;
         self.level = self.sprint_level;
@@ -1785,7 +1785,7 @@ impl ClientSim {
         }
     }
 
-    /// `SprintPart_EndCheck` `0x141b853c0`.
+    /// `SprintPart_EndCheck` `0x141b85610`.
     fn sprint_end_check(&mut self, t: &dyn Walkable) {
         if !self.sprint {
             return;
@@ -1808,7 +1808,7 @@ impl ClientSim {
         }
     }
 
-    /// `SprintPart_End` `0x141b859c0` and the play of the clip `0x141e65df0`. `bonk` picks the
+    /// `SprintPart_End` `0x141b85c10` and the play of the clip `0x141e66040`. `bonk` picks the
     /// Bonk clip, which moves like SprintEnd (same clip, same MoveEvent).
     fn sprint_part_end(&mut self, _bonk: bool, t: &dyn Walkable) {
         self.sprint = false;
@@ -1836,7 +1836,7 @@ impl ClientSim {
         }
     }
 
-    /// `MoveEvent_Start` `0x141f6e020`, `Positioned_RootOffsetToCell` `0x141df3610`.
+    /// `MoveEvent_Start` `0x141f6e270`, `Positioned_RootOffsetToCell` `0x141df3860`.
     fn start_coast(&mut self, rate: f32, t: &dyn Walkable) {
         let Some(cs) = self.curves.clone() else { return };
         let end_time = cs.sprint_end_move_time;
@@ -1853,13 +1853,13 @@ impl ClientSim {
         let dist = ((d.0 * d.0 + d.1 * d.1) as f32).sqrt();
         let speed = dist / (end_time / rate);
         let end = self.clip_to_walkable(target, t);
-        // `0x141f72010`: fewer than 2 cells to go beyond the start cell is no move at all.
+        // `0x141f72260`: fewer than 2 cells to go beyond the start cell is no move at all.
         let e = (end.0 - self.grid.0, end.1 - self.grid.1);
         if e.0.abs().max(e.1.abs()) >= 2 {
             // `MoveEvent_Start`: `Positioned_SetMoveCurve` before `MoveEvent_MovePositioned`.
-            // `0x141f70be0`: a clipped end ends the curve where the clip has moved that distance,
+            // `0x141f70e30`: a clipped end ends the curve where the clip has moved that distance,
             // `|cell delta| * 10.87 / |ev+0x2c| + |curve(state elapsed +0x24)|`, then the inverse of
-            // the curve (`0x141edbb10`). `ev+0x2c` is the event's data, 1. The event fires in the
+            // the curve (`0x141edbd60`). `ev+0x2c` is the event's data, 1. The event fires in the
             // clip's first Animated tick, one step into it.
             let e_time = if end == target {
                 end_time

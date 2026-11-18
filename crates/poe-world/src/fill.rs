@@ -1,4 +1,4 @@
-//! The fill pass (`0x141fa1b80`): every cell still empty after rooms and edge tiles gets a fill
+//! The fill pass (`0x141fa1dd0`): every cell still empty after rooms and edge tiles gets a fill
 //! tile or a fill room from the `.gft` group of the ground at its top-left corner. Findings:
 //! `docs/re/terrain/shared-passes.md`, "Fill".
 
@@ -49,10 +49,10 @@ struct Fill<'a> {
     files: &'a dyn Files,
     rooms: HashMap<String, Room>,
     placed: Vec<PlacedFillRoom>,
-    /// The caller's height for the cell (`0x141f9e450`'s last argument; `i32::MIN` there means
+    /// The caller's height for the cell (`0x141f9e6a0`'s last argument; `i32::MIN` there means
     /// the corners decide).
     height: Option<i16>,
-    /// Dungeon fill: positions of placed tiles the exit wiggle may move (`0x1420a9660`).
+    /// Dungeon fill: positions of placed tiles the exit wiggle may move (`0x1420a98b0`).
     wiggle: Option<(Vec<(i32, i32)>, crate::dungeon_tiles::Wiggles)>,
 }
 
@@ -60,7 +60,7 @@ fn oriented(size: (u8, u8), o: u8) -> (i32, i32) {
     if o & 1 == 1 && o < 8 { (size.1 as i32, size.0 as i32) } else { (size.0 as i32, size.1 as i32) }
 }
 
-/// `0x1421d4140`: the `r`-th (mod count) set bit of an orientation mask.
+/// `0x1421d4390`: the `r`-th (mod count) set bit of an orientation mask.
 fn mask_pick(mask: u8, r: u32) -> u8 {
     let bits: Vec<u8> = (0..8).filter(|b| mask >> b & 1 != 0).collect();
     bits[(r as usize) % bits.len()]
@@ -85,7 +85,7 @@ impl Fill<'_> {
         })
     }
 
-    /// `0x141fad110`: a tile fits at `(x, y)` (one cell of slack past the region's far sides).
+    /// `0x141fad360`: a tile fits at `(x, y)` (one cell of slack past the region's far sides).
     fn tile_fits(&self, x: i32, y: i32, tdt: &Tdt, o: u8) -> bool {
         let (w, h) = oriented(tdt.size, o);
         x >= -1
@@ -95,19 +95,19 @@ impl Fill<'_> {
             && self.free(x, y, w, h)
     }
 
-    /// `0x141f9f990`: a fill room fits at `(x, y)` with orientation `o` (inside the region).
+    /// `0x141f9fbe0`: a fill room fits at `(x, y)` with orientation `o` (inside the region).
     fn room_fits(&self, x: i32, y: i32, dims: (u8, u8), o: u8) -> bool {
         let (w, h) = oriented(dims, o);
         let (mw, mh) = (self.map.width as i32, self.map.height as i32);
         x < mw && x + w <= mw && y < mh && y + h <= mh && self.free(x, y, w, h)
     }
 
-    /// `0x141f9f880`: orientation for a fill tile, 8 when it does not fit.
+    /// `0x141f9fad0`: orientation for a fill tile, 8 when it does not fit.
     fn tile_orientation(&self, x: i32, y: i32, tdt: &Tdt, o: u8, rng: &mut TerrainRng) -> u8 {
         choose_orientation(tdt, o, &|o| self.tile_fits(x, y, tdt, o), rng)
     }
 
-    /// `0x141f9b020`: a tile turned by `o` (room frame) covers only free uniform cells of the
+    /// `0x141f9b270`: a tile turned by `o` (room frame) covers only free uniform cells of the
     /// room grid from `(cx, cy)`: no feature or edges, one ground compatible with the tile's
     /// (equal, or both missing or `.gt` flag 8) and the start cell's height.
     fn grid_fits(&self, room: &Room, cx: usize, cy: usize, tdt: &Tdt, o: u8) -> bool {
@@ -138,7 +138,7 @@ impl Fill<'_> {
         })
     }
 
-    /// `0x141f9fa80`: orientation for a fill room, 8 when it does not fit.
+    /// `0x141f9fcd0`: orientation for a fill room, 8 when it does not fit.
     fn room_orientation(&self, x: i32, y: i32, dims: (u8, u8), o: u8, rng: &mut TerrainRng) -> u8 {
         if o != 8 {
             return if self.room_fits(x, y, dims, o) { o } else { 8 };
@@ -159,7 +159,7 @@ impl Fill<'_> {
         Ok(&self.rooms[&key])
     }
 
-    /// `0x141fa2480`: the fill tiles and fill rooms for a ground (the `default` group without
+    /// `0x141fa26d0`: the fill tiles and fill rooms for a ground (the `default` group without
     /// one, or when its name has neither).
     fn groups(&mut self, ground: Option<&str>) -> Result<(Vec<Entry>, Vec<Entry>), GenError> {
         let split = |g: &[(u32, String, u8)]| -> Result<(Vec<Entry>, Vec<Entry>), GenError> {
@@ -175,7 +175,7 @@ impl Fill<'_> {
         }
     }
 
-    /// Height of a fill tile (`0x141f9f470`): the caller's, else the middle of its set corner
+    /// Height of a fill tile (`0x141f9f6c0`): the caller's, else the middle of its set corner
     /// heights.
     fn corner_height(&self, x: i32, y: i32, w: i32, h: i32) -> i16 {
         if let Some(h) = self.height {
@@ -206,7 +206,7 @@ impl Fill<'_> {
         Ok(w - 1)
     }
 
-    /// `0x141f9e450`: fill cell `(x, y)`; returns how many further cells of the row are taken.
+    /// `0x141f9e6a0`: fill cell `(x, y)`; returns how many further cells of the row are taken.
     fn cell(&mut self, x: i32, y: i32, ground: Option<String>, walkable: bool, rng: &mut TerrainRng) -> Result<i32, GenError> {
         let ground = ground.filter(|g| self.map.gt_flags(g) & 0x10 == 0);
         let (tiles, rooms) = self.groups(ground.as_deref())?;
@@ -214,7 +214,7 @@ impl Fill<'_> {
         let with_rooms = !rooms.is_empty();
         if with_rooms {
             for r in rooms {
-                // `0x141f9fc30`: on an unwalkable corner only rooms whose room data +0x188 list
+                // `0x141f9fe80`: on an unwalkable corner only rooms whose room data +0x188 list
                 // (0x30-byte entries: the points of interest, by size) is empty.
                 let has_pois = self.room(&r.path)?.arm.points_of_interest.iter().any(|g| g.iter().any(|p| std::env::var("POE_POI_ANY").is_ok() || !p.tag.is_empty()));
                 if std::env::var("POE_DBG_POI").is_ok() && !walkable && has_pois { eprintln!("POI skip {} w{} pois {:?}", r.path, r.weight, self.room(&r.path)?.arm.points_of_interest); }
@@ -250,7 +250,7 @@ impl Fill<'_> {
         Err(GenError::Unsupported(format!("failed to find a fill tile or room at ({x},{y})")))
     }
 
-    /// `0x141f9b3e0`: a fill room's cells (x outer, y inner), each re-picked up to five times
+    /// `0x141f9b630`: a fill room's cells (x outer, y inner), each re-picked up to five times
     /// until it fits, skipped when its cell is already taken; then the room's ground overrides,
     /// and the fill's ground on its corners that have none.
     #[allow(clippy::too_many_arguments)]
@@ -258,8 +258,8 @@ impl Fill<'_> {
         let room = load_room(self.files, &path.to_ascii_lowercase())?;
         self.map.use_room_grounds(&room);
         let (w, h) = (room.width(), room.height());
-        // `0x141f9e450`: without a passed height the room's height is the middle of the corner
-        // heights over its whole oriented extent (`0x141f9f470`), for all its slots.
+        // `0x141f9e6a0`: without a passed height the room's height is the middle of the corner
+        // heights over its whole oriented extent (`0x141f9f6c0`), for all its slots.
         let outer = self.height;
         if self.height.is_none() && std::env::var_os("POE_NO_ROOM_HEIGHT").is_none() {
             let (ow, oh) = oriented((w as u8, h as u8), o);
@@ -286,7 +286,7 @@ impl Fill<'_> {
                     if self.map.index(x + ox, y + oy).is_none_or(|i| self.map.cells[i].is_some()) {
                         continue;
                     }
-                    // `0x141f9cf20`: the tile turned by `to` in the room's frame, placed from the
+                    // `0x141f9d170`: the tile turned by `to` in the room's frame, placed from the
                     // smallest corner its cells reach, turned by `to` then the room.
                     let at = |tdt: &Tdt, to: u8| {
                         let (tw, th) = oriented(tdt.size, to);
@@ -306,7 +306,7 @@ impl Fill<'_> {
                         let to = choose_orientation(&tdt, e.o, &fits, rng);
                         if to != 8 {
                             let (mx, my) = at(&tdt, to);
-                            // `0x141f9b3e0` at `0x141f9c0df`: the tile's height is the slot's
+                            // `0x141f9b630` at `0x141f9c32f`: the tile's height is the slot's
                             // (+0x72, its lowest corner) plus the room's.
                             let saved = self.height;
                             if std::env::var_os("POE_NO_SLOT_HEIGHT").is_none() {
@@ -387,7 +387,7 @@ impl Fill<'_> {
 }
 
 /// The orientation for a fill tile (entry orientation `o`, 8 = any) among those `fits`
-/// accepts: a square tile any of 8 when unturned fits, else the even or odd ones (`0x1421d4140`
+/// accepts: a square tile any of 8 when unturned fits, else the even or odd ones (`0x1421d4390`
 /// on a draw of 840); 8 when none fits.
 fn choose_orientation(tdt: &Tdt, o: u8, fits: &dyn Fn(u8) -> bool, rng: &mut TerrainRng) -> u8 {
     if o != 8 {
@@ -400,7 +400,7 @@ fn choose_orientation(tdt: &Tdt, o: u8, fits: &dyn Fn(u8) -> bool, rng: &mut Ter
     if mask == 0 { 8 } else { mask_pick(mask, rng.below(840)) }
 }
 
-/// `0x1415de7e0`/`0x141fbb7e0`: weighted pick (`r` in `0..total`).
+/// `0x1415dea30`/`0x141fbba30`: weighted pick (`r` in `0..total`).
 fn pick_entry(list: &[Entry], mut r: u32) -> &Entry {
     for e in list {
         if r < e.weight {
@@ -411,10 +411,10 @@ fn pick_entry(list: &[Entry], mut r: u32) -> &Entry {
     list.last().unwrap()
 }
 
-/// `0x141fa1b80`: rows top to bottom, cells left to right; a cell's ground is its top-left
+/// `0x141fa1dd0`: rows top to bottom, cells left to right; a cell's ground is its top-left
 /// corner's, and fill rooms with points of interest only go where that corner is walkable (no
 /// flag 8, and no ground or one with `.gt` flag 4).
-/// The dungeon fill (`0x1420ac2f0` per listed cell): each still-empty cell with its listed
+/// The dungeon fill (`0x1420ac540` per listed cell): each still-empty cell with its listed
 /// ground (else its corner's, when set) and reachability.
 pub fn fill_cells(
     map: &mut TileMap,
@@ -465,7 +465,7 @@ pub fn fill_pass(
     Ok(f.placed)
 }
 
-/// Fills one empty cell the way the fill pass does (`0x141f9e450`), for callers outside the pass
+/// Fills one empty cell the way the fill pass does (`0x141f9e6a0`), for callers outside the pass
 /// (the overlays' second phase): `ground` is the cell's corner ground and `walkable` whether fill
 /// rooms with points of interest may go there. Returns the fill rooms it placed.
 #[allow(clippy::too_many_arguments)]
@@ -478,12 +478,12 @@ pub fn fill_cell(map: &mut TileMap, master: &mut Master, files: &dyn Files, pos:
     Ok(f.placed)
 }
 
-/// `0x1420ab4f0` (pre-unique room, run before the overlays when the master has an overlay
+/// `0x1420ab740` (pre-unique room, run before the overlays when the master has an overlay
 /// list and the room set a `preunique` room): the ground-only cells are shuffled (a discarded
 /// `below(n)` first), then walked in that order; for each, `below(0x348)` picks an orientation
 /// of the room's `.rs` mask, and the first cell that is accessible, has no ground or one with
 /// `.gt` flag 8, and whose room rectangle lies free inside the region takes the room
-/// (`0x141f9b3e0`). The cell list keeps the shuffled order for the fill. No cell fits: an error.
+/// (`0x141f9b630`). The cell list keeps the shuffled order for the fill. No cell fits: an error.
 pub fn place_pre_unique(
     map: &mut TileMap,
     master: &mut Master,
@@ -529,15 +529,15 @@ pub fn place_pre_unique(
     Err(GenError::Unsupported(format!("Failed to place pre-unique room {room_path}")))
 }
 
-/// `0x1420cce80` (the `.tgr` driver `0x1420cdfe0`, after the lattice passes and before the
-/// overlays): the rooms league mechanics added (`ExtraTerrainFeatures`). `0x1420ccc30` lists the
+/// `0x1420cd0d0` (the `.tgr` driver `0x1420ce230`, after the lattice passes and before the
+/// overlays): the rooms league mechanics added (`ExtraTerrainFeatures`). `0x1420cce80` lists the
 /// cells that are still empty and walkable (no ground, or a ground with `.gt` flags 4 and 8, on
 /// a corner without flag 8) row by row, discards a `below(n)` and shuffles the list (forward
-/// Fisher-Yates). Each room (`0x1420cd1c0`) draws one orientation with `below(8)` (a feature
+/// Fisher-Yates). Each room (`0x1420cd410`) draws one orientation with `below(8)` (a feature
 /// whose orientation list holds "any"), then goes to the first cell in list order where its
 /// rectangle lies inside the map on free cells: the corners under it whose ground (and the
 /// cell's) has `.gt` flag 8 or none take the cell's ground, then the room is placed with the
-/// cell's corner height (`0x141f9b3e0`). No cell fits: the room is skipped.
+/// cell's corner height (`0x141f9b630`). No cell fits: the room is skipped.
 pub fn place_league_rooms(map: &mut TileMap, master: &mut Master, files: &dyn Files, rooms: &[crate::generate::LeagueRoom], rng: &mut TerrainRng) -> Result<Vec<PlacedFillRoom>, GenError> {
     for room in rooms {
         for t in &room.tiles {
@@ -582,7 +582,7 @@ pub fn place_league_rooms(map: &mut TileMap, master: &mut Master, files: &dyn Fi
             }
             let k = f.map.point_index(x, y).unwrap();
             let (ground, height) = (f.map.lattice[k].ground.clone(), f.map.lattice[k].height as i16);
-            // `0x141d0f460`: both grounds missing or with `.gt` flag 8.
+            // `0x141d0f6b0`: both grounds missing or with `.gt` flag 8.
             for py in y..=y + h {
                 for px in x..=x + w {
                     let Some(i) = f.map.point_index(px, py) else { continue };
@@ -604,23 +604,23 @@ pub fn place_league_rooms(map: &mut TileMap, master: &mut Master, files: &dyn Fi
     Ok(f.placed)
 }
 
-/// Squared distance between two rectangles `(x0, y0, x1, y1)` (`0x1420a98e0`; 0 when they overlap).
+/// Squared distance between two rectangles `(x0, y0, x1, y1)` (`0x1420a9b30`; 0 when they overlap).
 fn rect_distance2(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> i32 {
     let dx = (a.0 - b.2).max(b.0 - a.2).max(0);
     let dy = (a.1 - b.3).max(b.1 - a.3).max(0);
     dx * dx + dy * dy
 }
 
-/// `0x1420a99c0` (the `.dgr` counterpart of [`place_league_rooms`], run inside the overlay block
-/// of `0x1420ab860` before the room injectors and the pre-unique room): the ground-only cell
+/// `0x1420a9c10` (the `.dgr` counterpart of [`place_league_rooms`], run inside the overlay block
+/// of `0x1420abab0` before the room injectors and the pre-unique room): the ground-only cell
 /// list is shuffled (a discarded `below(n)`, then the forward Fisher-Yates), and the feature
-/// list goes through two passes (`0x1420a9c20`): pass 0 refuses a spot closer than 4 cells
+/// list goes through two passes (`0x1420a9e70`): pass 0 refuses a spot closer than 4 cells
 /// (squared distance <= 16) to a room placed before, pass 1 (the features that found no spot)
-/// has no such check. Per feature (`0x1420aa040`) one orientation is drawn (`below(8)` for an
+/// has no such check. Per feature (`0x1420aa290`) one orientation is drawn (`below(8)` for an
 /// "any" feature), then the first cell of the list that is accessible, whose ground and corner
 /// ground are missing or have `.gt` flags 4 and 8, and whose rectangle lies free inside the
 /// region takes the room; the corners under it with no ground or one with flag 8 take the
-/// cell's ground, and the room is placed with the cell's height (`0x141f9b3e0`). The list order
+/// cell's ground, and the room is placed with the cell's height (`0x141f9b630`). The list order
 /// is kept for the pre-unique pass, which shuffles it again. The feature budget (`+0x144`) is
 /// the whole list for a job with one graph, so it never stops a feature here.
 pub fn place_league_rooms_dgr(
@@ -705,8 +705,8 @@ pub fn place_league_rooms_dgr(
     Ok((f.placed, wiggle))
 }
 
-/// A league feature room put into a `missiontile` slot by the tile pass (`0x1420a7770`, then
-/// `0x141f9b3e0` with the slot's height and the lattice ground at the slot's corner). Returns the
+/// A league feature room put into a `missiontile` slot by the tile pass (`0x1420a79c0`, then
+/// `0x141f9b630` with the slot's height and the lattice ground at the slot's corner). Returns the
 /// rooms placed (for the de-repetition pass) and the tiles the exit wiggle may move.
 #[allow(clippy::too_many_arguments)]
 pub fn place_hosted(

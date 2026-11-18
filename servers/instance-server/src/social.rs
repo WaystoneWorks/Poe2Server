@@ -9,7 +9,7 @@
 //! cancel (trade). **Not implemented (gate G-PARTY):** accepting and declining a party
 //! invitation or a trade, timeouts, members that joined, leaving a party. What the invitee's
 //! client receives was never captured either: it is derived from the client's handlers
-//! (`0x142115e50` case `0xc8`, `0x1402cb290`) and verified in game with two clients (WP C3, 2026-10-21): the popups appear.
+//! (`0x1421160a0` case `0xc8`, `0x1402cb290`) and verified in game with two clients (WP C3, 2026-10-21): the popups appear.
 
 use std::{collections::HashMap, sync::Mutex};
 

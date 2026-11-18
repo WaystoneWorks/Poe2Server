@@ -90,7 +90,7 @@ pub struct WorldObject {
     pub reach: Reach,
 }
 
-/// `0x14198df30` for a mouse or WASD client, and `Positioned +0x1fa`
+/// `0x14198e180` for a mouse or WASD client, and `Positioned +0x1fa`
 /// (`docs/re/world-travel.md`, "Clicking an object").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Reach {
@@ -98,7 +98,7 @@ pub struct Reach {
     pub targeting: i32,
     /// The larger object size when the type blocks the client's path search: `Positioned`
     /// `blocking`, not `static`, `trigger_blocking` or `non_blocking_but_hittable`, size not -1
-    /// (`0x141d11bf0`, `0x141edff30`; docs/re/pathfinding.md, "Blocking objects").
+    /// (`0x141d11e40`, `0x141ee0180`; docs/re/pathfinding.md, "Blocking objects").
     pub obstacle: Option<i32>,
 }
 

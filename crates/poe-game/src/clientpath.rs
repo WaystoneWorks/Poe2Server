@@ -1,4 +1,4 @@
-//! A port of the client's grid pathfinder (`FUN_141ede8c0`; the algorithm and the
+//! A port of the client's grid pathfinder (`FUN_141edeb10`; the algorithm and the
 //! addresses are in `docs/re/pathfinding.md`), for static terrain.
 //!
 //! The client plans every walk, WASD step, roll frame and sprint frame with this search, so a
@@ -91,10 +91,10 @@ pub struct Params {
     pub radius: i8,
     /// The entity's exact position on the line it is moving along, in cell coordinates with
     /// cell centres on whole numbers (position - 0.5), when it moves along a line whose current
-    /// cell is the start cell (`FUN_141b95ba0`). The line-of-sight tests that end at the start
-    /// then run from this point (`FUN_141eeab30`) instead of from the start cell.
+    /// cell is the start cell (`FUN_141b95df0`). The line-of-sight tests that end at the start
+    /// then run from this point (`FUN_141eead80`) instead of from the start cell.
     pub moving: Option<(f32, f32)>,
-    /// The entity's size level for the object rings (`local_658`, `FUN_141dd5170`: the larger of
+    /// The entity's size level for the object rings (`local_658`, `FUN_141dd53c0`: the larger of
     /// `object_size` and `secondary_object_size`, 4 for a player also when walking; the terrain
     /// test uses `object_size` alone). `None`: the terrain level.
     pub size_level: Option<i32>,
@@ -113,9 +113,9 @@ impl Default for Params {
 }
 
 /// A blocking object the search walls off: an entity on layer 0 of the terrain's entity buckets
-/// (`0x141d11bf0`: `.ot` `Positioned { blocking = true }`, not `static`, not `trigger_blocking`)
-/// that passes the search's filter (`0x141edff30`: size not -1, not `non_blocking_but_hittable`)
-/// and cannot be pushed (`0x141df0170`; objects have no push priority).
+/// (`0x141d11e40`: `.ot` `Positioned { blocking = true }`, not `static`, not `trigger_blocking`)
+/// that passes the search's filter (`0x141ee0180`: size not -1, not `non_blocking_but_hittable`)
+/// and cannot be pushed (`0x141df03c0`; objects have no push priority).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Obstacle {
     pub cell: Cell,
@@ -296,10 +296,10 @@ impl Search<'_> {
         }
     }
 
-    /// Walls off the blocking objects in the entity buckets around the start (`0x141ee0dd0`
-    /// collects them, `0x141ee06e0` marks them): buckets from the start's bucket minus
+    /// Walls off the blocking objects in the entity buckets around the start (`0x141ee1020`
+    /// collects them, `0x141ee0930` marks them): buckets from the start's bucket minus
     /// `m / 23 + 1` to plus `m / 23 + 1`, `m = level - 1 + terrain +0x138` (the largest blocking
-    /// size + 1, `0x141d1caa0`). Each object closes a ring of cells as walls in the window:
+    /// size + 1, `0x141d1ccf0`). Each object closes a ring of cells as walls in the window:
     /// radius `R = level + size`, from `R - 2` (1 when `R < 3`, plus its own cell) to `R`.
     fn wall_off_obstacles(&mut self, obstacles: &[Obstacle], level: i32) {
         if obstacles.is_empty() {
@@ -319,7 +319,7 @@ impl Search<'_> {
         }
     }
 
-    /// `0x141ee06e0`'s marks for one object of ring radius `r`.
+    /// `0x141ee0930`'s marks for one object of ring radius `r`.
     fn wall_off_ring(&mut self, at: Cell, r: u32) {
         let ux = (at.0 - self.start.0 + HALF) as u32;
         let uy = (at.1 - self.start.1 + HALF) as u32;
@@ -617,7 +617,7 @@ impl Search<'_> {
     }
 
     /// Line of sight from the start to `d`, or from the moving entity's exact point `p` when
-    /// it moves along a line ([`Params::moving`]; `FUN_141ed8ba0` + `FUN_141eeab30`).
+    /// it moves along a line ([`Params::moving`]; `FUN_141ed8df0` + `FUN_141eead80`).
     ///
     /// The client projects the start cell onto the line `p -> d` (`q`, rounded), walks from the
     /// start cell to `q` one step on each axis at a time, then walks the float line from `p` to

@@ -14,7 +14,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 /// Most frames one catch-up burst runs: one below the client's 5x playback threshold (60
-/// queued frames, `0x14213f870`).
+/// queued frames, `0x14213fac0`).
 pub const MAX_BURST: u32 = 59;
 
 #[derive(Debug, Clone)]

@@ -1,5 +1,5 @@
 //! The client's terrain hashes (`docs/re/terrain/README.md`): the tile hash
-//! (`0x141d21100`) and the doodad hash, which the client sends in TerrainHashes. A generated
+//! (`0x141d21350`) and the doodad hash, which the client sends in TerrainHashes. A generated
 //! layout is right when both match.
 
 const M: u32 = 0x5bd1_e995;
@@ -30,7 +30,7 @@ pub fn murmur2_utf16(s: &str, seed: u32) -> u32 {
     finish(h)
 }
 
-/// MurmurHash2 (`0x1421a52e0`).
+/// MurmurHash2 (`0x1421a5530`).
 pub fn murmur2(data: &[u8], seed: u32) -> u32 {
     let mut h = data.len() as u32 ^ seed;
     let mut chunks = data.chunks_exact(4);

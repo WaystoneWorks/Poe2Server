@@ -952,9 +952,24 @@ impl Locomotion {
     /// at the click, the `ActionEvent` on arrival, no `0x64`). Rolling or sprinting, or an entity
     /// that is no object: acked like any other action.
     fn start_interaction(&mut self, req: UseSkill, entity: u32, target: Cell, ctx: &mut StepCtx, out: &mut Out) {
-        let free = matches!(self.state, MoveState::Idle | MoveState::Walking(_));
         let flags = req.flags;
         self.interact_walk = None;
+        // A click in reach while the sprint runs (user 2026-11-18 16:32:35.537, a waypoint): the
+        // client ends its sprint and runs the `Interaction` (0.1 s standing in slot 0, then a held
+        // key walks on at full speed). The sprint ends first, then the click is an `Interaction`
+        // like any other, which also ends the `SprintEnd` clip. As an attack the model got the
+        // attack's walk slow (`action_slow`) and no stand, fell 8 cells behind the client's walk,
+        // and the next click's `StartAction` cell pulled the client forward; with the sprint-off
+        // after the `StartAction` the model coasted through the stand instead.
+        if let Some(object) = ctx.objects.get(&entity).copied()
+            && matches!(self.state, MoveState::Sprinting(_))
+            && self.sim.reaches(target, object, ctx.config.sprint_clearance_level, ctx.terrain)
+        {
+            let no_ack = !out.items.iter().any(|k| matches!(k.event, MoveEvent::MoveAck { .. }));
+            self.end_sprint(no_ack, ctx, out);
+            out.key = Drain::Start;
+        }
+        let free = matches!(self.state, MoveState::Idle | MoveState::Walking(_));
         let Some(object) = ctx.objects.get(&entity).copied().filter(|_| free) else {
             self.start_other(req, target, ctx, out);
             out.push(MoveEvent::Interact { entity, flags });

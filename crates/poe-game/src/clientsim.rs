@@ -1815,9 +1815,10 @@ impl ClientSim {
         self.end_move(false, t);
         self.stop_with_callbacks(t);
         self.level = 0;
-        // The clip plays only with slot 0 empty (`actor + 0x238 == 0`): a roll or an attack holds
-        // it. The attack's end is not modelled here: its slow-down ramp stands for it.
-        if self.roll.is_some() || self.action_slow.is_some() {
+        // The clip plays only with slot 0 empty (`actor + 0x238 == 0`): a roll, an attack or an
+        // object's `Interaction` holds it (a click in reach while sprinting: the client stands).
+        // The attack's end is not modelled here: its slow-down ramp stands for it.
+        if self.roll.is_some() || self.action_slow.is_some() || self.interaction.is_some() {
             return;
         }
         let v = self.speed() * CELL;

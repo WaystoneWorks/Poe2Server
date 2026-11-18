@@ -386,6 +386,59 @@ fn a_click_in_the_batch_of_the_sprint_release_is_an_interaction() {
     assert!(ev.iter().any(|e| matches!(e, MoveEvent::Interact { entity: 500, .. })), "{ev:?}");
 }
 
+/// The user's snap of 2026-11-18 (16:32:35.537, a waypoint): a click in reach while the sprint runs
+/// ends the sprint and is an `Interaction`, not an attack: the walk on the held key after it is not
+/// slowed (the attack's slow left the model 8 cells behind the client).
+#[test]
+fn a_click_in_reach_while_sprinting_is_an_interaction_and_does_not_slow_the_walk() {
+    let walked = |click: bool| {
+        let rows: Vec<String> = (0..400).map(|_| ".".repeat(300)).collect();
+        let rows: Vec<&str> = rows.iter().map(|r| r.as_str()).collect();
+        let (mut w, p) = world_with(Arc::new(VecGrid::from_rows(&rows)), (150, 60), |c| {
+            c.interact_skill = INTERACT;
+            c.sprint_clearance_level = 4;
+        });
+        with_object(&mut w, CHECKPOINT);
+        w.input(p, MoveInput::Direction { x: 0, y: 180 });
+        tick(&mut w);
+        w.input(p, MoveInput::SprintInput { held: true });
+        w.input(p, MoveInput::UseSkill(skill(ROLL, 0, 20)));
+        for _ in 0..60 {
+            tick(&mut w);
+        }
+        let at = cell(&w, p);
+        if click {
+            click_object(&mut w, p, (at.0, at.1 + 12));
+            let ev = tick(&mut w);
+            let kind = ev.iter().find_map(|e| match e {
+                MoveEvent::ActionStart { kind, skill, .. } if *skill == INTERACT => Some(*kind),
+                _ => None,
+            });
+            assert_eq!(kind, Some(ActionKind::Interaction), "{ev:?}");
+            assert!(ev.iter().any(|e| matches!(e, MoveEvent::Interact { entity: 500, .. })), "{ev:?}");
+            // The `Interaction`'s stand: no coast through it.
+            let stand = cell(&w, p);
+            tick(&mut w);
+            tick(&mut w);
+            assert_eq!(cell(&w, p), stand, "moved during the Interaction");
+        } else {
+            w.input(p, MoveInput::SprintInput { held: false });
+            tick(&mut w);
+        }
+        w.input(p, MoveInput::SprintInput { held: false });
+        for _ in 0..40 {
+            tick(&mut w);
+        }
+        let from = cell(&w, p);
+        for _ in 0..30 {
+            tick(&mut w);
+        }
+        cell(&w, p).1 - from.1
+    };
+    let (after_click, plain) = (walked(true), walked(false));
+    assert_eq!(after_click, plain, "30 frames of walk after the click {after_click} cells, after a plain sprint end {plain}");
+}
+
 /// The user's snaps of 2026-11-06: `SprintEnd` does not drop an `Interaction` (vf70 = 0, a plain
 /// Move's is 1), so a far click during the coast walks to the ring and acts on arrival.
 #[test]

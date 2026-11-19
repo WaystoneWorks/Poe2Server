@@ -280,6 +280,13 @@ pub struct Locomotion {
     state: MoveState,
     wasd: Cell,
     held: bool,
+    /// The client's Actor `+0x915` ("is sprinting", read by `0x141e6bad0`): a roll start sets it
+    /// while the sprint key is held (`DodgeRoll_OnStart` calls Actor vf `+0xd0` `0x141e58f70`:
+    /// set when `+0x2a2` bit 5, the `0x2e7` echo, is on) and only `0x2e7` held=0 clears it
+    /// (`0x141e6a6b0`). While it is set the client's `DodgeRoll` cannot start (vf `+0x1f0`
+    /// `0x141ab6820`): a sprint ended by a click with the key still down, whose release a panel
+    /// took (user 2026-11-19 12:03:15.6, the waypoint's World panel), leaves it on.
+    sprint_flag: bool,
     /// A direction input arrived this frame: answer it.
     ack_wanted: bool,
     inbox: Vec<MoveInput>,
@@ -377,6 +384,7 @@ impl Locomotion {
             state: MoveState::Idle,
             wasd: (0, 0),
             held: false,
+            sprint_flag: false,
             ack_wanted: false,
             inbox: Vec::new(),
             due: Vec::new(),
@@ -763,6 +771,8 @@ impl Locomotion {
             }
             MoveInput::SprintInput { held } => {
                 self.held = held;
+                // The echo below (`0x2e7` held=0) clears the client's `+0x915`.
+                self.sprint_flag &= held;
                 if let MoveState::Rolling(r) = &mut self.state {
                     r.held = held;
                     // Once released the client's roll keeps the tap curve even if the key comes
@@ -1073,6 +1083,10 @@ impl Locomotion {
         let busy = matches!(self.state, MoveState::Rolling(_) | MoveState::Sprinting(_));
         if ctx.config.skills.is_roll(req.skill) {
             match self.state {
+                // The client still counts itself as sprinting (`+0x915`): its `DodgeRoll` cannot
+                // start, so the press is only acked (user 2026-11-19 12:03:34.397: the server's
+                // roll put its model 6 cells from the client, which walked on).
+                _ if self.sprint_flag => out.push(Self::skill_ack(&req, target)),
                 // Chained rolls (2026-10-20: presses 28 and 29 frames after the previous start,
                 // plus the 2026-10-14 case at 27): acked at once, the roll itself starts when
                 // the previous action ends (`max(r+1, P+30)`). A press 9 frames in that was
@@ -1172,6 +1186,8 @@ impl Locomotion {
         // by a click's Move runs after the tick at `(9, 1)`, so its clip and whole timeline start
         // one frame later, stun at `(5, 6)` (8 of 8, 2026-10-20 f3712, f4485; 2026-11-02 f8037, f8075).
         self.roll_late = false;
+        // The roll batch echoes the key (`0x2e7`) before the `StartAction`.
+        self.sprint_flag |= self.held;
         let start_key = out.key;
         let late = start_key == AT_RESTART;
         let scheduled = start_key == AT_ROLL_END_MOVE;
@@ -1361,8 +1377,18 @@ impl Locomotion {
         let cell = self.sim.grid();
         // The attack replaces whatever was waiting (seg1 f3746, a press only acked, then f3755).
         self.queued_roll = None;
+        // A click on an object during a roll or `must_sprint`, started here when the roll or the
+        // sprint lets go: the client runs skill `0x2000c266` as an `Interaction` (user 2026-11-19
+        // 12:03:45.680, slot 0 for 3 frames, then the held key walked on at full speed). As an
+        // attack the model got the walk slow and fell 3 cells behind. Out of reach the client
+        // walks to the ring first: not modelled here (UNTESTED).
+        let interaction = req.skill == ctx.config.interact_skill
+            && req
+                .entity
+                .and_then(|e| ctx.objects.get(&e).copied())
+                .is_some_and(|o| self.sim.reaches(target, o, ctx.config.sprint_clearance_level, ctx.terrain));
         out.push(MoveEvent::ActionStart {
-            kind: ActionKind::Other,
+            kind: if interaction { ActionKind::Interaction } else { ActionKind::Other },
             skill: req.skill,
             flags: req.flags | ACTION_INPUT_FLAG,
             action: Self::alloc_action(ctx),

@@ -439,6 +439,53 @@ fn a_click_in_reach_while_sprinting_is_an_interaction_and_does_not_slow_the_walk
     assert_eq!(after_click, plain, "30 frames of walk after the click {after_click} cells, after a plain sprint end {plain}");
 }
 
+/// The user's snap of 2026-11-19 12:03:34: a click ended a sprint with the key still down and its
+/// release never came (the waypoint's World panel took it). The client's Actor `+0x915` stays set
+/// until `0x2e7` held=0, and its `DodgeRoll` cannot start meanwhile: the next roll press (no
+/// `0x2e6`, the client thinks the key is down) is only acked, and the walk goes on. After a
+/// release and a new press the roll starts as usual.
+#[test]
+fn a_roll_press_while_the_client_still_counts_as_sprinting_is_only_acked() {
+    let rows: Vec<String> = (0..400).map(|_| ".".repeat(300)).collect();
+    let rows: Vec<&str> = rows.iter().map(|r| r.as_str()).collect();
+    let (mut w, p) = world_with(Arc::new(VecGrid::from_rows(&rows)), (150, 60), |c| {
+        c.interact_skill = INTERACT;
+        c.sprint_clearance_level = 4;
+    });
+    with_object(&mut w, CHECKPOINT);
+    w.input(p, MoveInput::Direction { x: 0, y: 180 });
+    tick(&mut w);
+    w.input(p, MoveInput::SprintInput { held: true });
+    w.input(p, MoveInput::UseSkill(skill(ROLL, 0, 20)));
+    for _ in 0..60 {
+        tick(&mut w);
+    }
+    let at = cell(&w, p);
+    click_object(&mut w, p, (at.0, at.1 + 12));
+    for _ in 0..30 {
+        tick(&mut w);
+    }
+    // Space up and down again with the panel open: nothing reaches the server but the roll.
+    w.input(p, MoveInput::UseSkill(skill(ROLL, 0, 20)));
+    let ev = tick(&mut w);
+    assert!(!ev.iter().any(|e| matches!(e, MoveEvent::ActionStart { kind: ActionKind::Roll, .. })), "{ev:?}");
+    assert!(ev.iter().any(|e| matches!(e, MoveEvent::SkillAck { .. })), "{ev:?}");
+    let from = cell(&w, p);
+    for _ in 0..10 {
+        tick(&mut w);
+    }
+    let walked = cell(&w, p).1 - from.1;
+    // Walk speed: 13.4 world units (1.2 cells) a frame; a sprint is 2.
+    assert!((10..=14).contains(&walked), "walk speed expected, moved {walked} cells in 10 frames");
+    // The release clears it; the next press rolls.
+    w.input(p, MoveInput::SprintInput { held: false });
+    tick(&mut w);
+    w.input(p, MoveInput::SprintInput { held: true });
+    w.input(p, MoveInput::UseSkill(skill(ROLL, 0, 20)));
+    let ev = tick(&mut w);
+    assert!(ev.iter().any(|e| matches!(e, MoveEvent::ActionStart { kind: ActionKind::Roll, .. })), "{ev:?}");
+}
+
 /// The user's snaps of 2026-11-06: `SprintEnd` does not drop an `Interaction` (vf70 = 0, a plain
 /// Move's is 1), so a far click during the coast walks to the ring and acts on arrival.
 #[test]
@@ -869,4 +916,42 @@ fn a_key_held_through_the_wake_up_walks_when_it_ends() {
         tick(&mut w);
     }
     assert_eq!(cell(&w, p), (284, 1141));
+}
+
+/// The user's 3-cell snaps of 2026-11-19 12:03:46: a click on a checkpoint in reach while the
+/// roll's sprint still has `must_sprint` (Space held, W walking) is acked at once and its
+/// `StartAction` waits for `t0 + 35`. The client runs it as an `Interaction` (slot 0 for 3 frames,
+/// then the held key walks on at full speed); the model did an attack, whose walk slow left it
+/// behind.
+#[test]
+fn a_click_in_reach_during_must_sprint_is_an_interaction_when_the_sprint_lets_go() {
+    let (mut w, p) = interact_world((140, 96));
+    with_object(&mut w, CHECKPOINT);
+    tick(&mut w);
+    w.input(p, MoveInput::Direction { x: -180, y: 0 });
+    tick(&mut w);
+    w.input(p, MoveInput::SprintInput { held: true });
+    w.input(p, MoveInput::UseSkill(skill(ROLL, -20, 0)));
+    let mut started = None;
+    for f in 0..45u32 {
+        if f == 20 {
+            click_object(&mut w, p, (70, 96));
+        }
+        for e in tick(&mut w) {
+            if let MoveEvent::ActionStart { kind, skill, .. } = e
+                && skill == INTERACT
+            {
+                assert_eq!(kind, ActionKind::Interaction, "frame {f}");
+                started = Some((f, cell(&w, p)));
+            }
+        }
+    }
+    let (f, at) = started.expect("no StartAction for the click");
+    assert!(f > 20, "the StartAction waits for the sprint to let go, came at {f}");
+    let from = cell(&w, p);
+    for _ in 0..10 {
+        tick(&mut w);
+    }
+    let walked = from.0 - cell(&w, p).0;
+    assert!((10..=14).contains(&walked), "walk speed after the Interaction (from {at:?}), moved {walked} cells in 10 frames");
 }

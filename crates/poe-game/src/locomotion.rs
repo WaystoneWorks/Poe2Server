@@ -24,6 +24,22 @@ use crate::movement::{
     MovementConfig, MovementModel, SkillIds, StepCtx, UseSkill,
 };
 
+/// Frame length (s) at which the `*_FRAMES` durations of the roll's timeline were measured. Under
+/// `time scale` a frame is shorter (`ctx.dt`), and those durations are game time like the roll's
+/// own clock (`roll_event_due`), so [`game_frames`] stretches them: at 3 ms frames `must_sprint`
+/// went off before the sprint had started, and a click queued in the roll was dropped (game test
+/// `b4-roll-click`). Input cadences (`CLICK_RESTART_FRAMES`, `STALE_FRAMES`,
+/// `RELEASE_WINDOW_FRAMES`) stay in frames: the client sends one input batch per frame.
+const MEASURED_FRAME_SECS: f32 = 0.033;
+
+/// `n` frames of 33 ms in frames of `dt`; `n` itself at the normal frame length.
+fn game_frames(n: u64, dt: f32) -> u64 {
+    if dt <= 0.0 || (dt - MEASURED_FRAME_SECS).abs() < 1e-4 {
+        return n;
+    }
+    (n as f32 * MEASURED_FRAME_SECS / dt).round() as u64
+}
+
 /// Frames after the roll start at which a queued attack cuts the roll short and starts
 /// (2026-10-20 capture: 24 in all 3 cases; the client's roll action ends then too).
 const ATTACK_CANCEL_FRAMES: u64 = 24;
@@ -784,7 +800,7 @@ impl Locomotion {
                     // A sprint cannot end before `must_sprint` goes off at t0 + 35: a key
                     // released earlier (2026-10-20 capture: at t0 + 19) is answered at once
                     // (`1b1`, `2e7`) and the sprint ends at t0 + 35.
-                    let end = run.start_frame + MUST_SPRINT_END_FRAMES;
+                    let end = run.start_frame + game_frames(MUST_SPRINT_END_FRAMES, ctx.dt);
                     if ctx.frame < end {
                         self.release_pending = true;
                     } else {
@@ -1253,7 +1269,7 @@ impl Locomotion {
             out.push_at(AT_ROLL_STUN, MoveEvent::Stats(stun_stats(ROLL_STUN_THRESHOLD)));
         }
         self.due
-            .push((t0 + TAP_END_FRAMES, Due::RollEndTap { roll: t0 }));
+            .push((t0 + game_frames(TAP_END_FRAMES, ctx.dt), Due::RollEndTap { roll: t0 }));
     }
 
     /// Click-to-move, verified on 2026-10-20 (6 single clicks, 4 holds): the press is answered
@@ -1351,7 +1367,7 @@ impl Locomotion {
                 self.queued_attack = Some((req, target));
             }
             let at =
-                (r.start_frame + ATTACK_CANCEL_FRAMES).max(ctx.frame + 1);
+                (r.start_frame + game_frames(ATTACK_CANCEL_FRAMES, ctx.dt)).max(ctx.frame + 1);
             self.due.push((
                 at,
                 Due::AttackWindow {
@@ -1374,21 +1390,58 @@ impl Locomotion {
         ctx: &mut StepCtx,
         out: &mut Out,
     ) {
-        let cell = self.sim.grid();
-        // The attack replaces whatever was waiting (seg1 f3746, a press only acked, then f3755).
-        self.queued_roll = None;
         // A click on an object during a roll or `must_sprint`, started here when the roll or the
         // sprint lets go: the client runs skill `0x2000c266` as an `Interaction` (user 2026-11-19
         // 12:03:45.680, slot 0 for 3 frames, then the held key walked on at full speed). As an
-        // attack the model got the walk slow and fell 3 cells behind. Out of reach the client
-        // walks to the ring first: not modelled here (UNTESTED).
-        let interaction = req.skill == ctx.config.interact_skill
-            && req
-                .entity
-                .and_then(|e| ctx.objects.get(&e).copied())
-                .is_some_and(|o| self.sim.reaches(target, o, ctx.config.sprint_clearance_level, ctx.terrain));
+        // attack the model got the walk slow and fell 3 cells behind. Out of reach by then (the
+        // sprint carried the player past the ring) the client walks to the ring with the keys
+        // held, and the `Interaction` acts on arrival (game test `b4-roll-click`: from 30 cells,
+        // W+D held, it walked back and stopped 18.7 cells from the checkpoint); as an attack the
+        // model walked on with the keys, 30 cells apart.
+        let clearance = ctx.config.sprint_clearance_level;
+        let object = req
+            .entity
+            .filter(|_| req.skill == ctx.config.interact_skill)
+            .and_then(|e| ctx.objects.get(&e).copied().map(|o| (e, o)));
+        let walk = object.filter(|&(_, o)| !self.sim.reaches(target, o, clearance, ctx.terrain));
+        if let Some((_, o)) = walk {
+            self.sim.set_next_reach(o, clearance);
+        }
+        self.start_attack_or_interaction(req, target, ack, object.is_some(), walk.is_some(), ctx, out);
+        if let Some((entity, _)) = walk {
+            let cell = self.sim.grid();
+            self.state = MoveState::Walking(Walk::Target { goal: target });
+            self.facing = (target.0 - cell.0, target.1 - cell.1);
+            self.sprint_end = None;
+            self.bonk = false;
+            self.move_start_frame = Some(ctx.frame);
+            self.interact_walk = Some((entity, req.flags));
+        }
+    }
+
+    /// [`Self::start_attack`]'s messages; `object`: a click on an object, `walk`: out of its
+    /// reach (a Move to the ring, its `ActionEvent` on arrival).
+    #[allow(clippy::too_many_arguments)]
+    fn start_attack_or_interaction(
+        &mut self,
+        req: UseSkill,
+        target: Cell,
+        ack: bool,
+        object: bool,
+        walk: bool,
+        ctx: &mut StepCtx,
+        out: &mut Out,
+    ) {
+        let cell = self.sim.grid();
+        // The attack replaces whatever was waiting (seg1 f3746, a press only acked, then f3755).
+        self.queued_roll = None;
+        let kind = match (object, walk) {
+            (true, false) => ActionKind::Interaction,
+            (true, true) => ActionKind::Move,
+            _ => ActionKind::Other,
+        };
         out.push(MoveEvent::ActionStart {
-            kind: if interaction { ActionKind::Interaction } else { ActionKind::Other },
+            kind,
             skill: req.skill,
             flags: req.flags | ACTION_INPUT_FLAG,
             action: Self::alloc_action(ctx),
@@ -1441,7 +1494,9 @@ impl Locomotion {
         // 147, 0x2000c266 31 of 31, 0x85000040 47 of 47; skills with their own stats or buffs
         // send those first), then the ack.
         let Some(run) = self.sprint().copied() else {
-            out.push(MoveEvent::ActionEvent);
+            if !walk {
+                out.push(MoveEvent::ActionEvent);
+            }
             if ack {
                 out.push(Self::skill_ack(&req, target));
             }
@@ -1466,7 +1521,9 @@ impl Locomotion {
             index: run.buff_base + 1,
         });
         out.push_at(off, MoveEvent::Stats(self.sprint_off_stats()));
-        out.push_at(ev, MoveEvent::ActionEvent);
+        if !walk {
+            out.push_at(ev, MoveEvent::ActionEvent);
+        }
         if ack {
             out.push_at(ev, Self::skill_ack(&req, target));
         }
@@ -1542,7 +1599,7 @@ impl Locomotion {
         out.push(MoveEvent::Stats(stats));
         self.must_sprint_off = Some(n);
         self.due
-            .push((roll + MUST_SPRINT_END_FRAMES, Due::MustSprintOff));
+            .push((roll + game_frames(MUST_SPRINT_END_FRAMES, ctx.dt), Due::MustSprintOff));
     }
 
     /// The roll's clip ends in this frame's Animated tick.
@@ -1925,7 +1982,7 @@ impl Locomotion {
         });
         out.push(MoveEvent::Stats(self.sprint_off_stats()));
         self.due.push((
-            ctx.frame + WALL_STUN_OFF_FRAMES,
+            ctx.frame + game_frames(WALL_STUN_OFF_FRAMES, ctx.dt),
             Due::WallStunOff {
                 index: run.buff_base + 2,
             },

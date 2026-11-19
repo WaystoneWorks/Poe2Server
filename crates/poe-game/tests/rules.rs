@@ -955,3 +955,72 @@ fn a_click_in_reach_during_must_sprint_is_an_interaction_when_the_sprint_lets_go
     let walked = from.0 - cell(&w, p).0;
     assert!((10..=14).contains(&walked), "walk speed after the Interaction (from {at:?}), moved {walked} cells in 10 frames");
 }
+
+/// Under `time scale` (3 ms frames) the roll's timeline keeps game time: the sprint starts after
+/// about 0.5 s and `must_sprint` goes off at 35 frames of 33 ms, so a click in reach queued in the
+/// roll still starts there as an `Interaction`. With the durations in frames `must_sprint` went
+/// off before the sprint started and the click was dropped (game test `b4-roll-click`).
+#[test]
+fn a_scaled_frame_keeps_the_roll_timeline_in_game_time() {
+    let (mut w, p) = interact_world((140, 96));
+    with_object(&mut w, CHECKPOINT);
+    w.set_tick_ms(3);
+    tick(&mut w);
+    w.input(p, MoveInput::Direction { x: -180, y: 0 });
+    tick(&mut w);
+    w.input(p, MoveInput::SprintInput { held: true });
+    w.input(p, MoveInput::UseSkill(skill(ROLL, -20, 0)));
+    let (mut sprint, mut started) = (None, None);
+    for f in 0..500u32 {
+        if f == 240 {
+            click_object(&mut w, p, (70, 96));
+        }
+        for e in tick(&mut w) {
+            match e {
+                MoveEvent::Stats(s) if s.contains(&(poe_game::movement::MoveStat::MustSprint, 1)) => sprint = Some(f),
+                MoveEvent::ActionStart { kind, skill, .. } if skill == INTERACT => started = Some((f, kind)),
+                _ => {}
+            }
+        }
+    }
+    let sprint = sprint.expect("no sprint");
+    assert!((150..=180).contains(&sprint), "sprint start at frame {sprint} of 3 ms (15 of 33 ms)");
+    let (f, kind) = started.expect("no StartAction for the click");
+    assert!((380..=390).contains(&f), "StartAction at frame {f} of 3 ms (35 of 33 ms = 385)");
+    assert_eq!(kind, ActionKind::Interaction);
+}
+
+/// A click in reach during `must_sprint` that the sprint carried out of reach by `t0 + 35`: the
+/// client walks back to the ring with the key held and the `Interaction` acts on arrival (game
+/// test `b4-roll-click`: from 30 cells, W+D held, it stopped 18.7 cells from the checkpoint).
+#[test]
+fn a_click_left_behind_by_must_sprint_walks_back_to_the_ring() {
+    let (mut w, p) = interact_world((140, 96));
+    with_object(&mut w, CHECKPOINT);
+    tick(&mut w);
+    w.input(p, MoveInput::Direction { x: -180, y: 0 });
+    tick(&mut w);
+    w.input(p, MoveInput::SprintInput { held: true });
+    w.input(p, MoveInput::UseSkill(skill(ROLL, -20, 0)));
+    let (mut started, mut acted) = (None, None);
+    for f in 0..90u32 {
+        if f == 22 {
+            click_object(&mut w, p, (100, 104));
+        }
+        if f == 30 {
+            w.input(p, MoveInput::SprintInput { held: false });
+        }
+        for e in tick(&mut w) {
+            match e {
+                MoveEvent::ActionStart { kind, skill, .. } if skill == INTERACT => started = Some((f, kind, cell(&w, p))),
+                MoveEvent::Interact { .. } if f > 22 => acted = acted.or(Some((f, cell(&w, p)))),
+                _ => {}
+            }
+        }
+    }
+    let (f, kind, at) = started.expect("no StartAction for the click");
+    assert_eq!(kind, ActionKind::Move, "out of reach at {at:?} (frame {f})");
+    let (af, arrived) = acted.expect("never arrived");
+    let d = (((arrived.0 - 100).pow(2) + (arrived.1 - 104).pow(2)) as f64).sqrt();
+    assert!(af > f && d <= 20.5, "arrived at {arrived:?} (frame {af}), {d:.1} cells from the object");
+}

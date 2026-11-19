@@ -17,6 +17,8 @@
 //!   the spot along each of the 8 key directions (room for a roll plus a sprint);
 //! - `narrow x y keys width`: a passage `width` cells wide; walking `keys` from (x, y) goes
 //!   through it after 15 cells and comes out in the open after 30.
+//! - `--at X Y`: only the runs from (X, Y) and a map 30 cells round it (`#` unwalkable, `@` the
+//!   spot), rows from high y to low y.
 //!
 //! Walkable = layer 0 non-zero (`poe-game` `Walkable`). Directions: W = grid (+1, +1),
 //! S = (-1, -1), D = (+1, -1), A = (-1, +1) (the `0x63` vectors, hub docs/protocol/movement.md).
@@ -63,11 +65,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut count = 5;
     let mut layout = None;
     let mut runs = false;
+    let mut at: Option<(f64, f64)> = None;
     while let Some(a) = args.next() {
         if a == "--count" {
             count = args.next().ok_or("--count N")?.parse()?;
         } else if a == "--runs" {
             runs = true;
+        } else if a == "--at" {
+            let x = args.next().ok_or("--at X Y")?.parse()?;
+            at = Some((x, args.next().ok_or("--at X Y")?.parse()?));
         } else if a == "--layout" {
             layout = Some(args.next().ok_or("--layout FILE")?);
         }
@@ -86,6 +92,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("layout written to {path}");
     }
     let gr = G(&grid);
+    if let Some(p) = at {
+        let r: Vec<String> = DIRS.iter().map(|(k, d)| format!("{k}:{}", gr.run(p, unit(*d), 80))).collect();
+        println!("runs {} {} {}", p.0, p.1, r.join(" "));
+        let (px, py) = (p.0 as i32, p.1 as i32);
+        for y in (py - 30..=py + 30).rev() {
+            let row: String = (px - 30..=px + 30)
+                .map(|x| if (x, y) == (px, py) { '@' } else if gr.walk(x as f64, y as f64) { '.' } else { '#' })
+                .collect();
+            println!("{y:5} {row}");
+        }
+        return Ok(());
+    }
     let (w, h) = (grid.cells_x as i32, grid.cells_y as i32);
     // Spots from the middle out, so the first ones are not all in one corner.
     let mut cells: Vec<(f64, f64)> = (0..h).step_by(3).flat_map(|y| (0..w).step_by(3).map(move |x| (x as f64, y as f64))).collect();

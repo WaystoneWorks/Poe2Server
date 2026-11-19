@@ -456,8 +456,9 @@ pub struct ClientSim {
     roll: Option<Roll>,
     /// Slot 0 holds an `Interaction`.
     interaction: Option<SlotInteraction>,
-    /// `A + 0x248`: a server Move that waits for the roll to end, `(start, target)`.
-    queued_move: Option<(Cell, Cell)>,
+    /// `A + 0x248`: a server Move that waits for the roll to end, `(start, target, reach)` (an
+    /// object's `Interaction` keeps its ring).
+    queued_move: Option<(Cell, Cell, Option<PathReach>)>,
     /// The sprint part runs its end check.
     sprint: bool,
     sprint_end: Option<SprintEndAnim>,
@@ -1267,8 +1268,9 @@ impl ClientSim {
     /// `docs/re/movement-sprint.md`, "Keys of the sprint-off").
     pub fn actor_tick_axes(&mut self, t: &dyn Walkable) {
         if self.roll.is_none()
-            && let Some((start, target)) = self.queued_move.take()
+            && let Some((start, target, reach)) = self.queued_move.take()
         {
+            self.next_reach = reach;
             self.on_start_move(start, target, t);
         }
         if self.axes != (0, 0) {
@@ -1311,7 +1313,7 @@ impl ClientSim {
         // A running roll keeps slot 0: the Move stays queued (`A + 0x248`) until the Actor tick after
         // the roll's end; its start cell snaps then (`Actor_InstallQueuedMove`).
         if self.roll.is_some() {
-            self.queued_move = Some((start, target));
+            self.queued_move = Some((start, target, reach));
             return;
         }
         // Move vf `+0x1f0` `0x141990ad0`: `0x14016cb30` is the squared length, so the limit is 3 cells.
@@ -1812,6 +1814,17 @@ impl ClientSim {
     /// Bonk clip, which moves like SprintEnd (same clip, same MoveEvent).
     fn sprint_part_end(&mut self, _bonk: bool, t: &dyn Walkable) {
         self.sprint = false;
+        // An object's `Interaction` walking to its ring (started at `must_sprint` off, just before
+        // the sprint-off) ends the clip (vf `+0x70` = 0) and walks on: the client walked back to
+        // the checkpoint at once, no coast (game test `b4-roll-click`).
+        if self.reach.is_some() {
+            self.level = 0;
+            self.stop_move();
+            self.line.acc = 0.0;
+            self.line.pending = 0.0;
+            self.plan_move(t);
+            return;
+        }
         self.end_move(false, t);
         self.stop_with_callbacks(t);
         self.level = 0;

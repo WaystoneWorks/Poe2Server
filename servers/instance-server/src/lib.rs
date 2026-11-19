@@ -1622,7 +1622,7 @@ fn build_terrain(data: &GameData, area: &str, seed: u32, forced: Option<poe_worl
     let layout = spawn::Layout::parse(&g.map.layout_tsv()).ok_or_else(|| "generated layout does not parse".to_string())?;
     let here = poe_data::views::WorldArea::find(data, area).ok().flatten();
     let town = here.as_ref().is_some_and(|a| a.is_town);
-    let objects = travel::prepare(objects, &grid, town, here.map_or(0, |a| a.hash16));
+    let objects = travel::prepare(objects, &grid, town, here.map_or(0, |a| a.hash16), travel::player_ring_level(data));
     Ok((GeneratedTerrain { grid, layout, hashes, objects }, pwg1))
 }
 

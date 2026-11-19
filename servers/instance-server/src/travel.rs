@@ -84,9 +84,48 @@ pub fn gate_arrival(grid: &spawn::Grid, (x, y): (i32, i32), angle: f32) -> (i32,
     DISTANCES.iter().map(|&d| on(sign, d)).find(|&(a, b)| grid.walkable(a, b)).or_else(|| grid.nearest_walkable((x, y), 60)).unwrap_or((x, y))
 }
 
+/// The nearest walkable cell to `centre` at `radius` cells or more (by distance, then scan order).
+pub fn outside_ring(grid: &impl poe_game::movement::Walkable, (x, y): (i32, i32), radius: i32) -> (i32, i32) {
+    let r2 = radius * radius;
+    let mut best: Option<((i32, i32), i32)> = None;
+    for r in radius..=radius + 60 {
+        if best.is_some_and(|(_, d)| d < r * r) {
+            break;
+        }
+        for dy in -r..=r {
+            for dx in -r..=r {
+                let d = dx * dx + dy * dy;
+                if (dx.abs() != r && dy.abs() != r) || d < r2 || !grid.walkable(x + dx, y + dy) {
+                    continue;
+                }
+                if best.is_none_or(|(_, bd)| d < bd) {
+                    best = Some(((x + dx, y + dy), d));
+                }
+            }
+        }
+    }
+    best.map_or((x, y), |(c, _)| c)
+}
+
+/// The largest path size level of the playable classes (`Characters` rows' `.ot` `Positioned`
+/// `object_size`, `secondary_object_size`): the mover's part of a blocking object's ring.
+pub fn player_ring_level(data: &GameData) -> i32 {
+    let Ok(table) = data.table("Characters") else { return 0 };
+    (0..table.len())
+        .filter_map(|i| table.row(i)?.str("Id").ok())
+        .filter_map(|id| poe_data::template::ObjectTemplate::load(data, &id).ok())
+        .map(|t| {
+            let size = |key: &str| t.component("Positioned").iter().rev().find(|(k, _)| k == key).and_then(|(_, v)| v.parse::<i32>().ok()).unwrap_or(0);
+            size("object_size").max(size("secondary_object_size"))
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 /// The blob, type key and arrival cell of every object of a layout.
-/// `here`: the area's `HASH16`, the destination an in-instance gate names.
-pub fn prepare(objects: Vec<WorldObject>, grid: &spawn::Grid, town: bool, here: u16) -> Vec<PreparedObject> {
+/// `here`: the area's `HASH16`, the destination an in-instance gate names. `ring_level`: the
+/// mover's part of a blocking object's ring ([`player_ring_level`]).
+pub fn prepare(objects: Vec<WorldObject>, grid: &spawn::Grid, town: bool, here: u16, ring_level: i32) -> Vec<PreparedObject> {
     use poe_game::movement::Walkable;
     objects
         .into_iter()
@@ -102,8 +141,11 @@ pub fn prepare(objects: Vec<WorldObject>, grid: &spawn::Grid, town: bool, here: 
                 (Class::Checkpoint { .. }, _) => ObjectTail::Checkpoint,
                 (Class::Well, _) => ObjectTail::Well,
             };
-            let arrival = match object.class {
-                Class::Gate => gate_arrival(grid, cell, object.angle),
+            let arrival = match (object.class, object.reach.obstacle) {
+                (Class::Gate, _) => gate_arrival(grid, cell, object.angle),
+                // A blocking object (the checkpoint): outside its ring, where the client's path
+                // search starts normally (inside, it falls back to the general A* `0x141edc7d0`).
+                (_, Some(size)) => outside_ring(grid, cell, ring_level + size.max(0) + 1),
                 // Official: on the waypoint's own cell.
                 _ if grid.walkable(cell.0, cell.1) => cell,
                 _ => grid.nearest_walkable(cell, 60).unwrap_or(cell),
@@ -550,5 +592,20 @@ mod tests {
         assert_eq!(travel.state.lock().unwrap().warps, [(0, (31, 30)), (1, (11, 10))]);
         // Without the waypoint the checkpoint keeps index 1.
         assert_eq!(Travel::new(travel.objects.clone(), Vec::new(), vec![(10, 10)]).warp_list("A").entries[0].index, 1);
+    }
+
+    #[test]
+    fn a_blocking_object_arrival_is_the_nearest_walkable_cell_outside_its_ring() {
+        use poe_game::grid::VecGrid;
+        // Ring 7 (level 4 + size 2 + 1) around (20, 20) on open ground: straight out.
+        let open = VecGrid::open(41, 41);
+        let c = outside_ring(&open, (20, 20), 7);
+        let d = (c.0 - 20) * (c.0 - 20) + (c.1 - 20) * (c.1 - 20);
+        assert_eq!(d, 49);
+        // A wall on rows 0 to 26 except the column x = 20 at row 27 and below: the first cell at
+        // distance 7 or more that is walkable is (20, 27).
+        let rows: Vec<String> = (0..41).map(|y| if y < 27 { "#".repeat(41) } else { ".".repeat(41) }).collect();
+        let rows: Vec<&str> = rows.iter().map(String::as_str).collect();
+        assert_eq!(outside_ring(&VecGrid::from_rows(&rows), (20, 20), 7), (20, 27));
     }
 }

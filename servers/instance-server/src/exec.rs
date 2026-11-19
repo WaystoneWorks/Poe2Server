@@ -403,6 +403,21 @@ impl InstanceServer {
                 Outcome { leave: true, ..Outcome::ok(format!("moving to fresh instance #{id}")) }
             }
             ["tp"] => return self.teleport_command(ctx, player, p),
+            ["warp"] => {
+                let (Some(x), Some(y)) = (p.int("x"), p.int("y")) else {
+                    return Ok(Outcome::err(format!("usage: {}", commands::usage(p.spec))));
+                };
+                let (x, y) = (x as i32, y as i32);
+                let d2 = |o: &&crate::travel::SpawnedObject| (o.object.x - x).pow(2) + (o.object.y - y).pow(2);
+                match ctx.travel.objects.iter().filter(|o| o.object.class != poe_world::objects::Class::Gate).min_by_key(d2) {
+                    Some(o) => {
+                        info!(object = ?(o.object.x, o.object.y), cell = ?o.arrival, "warp command");
+                        player.teleport(o.arrival);
+                        Outcome::ok(format!("warped to {} {}", o.arrival.0, o.arrival.1))
+                    }
+                    None => Outcome::err("no waypoint or checkpoint in this instance".to_string()),
+                }
+            }
             ["waypoint", "unlock"] => {
                 let n = self.unlock_command(ctx.ticket.character.id, true, p.get("what").unwrap_or("all"), p.get("value"))?;
                 Outcome::ok(format!("{n} waypoints unlocked"))

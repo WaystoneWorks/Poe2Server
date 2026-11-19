@@ -529,6 +529,16 @@ pub const COMMANDS: &[Spec] = &[
         ..BASE
     },
     Spec {
+        path: &["warp"],
+        category: Category::World,
+        args: &[arg("x", Kind::Int), arg("y", Kind::Int)],
+        summary: "Warps you as the World panel does, to the waypoint or checkpoint nearest a cell.",
+        help: "Puts you on the arrival cell of the waypoint or checkpoint nearest grid cell <x> <y>, the cell a World panel warp to it uses (session replays use it).",
+        examples: &["warp 630 1388"],
+        overlay: WORLD_PAGE,
+        ..BASE
+    },
+    Spec {
         path: &["time", "scale"],
         category: Category::World,
         args: &[opt("factor", Kind::Float)],

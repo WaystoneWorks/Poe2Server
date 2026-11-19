@@ -20,8 +20,10 @@
 //! The line-of-sight tests that end at the start run from the entity's exact point on its line
 //! while it moves along one ([`Params::moving`]).
 //!
-//! Not ported: dynamic obstacles (other entities) and the A* fallback (taken when the start cell
-//! is blocked; the search runs again at level 0 instead, which agreed with the client).
+//! A start inside a blocking object's ring runs the client's general A* instead ([`plan`]).
+//! Not ported: dynamic obstacles (other entities), and the A* for a start whose terrain is
+//! blocked at the entity's level (the search runs again at level 0 instead, which agreed with
+//! the client).
 //!
 //! The heap reproduces MSVC's `std::push_heap`/`pop_heap`, because equal costs are common on a
 //! grid and the client's tie order decides which of several equally good paths it takes.
@@ -806,6 +808,194 @@ impl Search<'_> {
     }
 }
 
+/// The general A* (`0x141edc7d0`) the search falls back to: its neighbour order per parent
+/// code (`DAT_142f1f670`, the first `ASTAR_COUNT[code]` entries; code 8 is the start).
+const ASTAR_ORDER: [[usize; 8]; 9] = [
+    [6, 2, 5, 0, 0, 0, 0, 0],
+    [6, 3, 7, 0, 0, 0, 0, 0],
+    [7, 0, 4, 0, 0, 0, 0, 0],
+    [5, 1, 4, 0, 0, 0, 0, 0],
+    [6, 2, 5, 3, 7, 0, 0, 0],
+    [6, 3, 7, 0, 4, 0, 0, 0],
+    [5, 1, 7, 0, 4, 0, 0, 0],
+    [6, 2, 5, 1, 4, 0, 0, 0],
+    [6, 2, 5, 3, 1, 7, 0, 4],
+];
+/// `DAT_142f1f6b8`: how many neighbours a node with each parent code expands.
+const ASTAR_COUNT: [usize; 9] = [3, 3, 3, 3, 5, 5, 5, 5, 8];
+/// Step cost into a cell inside a blocking object's ring (from a node that is inside one).
+const ASTAR_ENTITY_STEP: f32 = 21.0;
+
+impl Search<'_> {
+    /// The entity cell test (`0x141ede210` / `0x141ede680`, docs/re/server-code.md section 3)
+    /// for objects, which cannot be pushed: inside a ring of radius `ring_level + size`.
+    fn entity_blocked(&self, c: Cell, ring_level: i32) -> bool {
+        self.terrain.obstacles().iter().any(|o| {
+            let (dx, dy) = (o.cell.0 - c.0, o.cell.1 - c.1);
+            let r = (ring_level + 1 + o.size.max(0)).max(1) - 1;
+            ((dx * dx + dy * dy) as u32) < (r * r) as u32
+        })
+    }
+
+    /// Whether the start cell is inside a blocking object's ring: the client's search then
+    /// runs the general A* (`0x141ee008a` calls `0x141edc7d0`).
+    fn start_in_entity(&self) -> bool {
+        self.entity_blocked(self.start, self.params.size_level.unwrap_or(self.level))
+    }
+
+    /// The cells of the client's integer line from `a` to `b`, both included
+    /// (`0x141d1d070` and the A*'s smoothing walk them the same way).
+    fn line_any(a: Cell, b: Cell, mut hit: impl FnMut(Cell) -> bool) -> bool {
+        let (dx, dy) = ((b.0 - a.0).abs(), (b.1 - a.1).abs());
+        let steep = dx < dy;
+        let (m1, n1, m2, n2) = if steep { (a.1, a.0, b.1, b.0) } else { (a.0, a.1, b.0, b.1) };
+        let (dmaj, dmin) = ((m2 - m1).abs(), (n2 - n1).abs());
+        let step_minor = (n2 - n1).signum();
+        let step_major = if m1 < m2 { 1 } else { -1 };
+        let mut err = -(dmaj / 2);
+        let (mut m, mut n) = (m1, n1);
+        while m != m2 + step_major {
+            if hit(if steep { (n, m) } else { (m, n) }) {
+                return true;
+            }
+            err += dmin;
+            if err > 0 {
+                n += step_minor;
+                err -= dmaj;
+            }
+            m += step_major;
+        }
+        false
+    }
+
+    /// `0x141d1d070`: a cell on the line from `a` to `b` has a free size below `level + 1`.
+    fn walk_blocked(&self, a: Cell, b: Cell) -> bool {
+        let need = self.level + 1;
+        need != 0 && Self::line_any(a, b, |c| self.nibble(c) < need)
+    }
+
+    /// The general A* `0x141edc7d0` for a start inside a blocking object's ring
+    /// (docs/re/server-code.md section 2), for a player: unlimited node budget, the ellipse
+    /// bound, no coarse retry. A cell inside a ring can be entered only from a node inside one,
+    /// at cost 21, so the path leaves the ring by the fewest ring cells.
+    fn astar(&mut self) -> Plan {
+        let start = self.start;
+        let ring_level = self.params.size_level.unwrap_or(self.level);
+        // `max(min(2 d, 136), 20)` (`0x1401528a0` / `0x1401528b0`; 50 for a player's minion).
+        let bound = (length(self.a.0, self.a.1) * 2.0).min(136.0).max(20.0);
+        let terrain_ok = |s: &Self, c: Cell| s.level == -1 || s.nibble(c) >= s.level + 1;
+        let start_blocked = !terrain_ok(self, start) || self.entity_blocked(start, ring_level);
+        let si = self.index(start).expect("start in window");
+        let h0 = self.hcell(start);
+        {
+            let n = self.node_mut(si);
+            n.g = 0.0;
+            n.h = h0;
+            n.f = h0;
+            n.flags = (n.flags & 0x70) | 8 | if start_blocked { BLOCKED } else { 0 };
+        }
+        self.push(si);
+        let (mut best, mut best_h) = (start, h0);
+        let mut reached = false;
+        while !self.scratch.heap.is_empty() {
+            let (key, f) = heap_pop(&mut self.scratch.heap);
+            let i = key as usize;
+            let Some(&n) = self.node(i) else { continue };
+            if f != n.f {
+                continue;
+            }
+            let pos = self.cell_of(i);
+            if n.h < best_h {
+                best = pos;
+                best_h = n.h;
+            }
+            // `h == 0`: reached (the client's extra line test `0x141d1d4f0` for a goal band
+            // is not ported; a point goal has `h == 0` only on the goal cell).
+            if n.h == 0.0 {
+                best = pos;
+                reached = true;
+                break;
+            }
+            let flags = {
+                let nm = self.node_mut(i);
+                nm.flags |= CLOSED;
+                nm.flags
+            };
+            let code = (flags & 0xf) as usize;
+            let inside = flags & BLOCKED != 0;
+            for &d in &ASTAR_ORDER[code.min(8)][..ASTAR_COUNT[code.min(8)]] {
+                let c2 = (pos.0 + DXY[d].0, pos.1 + DXY[d].1);
+                let Some(j) = self.index(c2) else { continue };
+                let base = if d < 4 { 1.0 } else { SQRT2 };
+                match self.node(j).copied() {
+                    Some(nb) if nb.flags & CLOSED != 0 => {}
+                    Some(nb) => {
+                        let g = if nb.flags & BLOCKED != 0 { ASTAR_ENTITY_STEP } else { base } + n.g;
+                        if g < nb.g {
+                            let h = self.hcell(c2);
+                            let nm = self.node_mut(j);
+                            nm.g = g;
+                            nm.h = h;
+                            nm.f = h + g;
+                            nm.flags = (nm.flags & 0x70) | REV[d] as u8;
+                            self.push(j);
+                        }
+                    }
+                    None => {
+                        let (ds, dg) = ((c2.0 - start.0, c2.1 - start.1), (c2.0 - self.goal.0, c2.1 - self.goal.1));
+                        if bound <= length(ds.0, ds.1) + length(dg.0, dg.1) {
+                            continue;
+                        }
+                        let free = terrain_ok(self, c2);
+                        let entity = free && self.entity_blocked(c2, ring_level);
+                        if !free || (entity && !inside) {
+                            self.node_mut(j).flags |= CLOSED;
+                            continue;
+                        }
+                        let g = if entity { ASTAR_ENTITY_STEP } else { base } + n.g;
+                        let h = self.hcell(c2);
+                        let nm = self.node_mut(j);
+                        nm.g = g;
+                        nm.h = h;
+                        nm.f = g + h;
+                        nm.flags = (nm.flags & 0x70) | REV[d] as u8 | if entity { BLOCKED } else { 0 };
+                        self.push(j);
+                    }
+                }
+            }
+        }
+        if best == start {
+            return Plan { path: Vec::new(), reached };
+        }
+        // Rebuild from the end, keeping a cell when the line from its parent to the last kept
+        // cell is blocked by terrain (`0x141d1d070`) or crosses a ring.
+        let parent = |s: &Self, c: Cell| -> Cell {
+            let d = s.index(c).and_then(|i| s.node(i)).map_or(8, |n| (n.flags & 0xf) as usize).min(7);
+            (c.0 + DXY[d].0, c.1 + DXY[d].1)
+        };
+        let mut path = vec![best];
+        let mut kept = best;
+        let mut c = parent(self, best);
+        while c != start {
+            let next = parent(self, c);
+            let blocked = self.walk_blocked(next, kept) || Self::line_any(next, kept, |p| self.entity_blocked(p, ring_level));
+            if blocked {
+                if path.len() == 0x88 {
+                    return Plan::default();
+                }
+                path.push(c);
+                kept = c;
+            }
+            c = next;
+        }
+        if path.len() == 0x88 {
+            return Plan::default();
+        }
+        path.push(start);
+        Plan { path, reached }
+    }
+}
+
 /// Plans a path from `start` to `goal` the way the client does.
 ///
 /// `level` is the entity's clearance: cells whose grid value is at most `level` (value 5 counts
@@ -862,6 +1052,9 @@ pub fn plan(terrain: &dyn Walkable, start: Cell, goal: Cell, level: i32, params:
             mid,
             mid_r2: (r_m * r_m) as u32,
         };
+        if search.start_in_entity() {
+            return search.astar();
+        }
         search.h_start = search.hcell(start);
         search.cap = ((search.h_start * 0.33f32) as u32).clamp(5, 22);
         // The rings use the entity's size level (`local_658`), also when the terrain test falls
@@ -930,6 +1123,36 @@ mod tests {
                 let y = a.1 as f32 + 0.5 + (b.1 - a.1) as f32 * t;
                 assert!(g.walkable(x.floor() as i32, y.floor() as i32));
             }
+        }
+    }
+
+    fn checkpoint_ring(g: &VecGrid, obstacles: &[Obstacle], start: Cell, goal: Cell) -> Plan {
+        let t = crate::movement::WithObstacles { terrain: g, obstacles };
+        plan(&t, start, goal, 0, &Params { size_level: Some(4), ..Params::default() })
+    }
+
+    #[test]
+    fn a_start_inside_a_ring_walks_out_cell_by_cell_then_straight() {
+        // A checkpoint (size 2) at (100, 100): ring radius 4 + 2 = 6. The way out with the
+        // fewest ring cells is diagonal (3 cells at cost 21, straight out would be 4), kept cell
+        // by cell because every line from inside crosses the ring.
+        let obstacles = [Obstacle { cell: (100, 100), size: 2 }];
+        let plan = checkpoint_ring(&open(), &obstacles, (100, 101), (100, 120));
+        assert!(plan.reached);
+        assert_eq!(plan.path, [(100, 120), (96, 105), (97, 104), (98, 103), (99, 102), (100, 101)]);
+    }
+
+    #[test]
+    fn a_path_out_of_a_ring_does_not_cross_it_again() {
+        let obstacles = [Obstacle { cell: (100, 100), size: 2 }];
+        let plan = checkpoint_ring(&open(), &obstacles, (100, 101), (100, 80));
+        assert!(plan.reached);
+        assert_eq!(plan.path[0], (100, 80));
+        let inside = |c: Cell| (c.0 - 100).pow(2) + (c.1 - 100).pow(2) < 36;
+        let pts: Vec<Cell> = plan.path.iter().rev().copied().collect();
+        let out = pts.iter().position(|&c| !inside(c)).expect("leaves the ring");
+        for w in pts[out..].windows(2) {
+            assert!(!Search::line_any(w[0], w[1], inside), "{:?} crosses the ring", w);
         }
     }
 

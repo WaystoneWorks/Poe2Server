@@ -8,15 +8,19 @@
 //! Always from the segment's start (the area's start).
 //! `--free`: no placing on the client's log inside skills. The two models must then agree in every frame.
 //! `OFFSET`: log frame minus capture frame of the segment, as the trace script prints it.
+//! Private sessions (`scripts/re/first_divergence.py`): `--skills MOVE,INTERACT,ROLL`, `--objects FILE`
+//! (both from `instance-server/examples/replay_terrain.rs`), `--no-hints` (the search runs on its
+//! own), `--first` (stop at the first difference of any kind, with its frames).
 //! Files made from a private session (the removed server movement trace) used OFFSET 0, `--roll-skill 1`.
 
+use poe_game::clientpath::Obstacle;
 use poe_game::clientsim::ClientSim;
 use poe_game::grid::Grid;
 use poe_game::locomotion::Locomotion;
 use poe_game::motion_data::hub_motion_or_panic;
 use poe_game::movement::{
-    ActionKind, Cell, Drain, Keyed, MoveEvent, MoveInput, MoveStat, MovementConfig, SkillIds,
-    StepCtx, UseSkill, Walkable,
+    ActionKind, Cell, Drain, Keyed, MoveEvent, MoveInput, MoveStat, MovementConfig, ObjectReach,
+    ObjectReaches, SkillIds, StepCtx, UseSkill, Walkable, WithObstacles,
 };
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
@@ -128,12 +132,41 @@ fn main() {
     let show: i64 = a.iter().position(|x| x == "--show").map_or(12, |i| a[i + 1].parse().unwrap());
     let eps: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(&a[1]).unwrap()).unwrap();
     let off: i64 = a[4].parse().unwrap();
-    let grid = Grid::parse(&std::fs::read(&a[3]).unwrap()).expect("grid");
+    let grid_only = Grid::parse(&std::fs::read(&a[3]).unwrap()).expect("grid");
     let (curves, scale) = hub_motion_or_panic();
     // `--roll-skill N`: the roll's skill id (a private session: our server's id, 1).
     let roll_skill = a.iter().position(|x| x == "--roll-skill").map_or(0x8000_0040, |i| a[i + 1].parse().unwrap());
-    let skills = SkillIds { move_skill: 0x2000_2909, roll_skill, roll_skill_other_set: 0x8000_0041 };
+    let mut skills = SkillIds { move_skill: 0x2000_2909, roll_skill, roll_skill_other_set: 0x8000_0041 };
+    // `--skills MOVE,INTERACT,ROLL[,ROLL2]` (hex with 0x): our server's ids, as
+    // `instance-server/examples/replay_terrain.rs` prints them.
+    let mut interact = u32::MAX;
+    if let Some(i) = a.iter().position(|x| x == "--skills") {
+        let v: Vec<u32> = a[i + 1].split(',').map(|w| w.strip_prefix("0x").map_or_else(|| w.parse().unwrap(), |h| u32::from_str_radix(h, 16).unwrap())).collect();
+        skills = SkillIds { move_skill: v[0], roll_skill: v[2], roll_skill_other_set: v.get(3).copied().unwrap_or(u32::MAX) };
+        interact = v[1];
+    }
+    // `--objects FILE`: the area's objects (`x y reach targeting obstacle type`); the blocking ones
+    // wall the terrain, and an entity the client clicks is the object on its cell.
+    let objs: Vec<(Cell, ObjectReach, i32)> = a.iter().position(|x| x == "--objects").map_or_else(Vec::new, |i| {
+        std::fs::read_to_string(&a[i + 1]).unwrap().lines().map(|l| {
+            let v: Vec<i32> = l.split_whitespace().take(5).map(|w| w.parse().unwrap()).collect();
+            ((v[0], v[1]), ObjectReach { reach: v[2], targeting: v[3] }, v[4])
+        }).collect()
+    });
+    let obstacles: Vec<Obstacle> = objs.iter().filter(|o| o.2 >= 0).map(|o| Obstacle { cell: o.0, size: o.2 }).collect();
+    let mut reaches = ObjectReaches::new();
+    for v in &eps {
+        if let (Some(e), Ok(x), Ok(y)) = (v.get("entity").and_then(Value::as_u64), i32::try_from(v["x"].as_i64().unwrap_or(-1)), i32::try_from(v["y"].as_i64().unwrap_or(-1)))
+            && let Some(o) = objs.iter().find(|o| o.0 == (x, y))
+        {
+            reaches.insert(e as u32, o.1);
+        }
+    }
+    let hints_on = !a.iter().any(|x| x == "--no-hints");
+    // `--first`: stop at the first difference of any kind and print its frames.
+    let first_only = a.iter().any(|x| x == "--first");
     let mut cfg = MovementConfig::new(skills, [2758, 2737, 2853]);
+    cfg.interact_skill = interact;
     cfg.curves = Some(curves.clone());
     cfg.offset_scale = scale;
     cfg.sprint_clearance_level = 4;
@@ -142,6 +175,8 @@ fn main() {
     let free = a.iter().any(|x| x == "--free");
     // `--trace LO HI`: the client model's state in these frames.
     let trace = a.iter().position(|x| x == "--trace").map(|i| (a[i + 1].parse::<i64>().unwrap(), a[i + 2].parse::<i64>().unwrap()));
+    let terrain = WithObstacles { terrain: &grid_only, obstacles: &obstacles };
+    let grid: &dyn Walkable = &terrain;
     let mut rows: BTreeMap<i64, Vec<Vec<String>>> = BTreeMap::new();
     for l in std::fs::read_to_string(&a[2]).unwrap().lines() {
         let w: Vec<String> = l.split_whitespace().map(String::from).collect();
@@ -180,7 +215,7 @@ fn main() {
             }
             // The plans the client logged hold entities our terrain does not have.
             let mut hints = Vec::new();
-            for g in f - 2..=f + 2 {
+            for g in (f - 2..=f + 2).filter(|_| hints_on) {
                 for r in rows.get(&g).into_iter().flatten().filter(|r| r[2] == "P").map(|r| &r[2..]) {
                     hints.push(((n(&r[3]), n(&r[4])), (n(&r[1]), n(&r[2])), r[5..].iter().map(&cell).collect()));
                 }
@@ -190,17 +225,19 @@ fn main() {
             let mut ctx = StepCtx {
                 frame: k as u64,
                 dt: DT,
-                terrain: &grid,
+                terrain: grid,
                 config: &cfg,
                 next_action: &mut action,
                 next_buff: &mut buff,
-                objects: &Default::default(),
+                objects: &reaches,
             };
             let events = loco.tick(&mut ctx);
             let mut snaps = Vec::new();
-            client_frame(&mut client, &events, &grid, &skills, &mut snaps);
+            let mut stop: Option<String> = None;
+            client_frame(&mut client, &events, grid, &skills, &mut snaps);
             for (m, o) in snaps.iter().filter(|_| started) {
                 *c.entry("snap").or_default() += 1;
+                stop.get_or_insert_with(|| format!("our 0x64 snaps the client model: model {m:?} message {o:?}"));
                 if shown < show {
                     shown += 1;
                     println!("f{f} OUR 0x64 SNAPS the client: client {m:?} message {o:?}");
@@ -223,6 +260,7 @@ fn main() {
             }
             if started && client.grid() != loco.grid() {
                 *c.entry("model_vs_client").or_default() += 1;
+                stop.get_or_insert_with(|| format!("server model {:?} != client model {:?}", loco.grid(), client.grid()));
                 if shown < show {
                     shown += 1;
                     println!("f{f} server model {:?} client model {:?} in_skill {}", loco.grid(), client.grid(), f < skill_until);
@@ -242,15 +280,20 @@ fn main() {
             }
             let frame = rows.get(&f);
             // Our messages against the official ones.
-            let mine: Vec<_> = events.iter().filter_map(|e| match e.event {
-                MoveEvent::MoveAck { dir, cell } => Some((dir, cell)),
-                _ => None,
+            // A teleport goes out as a 0x64 with a vector and a zero one on the same cell.
+            let mine: Vec<_> = events.iter().flat_map(|e| match e.event {
+                MoveEvent::MoveAck { dir, cell } => vec![(dir, cell)],
+                MoveEvent::Teleport { cell } => vec![((1, 0), cell), ((0, 0), cell)],
+                _ => vec![],
             }).collect();
             let theirs: Vec<_> = frame.into_iter().flatten().filter(|w| w[2] == "M").map(|w| ((n(&w[3]), n(&w[4])), (n(&w[5]), n(&w[6])))).collect();
             if !mine.is_empty() || !theirs.is_empty() {
                 let in_skill = f < skill_until;
                 let key = if mine == theirs { "ack_same" } else if in_skill { "ack_skill" } else { "ack_differ" };
                 *c.entry(key).or_default() += 1;
+                if key == "ack_differ" {
+                    stop.get_or_insert_with(|| format!("0x64 replayed {mine:?} sent {theirs:?}"));
+                }
                 if key == "ack_differ" && shown < show {
                     shown += 1;
                     println!("f{f} 0x64 ours {mine:?} official {theirs:?}");
@@ -266,6 +309,9 @@ fn main() {
             if !mine.is_empty() || !theirs.is_empty() {
                 let key = if mine == theirs { "start_same" } else if f < skill_until { "start_skill" } else { "start_differ" };
                 *c.entry(key).or_default() += 1;
+                if key == "start_differ" {
+                    stop.get_or_insert_with(|| format!("0x1c8 replayed {mine:?} sent {theirs:?} (roll, other, start, target)"));
+                }
                 if key == "start_differ" && shown < show {
                     shown += 1;
                     println!("f{f} 0x1c8 ours {mine:?} official {theirs:?}");
@@ -307,6 +353,7 @@ fn main() {
                     *c.entry("grid_same").or_default() += 1;
                 } else {
                     *c.entry("grid_differ").or_default() += 1;
+                    stop.get_or_insert_with(|| format!("client model {:?} != logged client grid {g:?} (|{:.1}| cells)", client.grid(), (((client.grid().0 - g.0).pow(2) + (client.grid().1 - g.1).pow(2)) as f32).sqrt()));
                     // `--resync`: every difference on its own, not what follows from an earlier one.
                     if resync {
                         client.place(g);
@@ -317,6 +364,22 @@ fn main() {
                         println!("f{f} client model {:?} official client {g:?}", client.grid());
                     }
                 }
+            }
+            if first_only && let Some(what) = stop {
+                println!("FIRST DIVERGENCE f{f} (log frame; capture frame {}): {what}", f - off);
+                println!("  client model: grid {:?} point {:?} line end {:?} axes {:?} roll {} coast {} move {}", client.grid(), client.point(), client.line_end(), client.axes(), client.is_rolling(), client.is_coasting(), client.has_move());
+                println!("  our events this frame: {:?}", events.iter().map(|e| format!("{:?}", e.event)).collect::<Vec<_>>());
+                println!("  inputs f{}..f{f}:", f - 6);
+                for v in eps.iter().filter(|v| (f - 6 - off..=f - off).contains(&v["f"].as_i64().unwrap_or(i64::MIN))) {
+                    println!("    f{} {v}", v["f"].as_i64().unwrap() + off);
+                }
+                println!("  log and sent rows f{}..f{f} (G logged grid, L client line, P client plan, M 0x64, A 0x1c8, S stat, K sprint, T target):", f - 6);
+                for g in f - 6..=f {
+                    for w in rows.get(&g).into_iter().flatten() {
+                        println!("    f{g} {}", w.join(" "));
+                    }
+                }
+                break;
             }
         }
     }

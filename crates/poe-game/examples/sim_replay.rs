@@ -2,10 +2,17 @@
 //! (`scripts/re/movement_replay_trace.py`) and compares the model's grid with the client's logged
 //! grid per frame; a `0x64` cell the model does not hold would snap our client.
 //!
-//! `cargo run -p poe-game --example sim_replay -- TRACE GRIDS [--from F] [--to F] [--show N]`
+//! `cargo run -p poe-game --example sim_replay -- TRACE GRIDS [--from F] [--to F] [--show N]
+//! [--objects FILE] [--no-hints] [--first]`
+//! Private sessions (`scripts/re/first_divergence.py`): `--objects` adds the area's blocking
+//! objects, `--no-hints` drops the client's logged plans (the search runs
+//! on its own), `--first` stops at the first frame whose grid differs and prints that frame's
+//! context.
 
 use poe_game::clientsim::ClientSim;
+use poe_game::clientpath::Obstacle;
 use poe_game::grid::Grid;
+use poe_game::movement::{Walkable, WithObstacles};
 use poe_game::motion_data::hub_motion_or_panic;
 use std::collections::BTreeMap;
 
@@ -18,6 +25,18 @@ fn main() {
     };
     let (from, to, show) = (opt("--from", 0), opt("--to", i64::MAX), opt("--show", 12));
     let grid = Grid::parse(&std::fs::read(&a[2]).unwrap()).expect("grid");
+    // The area's objects (`x y reach targeting obstacle type`, `instance-server/examples/replay_terrain.rs`):
+    // the blocking ones.
+    let obstacles: Vec<Obstacle> = a.iter().position(|x| x == "--objects").map_or_else(Vec::new, |i| {
+        std::fs::read_to_string(&a[i + 1]).unwrap().lines().filter_map(|l| {
+            let v: Vec<i32> = l.split_whitespace().take(5).map(|w| w.parse().unwrap()).collect();
+            (v[4] >= 0).then_some(Obstacle { cell: (v[0], v[1]), size: v[4] })
+        }).collect()
+    });
+    let terrain = WithObstacles { terrain: &grid, obstacles: &obstacles };
+    let tw: &dyn Walkable = &terrain;
+    let hints = !a.iter().any(|x| x == "--no-hints");
+    let first_only = a.iter().any(|x| x == "--first");
     let (curves, scale) = hub_motion_or_panic();
     let mut rows: BTreeMap<i64, Vec<Vec<String>>> = BTreeMap::new();
     for l in std::fs::read_to_string(&a[1]).unwrap().lines() {
@@ -41,6 +60,8 @@ fn main() {
     let mut drift = 0;
     let mut starts = 0;
     let mut client_snaps = 0;
+    let mut first_div: Option<i64> = None;
+    let dist = |a: (i32, i32), b: (i32, i32)| (((a.0 - b.0).pow(2) + (a.1 - b.1).pow(2)) as f32).sqrt();
     // A skill the port does not move (out of scope, the server sends none yet): while it and its
     // recovery run (a Move then walks slowed, Actor `+0x430`), the replay takes the client's logged
     // cell, until the server's next roll or 30 frames after the skill's start.
@@ -50,7 +71,7 @@ fn main() {
     for f in first..=last {
         let f_ = f;
         sim.plan_hints.clear();
-        for g in f - 2..=f + 2 {
+        for g in (f - 2..=f + 2).filter(|_| hints) {
             for r in rows.get(&g).into_iter().flatten().filter(|r| r[2] == "P").map(|r| &r[2..]) {
                 let path = r[5..].iter().map(&cell).collect();
                 sim.plan_hints.push(((n(&r[3]), n(&r[4])), (n(&r[1]), n(&r[2])), path));
@@ -82,7 +103,7 @@ fn main() {
                                 }
                             }
                         }
-                        sim.on_move_ack(dir, cell, &grid);
+                        sim.on_move_ack(dir, cell, tw);
                     }
                     "A" => {
                         let (s, t) = ((n(&r[2]), n(&r[3])), (n(&r[4]), n(&r[5])));
@@ -96,16 +117,20 @@ fn main() {
                         match r[1].as_str() {
                             "move" => {
                                 in_skill = f - skill_start < 30;
-                                sim.on_start_move(s, t, &grid)
+                                sim.on_start_move(s, t, tw)
+                            }
+                            "interact" => {
+                                in_skill = false;
+                                sim.on_start_interaction(s, tw)
                             }
                             "roll" => {
                                 in_skill = false;
-                                sim.on_start_roll(s, t, 46.0, &grid)
+                                sim.on_start_roll(s, t, 46.0, tw)
                             }
                             _ => {
                                 in_skill = true;
                                 skill_start = f;
-                                sim.on_start_other(s, &grid)
+                                sim.on_start_other(s, tw)
                             }
                         }
                     }
@@ -121,10 +146,10 @@ fn main() {
                 }
             }
             match comp {
-                0 => sim.positioned_tick(DT, &grid),
-                2 => sim.pathfinding_tick(DT, &grid),
-                5 => sim.animated_tick(DT, &grid),
-                9 => sim.actor_tick(DT, &grid),
+                0 => sim.positioned_tick(DT, tw),
+                2 => sim.pathfinding_tick(DT, tw),
+                5 => sim.animated_tick(DT, tw),
+                9 => sim.actor_tick(DT, tw),
                 _ => {}
             }
         }
@@ -177,6 +202,17 @@ fn main() {
                 same += 1;
             } else {
                 diff += 1;
+                first_div.get_or_insert(f);
+                if first_only {
+                    println!("FIRST DIVERGENCE f{f}: model {:?} client {:?} (|{:.1}| cells); model line end {:?} axes {:?} roll {} coast {}", sim.grid(), logged, dist(sim.grid(), logged), sim.line_end(), sim.axes(), sim.is_rolling(), sim.is_coasting());
+                    println!("rows of frames f{}..f{f} (frame drain-slot order kind args; G logged grid, L client line, P client plan, M 0x64, A 0x1c8, S stat, K sprint key, T target, I client 0x63):", f - 6);
+                    for g in f - 6..=f {
+                        for w in rows.get(&g).into_iter().flatten() {
+                            println!("  f{g} {}", w.join(" "));
+                        }
+                    }
+                    break;
+                }
                 if shown < show {
                     shown += 1;
                     println!("f{f} model {:?} client {:?} end {:?} axes {:?} roll {} coast {}", sim.grid(), logged, sim.line_end(), sim.axes(), sim.is_rolling(), sim.is_coasting());
@@ -185,7 +221,8 @@ fn main() {
         }
     }
     println!(
-        "frames {first}..{last}: grid same {same} differ {diff}; line ends same {} differ {} (float drift on {drift}); 0x64 {acks}, would snap {snaps} (client too {client_snaps}); action starts off {starts}; frames in a skill (not compared) {skill_frames}",
+        "first divergence {}; frames {first}..{last}: grid same {same} differ {diff}; line ends same {} differ {} (float drift on {drift}); 0x64 {acks}, would snap {snaps} (client too {client_snaps}); action starts off {starts}; frames in a skill (not compared) {skill_frames}",
+        first_div.map_or("none".to_string(), |f| format!("f{f}")),
         lines.0, lines.1
     );
 }

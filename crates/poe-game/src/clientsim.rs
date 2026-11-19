@@ -1205,6 +1205,15 @@ impl ClientSim {
     /// `Actor_PlanMove` `0x141e50b10`.
     fn plan_move(&mut self, t: &dyn Walkable) {
         let Some(m) = self.mv else { return };
+        // The Move slot's vf `+0x80` first. An object's `Interaction` (`0x14198fb60` ->
+        // `0x14197d4a0`, `0x14197d540`) turns the player to its target at once
+        // (`Positioned_SetOrientation` `0x141de9a10`; game test `b4-roll-click` f705: 4.494 from
+        // (666,1380) to the checkpoint (630,1388)); a plain Move's (`0x141990ba0`) does not turn.
+        // Not ported: its skips (stat `0x3162`, vf `+0x528`, the player's own entity, the turn
+        // component `0xe4fa` when Actor `+0x2a0` bit 7 is set and `+0x8fa` is 0).
+        if self.reach.is_some() && m.target != self.grid {
+            self.facing = angle((m.target.0 - self.grid.0) as f32, (m.target.1 - self.grid.1) as f32);
+        }
         self.plan_timer = PLAN_TIMER;
         self.in_plan = true;
         self.follow_path(m.target, t);
@@ -1814,17 +1823,10 @@ impl ClientSim {
     /// Bonk clip, which moves like SprintEnd (same clip, same MoveEvent).
     fn sprint_part_end(&mut self, _bonk: bool, t: &dyn Walkable) {
         self.sprint = false;
-        // An object's `Interaction` walking to its ring (started at `must_sprint` off, just before
-        // the sprint-off) ends the clip (vf `+0x70` = 0) and walks on: the client walked back to
-        // the checkpoint at once, no coast (game test `b4-roll-click`).
-        if self.reach.is_some() {
-            self.level = 0;
-            self.stop_move();
-            self.line.acc = 0.0;
-            self.line.pending = 0.0;
-            self.plan_move(t);
-            return;
-        }
+        // This ends the Move slot's action, an object's `Interaction` walking to its ring too
+        // (started in the frame of the sprint-off): it never acts, and the clip coasts along the
+        // facing the `Interaction` turned to (game test `b4-roll-click` f705 to f707: the
+        // `Interaction` ended at f706, then a 20-cell curve line, T 1.007 s, toward the checkpoint).
         self.end_move(false, t);
         self.stop_with_callbacks(t);
         self.level = 0;

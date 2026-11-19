@@ -990,11 +990,13 @@ fn a_scaled_frame_keeps_the_roll_timeline_in_game_time() {
     assert_eq!(kind, ActionKind::Interaction);
 }
 
-/// A click in reach during `must_sprint` that the sprint carried out of reach by `t0 + 35`: the
-/// client walks back to the ring with the key held and the `Interaction` acts on arrival (game
-/// test `b4-roll-click`: from 30 cells, W+D held, it stopped 18.7 cells from the checkpoint).
+/// A click in reach during `must_sprint` that the sprint carried out of reach by `t0 + 35`: its
+/// `StartAction` is a Move to the ring, sent with the sprint-off. `SprintPart_End` ends the Move
+/// slot's `Interaction` before it acts, and the `SprintEnd` clip coasts along the facing it turned
+/// to, slowing to a stop (game test `b4-roll-click` f705 to f707: the `Interaction` ended at f706,
+/// then a 20-cell curve line toward the checkpoint, from 1.1 walk speeds down).
 #[test]
-fn a_click_left_behind_by_must_sprint_walks_back_to_the_ring() {
+fn a_click_left_behind_by_must_sprint_ends_with_the_sprint_and_coasts_toward_the_object() {
     let (mut w, p) = interact_world((140, 96));
     with_object(&mut w, CHECKPOINT);
     tick(&mut w);
@@ -1003,24 +1005,29 @@ fn a_click_left_behind_by_must_sprint_walks_back_to_the_ring() {
     w.input(p, MoveInput::SprintInput { held: true });
     w.input(p, MoveInput::UseSkill(skill(ROLL, -20, 0)));
     let (mut started, mut acted) = (None, None);
-    for f in 0..90u32 {
+    let mut cells = Vec::new();
+    for f in 0..120u32 {
         if f == 22 {
             click_object(&mut w, p, (100, 104));
-        }
-        if f == 30 {
-            w.input(p, MoveInput::SprintInput { held: false });
         }
         for e in tick(&mut w) {
             match e {
                 MoveEvent::ActionStart { kind, skill, .. } if skill == INTERACT => started = Some((f, kind, cell(&w, p))),
-                MoveEvent::Interact { .. } if f > 22 => acted = acted.or(Some((f, cell(&w, p)))),
+                MoveEvent::Interact { .. } if f > 22 => acted = acted.or(Some(f)),
                 _ => {}
             }
         }
+        cells.push(cell(&w, p));
     }
     let (f, kind, at) = started.expect("no StartAction for the click");
     assert_eq!(kind, ActionKind::Move, "out of reach at {at:?} (frame {f})");
-    let (af, arrived) = acted.expect("never arrived");
-    let d = (((arrived.0 - 100).pow(2) + (arrived.1 - 104).pow(2)) as f64).sqrt();
-    assert!(af > f && d <= 20.5, "arrived at {arrived:?} (frame {af}), {d:.1} cells from the object");
+    assert_eq!(acted, None, "the Interaction ends with the sprint");
+    // Back toward the object behind (x grows), slowing to a stop about 20 cells on.
+    let after = &cells[f as usize..];
+    let stop = after.windows(4).position(|c| c.iter().all(|&x| x == c[0])).expect("no stop");
+    let coast = after[stop].0 - at.0;
+    assert!((17..=21).contains(&coast), "coasted {coast} cells: {after:?}");
+    let first = (after[5].0 - after[0].0).abs();
+    let last = (after[stop].0 - after[stop - 5].0).abs();
+    assert!(first > last, "the coast slows: {after:?}");
 }

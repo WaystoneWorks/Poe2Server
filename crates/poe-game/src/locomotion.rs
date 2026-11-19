@@ -1394,10 +1394,11 @@ impl Locomotion {
         // sprint lets go: the client runs skill `0x2000c266` as an `Interaction` (user 2026-11-19
         // 12:03:45.680, slot 0 for 3 frames, then the held key walked on at full speed). As an
         // attack the model got the walk slow and fell 3 cells behind. Out of reach by then (the
-        // sprint carried the player past the ring) the client walks to the ring with the keys
-        // held, and the `Interaction` acts on arrival (game test `b4-roll-click`: from 30 cells,
-        // W+D held, it walked back and stopped 18.7 cells from the checkpoint); as an attack the
-        // model walked on with the keys, 30 cells apart.
+        // sprint carried the player past the ring) it is a Move to the ring, which turns the
+        // player to the object; the sprint-off of the same tick ends it before it acts and the
+        // `SprintEnd` clip coasts toward the object (game test `b4-roll-click`; the sim ends the
+        // walk, so `interact_walk` is dropped). As an attack the model walked on with the keys,
+        // 30 cells apart.
         let clearance = ctx.config.sprint_clearance_level;
         let object = req
             .entity
